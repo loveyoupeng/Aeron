@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,6 +22,7 @@
 #include <concurrent/AgentRunner.h>
 #include <concurrent/ringbuffer/ManyToOneRingBuffer.h>
 #include <concurrent/broadcast/CopyBroadcastReceiver.h>
+#include <concurrent/CountersReader.h>
 #include <CncFileDescriptor.h>
 #include <iostream>
 
@@ -30,6 +31,7 @@ namespace aeron {
 using namespace aeron::concurrent::ringbuffer;
 using namespace aeron::concurrent::logbuffer;
 using namespace aeron::concurrent::broadcast;
+using namespace aeron::concurrent;
 
 class Image;
 
@@ -77,6 +79,31 @@ typedef std::function<void(
     std::int32_t streamId,
     std::int64_t correlationId)> on_new_subscription_t;
 
+/**
+ * Function called by Aeron to deliver notification of a Counter being available.
+ *
+ * @param countersReader for more detail on the counter.
+ * @param registrationId for the counter.
+ * @param counterId      that is available.
+ */
+
+typedef std::function<void(
+    CountersReader& countersReader,
+    std::int64_t registrationId,
+    std::int32_t counterId)> on_available_counter_t;
+
+/**
+ * Function called by Aeron to deliver notification of counter being removed.
+ *
+ * @param countersReader for more counter details.
+ * @param registrationId for the counter.
+ * @param counterId      that is unavailable.
+ */
+typedef std::function<void(
+    CountersReader& countersReader,
+    std::int64_t registrationId,
+    std::int32_t counterId)> on_unavailable_counter_t;
+
 const static long NULL_TIMEOUT = -1;
 const static long DEFAULT_MEDIA_DRIVER_TIMEOUT_MS = 10000;
 const static long DEFAULT_RESOURCE_LINGER_MS = 5000;
@@ -98,7 +125,7 @@ inline void defaultErrorHandler(const std::exception& exception)
         const SourcedException& sourcedException = dynamic_cast<const SourcedException&>(exception);
         std::cerr << " : " << sourcedException.where();
     }
-    catch (std::bad_cast)
+    catch (const std::bad_cast&)
     {
         // ignore
     }
@@ -120,6 +147,14 @@ inline void defaultOnNewSubscriptionHandler(const std::string&, std::int32_t, st
 }
 
 inline void defaultOnUnavailableImageHandler(Image &)
+{
+}
+
+inline void defaultOnAvailableCounterHandler(CountersReader&, std::int64_t, std::int32_t)
+{
+}
+
+inline void defaultOnUnavailableCounterHandler(CountersReader&, std::int64_t, std::int32_t)
 {
 }
 
@@ -147,6 +182,11 @@ public:
         if (NULL_TIMEOUT == m_resourceLingerTimeout)
         {
             m_resourceLingerTimeout = DEFAULT_RESOURCE_LINGER_MS;
+        }
+
+        if (!m_isOnNewExclusivePublicationHandlerSet)
+        {
+            m_onNewExclusivePublicationHandler = m_onNewPublicationHandler;
         }
 
         return *this;
@@ -202,6 +242,21 @@ public:
     }
 
     /**
+     * Set the handler for successful Aeron::addExclusivePublication notifications
+     *
+     * If not set, then will use newPublicationHandler instead.
+     *
+     * @param handler called when add is completed successfully
+     * @return reference to this Context instance
+     */
+    inline this_t& newExclusivePublicationHandler(const on_new_publication_t& handler)
+    {
+        m_onNewExclusivePublicationHandler = handler;
+        m_isOnNewExclusivePublicationHandlerSet = true;
+        return *this;
+    }
+
+    /**
      * Set the handler for successful Aeron::addSubscription notifications
      *
      * @param handler called when add is completed successfully
@@ -234,6 +289,30 @@ public:
     inline this_t& unavailableImageHandler(const on_unavailable_image_t &handler)
     {
         m_onUnavailableImageHandler = handler;
+        return *this;
+    }
+
+    /**
+     * Set the handler for available counter notifications
+     *
+     * @param handler called when event occurs
+     * @return reference to this Context instance
+     */
+    inline this_t& availableCounterHandler(const on_available_counter_t &handler)
+    {
+        m_onAvailableCounterHandler = handler;
+        return *this;
+    }
+
+    /**
+     * Set the handler for inactive counter notifications
+     *
+     * @param handler called when event occurs
+     * @return reference to this Context instance
+     */
+    inline this_t& unavailableCounterHandler(const on_unavailable_counter_t &handler)
+    {
+        m_onUnavailableCounterHandler = handler;
         return *this;
     }
 
@@ -337,12 +416,16 @@ private:
     std::string m_dirName = defaultAeronPath();
     exception_handler_t m_exceptionHandler = defaultErrorHandler;
     on_new_publication_t m_onNewPublicationHandler = defaultOnNewPublicationHandler;
+    on_new_publication_t m_onNewExclusivePublicationHandler = defaultOnNewPublicationHandler;
     on_new_subscription_t m_onNewSubscriptionHandler = defaultOnNewSubscriptionHandler;
     on_available_image_t m_onAvailableImageHandler = defaultOnAvailableImageHandler;
     on_unavailable_image_t m_onUnavailableImageHandler = defaultOnUnavailableImageHandler;
+    on_available_counter_t m_onAvailableCounterHandler = defaultOnAvailableCounterHandler;
+    on_unavailable_counter_t m_onUnavailableCounterHandler = defaultOnUnavailableCounterHandler;
     long m_mediaDriverTimeout = NULL_TIMEOUT;
     long m_resourceLingerTimeout = NULL_TIMEOUT;
     bool m_useConductorAgentInvoker = false;
+    bool m_isOnNewExclusivePublicationHandlerSet = false;
 };
 
 }

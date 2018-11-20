@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -27,7 +27,6 @@ import static io.aeron.logbuffer.ControlledFragmentHandler.Action.*;
 import static io.aeron.logbuffer.FrameDescriptor.*;
 import static io.aeron.logbuffer.LogBufferDescriptor.endOfStreamPosition;
 import static io.aeron.logbuffer.LogBufferDescriptor.indexByPosition;
-import static io.aeron.logbuffer.TermReader.read;
 import static io.aeron.protocol.DataHeaderFlyweight.HEADER_LENGTH;
 import static io.aeron.protocol.DataHeaderFlyweight.TERM_ID_FIELD_OFFSET;
 import static java.nio.ByteOrder.LITTLE_ENDIAN;
@@ -97,9 +96,19 @@ public class Image
 
         final int termLength = logBuffers.termLength();
         this.termLengthMask = termLength - 1;
-        this.positionBitsToShift = Integer.numberOfTrailingZeros(termLength);
+        this.positionBitsToShift = LogBufferDescriptor.positionBitsToShift(termLength);
         this.initialTermId = LogBufferDescriptor.initialTermId(logBuffers.metaDataBuffer());
         header = new Header(initialTermId, positionBitsToShift, this);
+    }
+
+    /**
+     * Number of bits to right shift a position to get a term count for how far the stream has progressed.
+     *
+     * @return of bits to right shift a position to get a term count for how far the stream has progressed.
+     */
+    public int positionBitsToShift()
+    {
+        return positionBitsToShift;
     }
 
     /**
@@ -113,7 +122,8 @@ public class Image
     }
 
     /**
-     * The sessionId for the steam of messages.
+     * The sessionId for the steam of messages. Sessions are unique within a {@link Subscription} and unique across
+     * all {@link Publication}s from a {@link #sourceIdentity()}.
      *
      * @return the sessionId for the steam of messages.
      */
@@ -214,14 +224,21 @@ public class Image
      */
     public void position(final long newPosition)
     {
-        if (isClosed)
+        if (!isClosed)
         {
-            throw new IllegalStateException("Image is closed");
+            validatePosition(newPosition);
+            subscriberPosition.setOrdered(newPosition);
         }
+    }
 
-        validatePosition(newPosition);
-
-        subscriberPosition.setOrdered(newPosition);
+    /**
+     * The counter id for the subscriber position counter.
+     *
+     * @return the id for the subscriber position counter.
+     */
+    public int subscriberPositionId()
+    {
+        return subscriberPosition.id();
     }
 
     /**
@@ -270,7 +287,7 @@ public class Image
 
         final long position = subscriberPosition.get();
 
-        return read(
+        return TermReader.read(
             activeTermBuffer(position),
             (int)position & termLengthMask,
             fragmentHandler,
@@ -287,13 +304,13 @@ public class Image
      * <p>
      * Use a {@link ControlledFragmentAssembler} to assemble messages which span multiple fragments.
      *
-     * @param fragmentHandler to which message fragments are delivered.
-     * @param fragmentLimit   for the number of fragments to be consumed during one polling operation.
+     * @param handler       to which message fragments are delivered.
+     * @param fragmentLimit for the number of fragments to be consumed during one polling operation.
      * @return the number of fragments that have been consumed.
      * @see ControlledFragmentAssembler
      * @see ImageControlledFragmentAssembler
      */
-    public int controlledPoll(final ControlledFragmentHandler fragmentHandler, final int fragmentLimit)
+    public int controlledPoll(final ControlledFragmentHandler handler, final int fragmentLimit)
     {
         if (isClosed)
         {
@@ -310,7 +327,7 @@ public class Image
 
         try
         {
-            do
+            while (fragmentsRead < fragmentLimit && resultingOffset < capacity)
             {
                 final int length = frameLengthVolatile(termBuffer, resultingOffset);
                 if (length <= 0)
@@ -329,11 +346,8 @@ public class Image
 
                 header.offset(frameOffset);
 
-                final Action action = fragmentHandler.onFragment(
-                    termBuffer,
-                    frameOffset + HEADER_LENGTH,
-                    length - HEADER_LENGTH,
-                    header);
+                final Action action = handler.onFragment(
+                    termBuffer, frameOffset + HEADER_LENGTH, length - HEADER_LENGTH, header);
 
                 if (action == ABORT)
                 {
@@ -354,7 +368,96 @@ public class Image
                     subscriberPosition.setOrdered(initialPosition);
                 }
             }
-            while (fragmentsRead < fragmentLimit && resultingOffset < capacity);
+        }
+        catch (final Throwable t)
+        {
+            errorHandler.onError(t);
+        }
+        finally
+        {
+            final long resultingPosition = initialPosition + (resultingOffset - initialOffset);
+            if (resultingPosition > initialPosition)
+            {
+                subscriberPosition.setOrdered(resultingPosition);
+            }
+        }
+
+        return fragmentsRead;
+    }
+
+    /**
+     * Poll for new messages in a stream. If new messages are found beyond the last consumed position then they
+     * will be delivered to the {@link ControlledFragmentHandler} up to a limited number of fragments as specified or
+     * the maximum position specified.
+     * <p>
+     * Use a {@link ControlledFragmentAssembler} to assemble messages which span multiple fragments.
+     *
+     * @param handler       to which message fragments are delivered.
+     * @param maxPosition   to consume messages up to.
+     * @param fragmentLimit for the number of fragments to be consumed during one polling operation.
+     * @return the number of fragments that have been consumed.
+     * @see ControlledFragmentAssembler
+     * @see ImageControlledFragmentAssembler
+     */
+    public int boundedControlledPoll(
+        final ControlledFragmentHandler handler, final long maxPosition, final int fragmentLimit)
+    {
+        if (isClosed)
+        {
+            return 0;
+        }
+
+        int fragmentsRead = 0;
+        long initialPosition = subscriberPosition.get();
+        int initialOffset = (int)initialPosition & termLengthMask;
+        int resultingOffset = initialOffset;
+        final UnsafeBuffer termBuffer = activeTermBuffer(initialPosition);
+        final int endOffset = (int)Math.min(termBuffer.capacity(), maxPosition - initialPosition + initialOffset);
+        header.buffer(termBuffer);
+
+        try
+        {
+            while (fragmentsRead < fragmentLimit && resultingOffset < endOffset)
+            {
+                final int length = frameLengthVolatile(termBuffer, resultingOffset);
+                if (length <= 0)
+                {
+                    break;
+                }
+
+                final int frameOffset = resultingOffset;
+                final int alignedLength = BitUtil.align(length, FRAME_ALIGNMENT);
+                resultingOffset += alignedLength;
+
+                if (isPaddingFrame(termBuffer, frameOffset))
+                {
+                    continue;
+                }
+
+                header.offset(frameOffset);
+
+                final Action action = handler.onFragment(
+                    termBuffer, frameOffset + HEADER_LENGTH, length - HEADER_LENGTH, header);
+
+                if (action == ABORT)
+                {
+                    resultingOffset -= alignedLength;
+                    break;
+                }
+
+                ++fragmentsRead;
+
+                if (action == BREAK)
+                {
+                    break;
+                }
+                else if (action == COMMIT)
+                {
+                    initialPosition += (resultingOffset - initialOffset);
+                    initialOffset = resultingOffset;
+                    subscriberPosition.setOrdered(initialPosition);
+                }
+            }
         }
         catch (final Throwable t)
         {
@@ -380,14 +483,14 @@ public class Image
      * start at the beginning of a message so that the assembler is reset.
      *
      * @param initialPosition from which to peek forward.
-     * @param fragmentHandler to which message fragments are delivered.
+     * @param handler         to which message fragments are delivered.
      * @param limitPosition   up to which can be scanned.
      * @return the resulting position after the scan terminates which is a complete message.
      * @see ControlledFragmentAssembler
      * @see ImageControlledFragmentAssembler
      */
     public long controlledPeek(
-        final long initialPosition, final ControlledFragmentHandler fragmentHandler, final long limitPosition)
+        final long initialPosition, final ControlledFragmentHandler handler, final long limitPosition)
     {
         if (isClosed)
         {
@@ -406,7 +509,7 @@ public class Image
 
         try
         {
-            do
+            while (position < limitPosition && offset < capacity)
             {
                 final int length = frameLengthVolatile(termBuffer, offset);
                 if (length <= 0)
@@ -420,16 +523,17 @@ public class Image
 
                 if (isPaddingFrame(termBuffer, frameOffset))
                 {
+                    position += (offset - initialOffset);
+                    initialOffset = offset;
+                    resultingPosition = position;
+
                     continue;
                 }
 
                 header.offset(frameOffset);
 
-                final Action action = fragmentHandler.onFragment(
-                    termBuffer,
-                    frameOffset + HEADER_LENGTH,
-                    length - HEADER_LENGTH,
-                    header);
+                final Action action = handler.onFragment(
+                    termBuffer, frameOffset + HEADER_LENGTH, length - HEADER_LENGTH, header);
 
                 if (action == ABORT)
                 {
@@ -449,7 +553,6 @@ public class Image
                     break;
                 }
             }
-            while (position < limitPosition && offset < capacity);
         }
         catch (final Throwable t)
         {
@@ -462,12 +565,19 @@ public class Image
     /**
      * Poll for new messages in a stream. If new messages are found beyond the last consumed position then they
      * will be delivered to the {@link BlockHandler} up to a limited number of bytes.
+     * <p>
+     * A scan will terminate if a padding frame is encountered. If first frame in a scan is padding then a block
+     * for the padding is notified. If the padding comes after the first frame in a scan then the scan terminates
+     * at the offset the padding frame begins. Padding frames are delivered singularly in a block.
+     * <p>
+     * Padding frames may be for a greater range than the limit offset but only the header needs to be valid so
+     * relevant length of the frame is {@link io.aeron.protocol.DataHeaderFlyweight#HEADER_LENGTH}.
      *
-     * @param blockHandler     to which block is delivered.
+     * @param handler          to which block is delivered.
      * @param blockLengthLimit up to which a block may be in length.
      * @return the number of bytes that have been consumed.
      */
-    public int blockPoll(final BlockHandler blockHandler, final int blockLengthLimit)
+    public int blockPoll(final BlockHandler handler, final int blockLengthLimit)
     {
         if (isClosed)
         {
@@ -477,18 +587,16 @@ public class Image
         final long position = subscriberPosition.get();
         final int termOffset = (int)position & termLengthMask;
         final UnsafeBuffer termBuffer = activeTermBuffer(position);
-        final int limit = Math.min(termOffset + blockLengthLimit, termBuffer.capacity());
+        final int limitOffset = Math.min(termOffset + blockLengthLimit, termBuffer.capacity());
+        final int resultingOffset = TermBlockScanner.scan(termBuffer, termOffset, limitOffset);
+        final int length = resultingOffset - termOffset;
 
-        final int resultingOffset = TermBlockScanner.scan(termBuffer, termOffset, limit);
-
-        final int bytesConsumed = resultingOffset - termOffset;
         if (resultingOffset > termOffset)
         {
             try
             {
                 final int termId = termBuffer.getInt(termOffset + TERM_ID_FIELD_OFFSET, LITTLE_ENDIAN);
-
-                blockHandler.onBlock(termBuffer, termOffset, bytesConsumed, sessionId, termId);
+                handler.onBlock(termBuffer, termOffset, length, sessionId, termId);
             }
             catch (final Throwable t)
             {
@@ -496,11 +604,11 @@ public class Image
             }
             finally
             {
-                subscriberPosition.setOrdered(position + bytesConsumed);
+                subscriberPosition.setOrdered(position + length);
             }
         }
 
-        return bytesConsumed;
+        return length;
     }
 
     /**
@@ -508,12 +616,19 @@ public class Image
      * will be delivered to the {@link RawBlockHandler} up to a limited number of bytes.
      * <p>
      * This method is useful for operations like bulk archiving a stream to file.
+     * <p>
+     * A scan will terminate if a padding frame is encountered. If first frame in a scan is padding then a block
+     * for the padding is notified. If the padding comes after the first frame in a scan then the scan terminates
+     * at the offset the padding frame begins. Padding frames are delivered singularly in a block.
+     * <p>
+     * Padding frames may be for a greater range than the limit offset but only the header needs to be valid so
+     * relevant length of the frame is {@link io.aeron.protocol.DataHeaderFlyweight#HEADER_LENGTH}.
      *
-     * @param rawBlockHandler  to which block is delivered.
+     * @param handler          to which block is delivered.
      * @param blockLengthLimit up to which a block may be in length.
      * @return the number of bytes that have been consumed.
      */
-    public int rawPoll(final RawBlockHandler rawBlockHandler, final int blockLengthLimit)
+    public int rawPoll(final RawBlockHandler handler, final int blockLengthLimit)
     {
         if (isClosed)
         {
@@ -525,9 +640,8 @@ public class Image
         final int activeIndex = indexByPosition(position, positionBitsToShift);
         final UnsafeBuffer termBuffer = termBuffers[activeIndex];
         final int capacity = termBuffer.capacity();
-        final int limit = Math.min(termOffset + blockLengthLimit, capacity);
-
-        final int resultingOffset = TermBlockScanner.scan(termBuffer, termOffset, limit);
+        final int limitOffset = Math.min(termOffset + blockLengthLimit, capacity);
+        final int resultingOffset = TermBlockScanner.scan(termBuffer, termOffset, limitOffset);
         final int length = resultingOffset - termOffset;
 
         if (resultingOffset > termOffset)
@@ -537,7 +651,7 @@ public class Image
                 final long fileOffset = ((long)capacity * activeIndex) + termOffset;
                 final int termId = termBuffer.getInt(termOffset + TERM_ID_FIELD_OFFSET, LITTLE_ENDIAN);
 
-                rawBlockHandler.onBlock(
+                handler.onBlock(
                     logBuffers.fileChannel(), fileOffset, termBuffer, termOffset, length, sessionId, termId);
             }
             catch (final Throwable t)
@@ -561,16 +675,16 @@ public class Image
     private void validatePosition(final long newPosition)
     {
         final long currentPosition = subscriberPosition.get();
-        final long limitPosition = currentPosition + termBufferLength();
+        final long limitPosition = (currentPosition - (currentPosition & termLengthMask)) + termLengthMask + 1;
         if (newPosition < currentPosition || newPosition > limitPosition)
         {
             throw new IllegalArgumentException(
-                "newPosition of " + newPosition + " out of range " + currentPosition + "-" + limitPosition);
+                newPosition + " newPosition out of range " + currentPosition + "-" + limitPosition);
         }
 
         if (0 != (newPosition & (FRAME_ALIGNMENT - 1)))
         {
-            throw new IllegalArgumentException("newPosition of " + newPosition + " not aligned to FRAME_ALIGNMENT");
+            throw new IllegalArgumentException(newPosition + " newPosition not aligned to FRAME_ALIGNMENT");
         }
     }
 

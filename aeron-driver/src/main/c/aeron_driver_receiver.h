@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 - 2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -113,7 +113,7 @@ void aeron_driver_receiver_on_remove_subscription(void *clientd, void *item);
 void aeron_driver_receiver_on_add_publication_image(void *clientd, void *item);
 void aeron_driver_receiver_on_remove_publication_image(void *clientd, void *item);
 
-void aeron_driver_receiver_on_remove_cooldown(void *clientd, void *item);
+void aeron_driver_receiver_on_remove_cool_down(void *clientd, void *item);
 
 int aeron_driver_receiver_add_pending_setup(
     aeron_driver_receiver_t *receiver,

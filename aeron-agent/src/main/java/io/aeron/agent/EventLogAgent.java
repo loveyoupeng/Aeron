@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,13 +15,15 @@
  */
 package io.aeron.agent;
 
-import io.aeron.driver.EventLog;
 import net.bytebuddy.ByteBuddy;
 import net.bytebuddy.agent.builder.AgentBuilder;
+import net.bytebuddy.agent.builder.ResettableClassFileTransformer;
 import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.dynamic.DynamicType;
 import net.bytebuddy.dynamic.scaffold.TypeValidation;
+import net.bytebuddy.matcher.ElementMatcher;
 import net.bytebuddy.utility.JavaModule;
+import org.agrona.concurrent.Agent;
 import org.agrona.concurrent.AgentRunner;
 import org.agrona.concurrent.SleepingMillisIdleStrategy;
 
@@ -29,19 +31,31 @@ import java.lang.instrument.ClassFileTransformer;
 import java.lang.instrument.Instrumentation;
 
 import static net.bytebuddy.asm.Advice.to;
-import static net.bytebuddy.matcher.ElementMatchers.*;
+import static net.bytebuddy.matcher.ElementMatchers.nameEndsWith;
+import static net.bytebuddy.matcher.ElementMatchers.named;
 
+/**
+ * A Java agent which when attached to a JVM will weave byte code to intercept events as defined by {@link EventCode}.
+ * These events are recorded to an in-memory {@link org.agrona.concurrent.ringbuffer.RingBuffer} which is consumed
+ * and appended asynchronous to a log as defined by the class {@link #READER_CLASSNAME_PROP_NAME} which defaults to
+ * {@link EventLogReaderAgent}.
+ */
 @SuppressWarnings("unused")
 public class EventLogAgent
 {
+    /**
+     * Event reader {@link Agent} which consumes the {@link EventConfiguration#EVENT_RING_BUFFER} to output log events.
+     */
+    public static final String READER_CLASSNAME_PROP_NAME = "aeron.event.log.reader.classname";
+    public static final String READER_CLASSNAME_DEFAULT = "io.aeron.agent.EventLogReaderAgent";
+
     private static final long SLEEP_PERIOD_MS = 1L;
-    private static final EventLogReaderAgent EVENT_LOG_READER_AGENT = new EventLogReaderAgent();
 
     private static AgentRunner readerAgentRunner;
     private static Instrumentation instrumentation;
     private static volatile ClassFileTransformer logTransformer;
 
-    private static final AgentBuilder.Listener LISTENER = new AgentBuilder.Listener()
+    static final AgentBuilder.Listener LISTENER = new AgentBuilder.Listener()
     {
         public void onDiscovery(
             final String typeName,
@@ -58,7 +72,6 @@ public class EventLogAgent
             final boolean loaded,
             final DynamicType dynamicType)
         {
-            System.out.println("TRANSFORM " + typeDescription.getName());
         }
 
         public void onIgnored(
@@ -76,7 +89,7 @@ public class EventLogAgent
             final boolean loaded,
             final Throwable throwable)
         {
-            System.out.println("ERROR " + typeName);
+            System.err.println("ERROR " + typeName);
             throwable.printStackTrace(System.out);
         }
 
@@ -89,9 +102,10 @@ public class EventLogAgent
         }
     };
 
+    @SuppressWarnings("Indendation")
     private static void agent(final boolean shouldRedefine, final Instrumentation instrumentation)
     {
-        if (EventConfiguration.ENABLED_EVENT_CODES == 0)
+        if (EventLogger.ENABLED_EVENT_CODES == 0)
         {
             return;
         }
@@ -99,10 +113,7 @@ public class EventLogAgent
         EventLogAgent.instrumentation = instrumentation;
 
         readerAgentRunner = new AgentRunner(
-            new SleepingMillisIdleStrategy(SLEEP_PERIOD_MS),
-            Throwable::printStackTrace,
-            null,
-            EVENT_LOG_READER_AGENT);
+            new SleepingMillisIdleStrategy(SLEEP_PERIOD_MS), Throwable::printStackTrace, null, getReaderAgent());
 
         logTransformer = new AgentBuilder.Default(new ByteBuddy().with(TypeValidation.DISABLED))
             .with(LISTENER)
@@ -137,29 +148,17 @@ public class EventLogAgent
                         .on(named("registerReceiveChannelEndpoint")))
                     .visit(to(ChannelEndpointInterceptor.ReceiverProxyInterceptor.CloseReceiveChannelEndpoint.class)
                         .on(named("closeReceiveChannelEndpoint"))))
-            .type(inheritsAnnotation(EventLog.class))
+            .type(nameEndsWith("UdpChannelTransport"))
             .transform((builder, typeDescription, classLoader, javaModule) ->
                 builder
-                    .visit(to(ChannelEndpointInterceptor.SendChannelEndpointInterceptor.Presend.class)
-                        .on(named("presend")))
-                    .visit(to(ChannelEndpointInterceptor.ReceiveChannelEndpointInterceptor.SendTo.class)
-                        .on(named("sendTo")))
-                    .visit(to(ChannelEndpointInterceptor.SendChannelEndpointInterceptor.OnStatusMessage.class)
-                        .on(named("onStatusMessage")))
-                    .visit(to(ChannelEndpointInterceptor.SendChannelEndpointInterceptor.OnNakMessage.class)
-                        .on(named("onNakMessage")))
-                    .visit(to(ChannelEndpointInterceptor.SendChannelEndpointInterceptor.OnRttMeasurement.class)
-                        .on(named("onRttMeasurement")))
-                    .visit(to(ChannelEndpointInterceptor.ReceiveChannelEndpointInterceptor.OnDataPacket.class)
-                        .on(named("onDataPacket")))
-                    .visit(to(ChannelEndpointInterceptor.ReceiveChannelEndpointInterceptor.OnSetupMessage.class)
-                        .on(named("onSetupMessage")))
-                    .visit(to(ChannelEndpointInterceptor.ReceiveChannelEndpointInterceptor.OnRttMeasurement.class)
-                        .on(named("onRttMeasurement"))))
+                    .visit(to(ChannelEndpointInterceptor.UdpChannelTransportInterceptor.SendHook.class)
+                        .on(named("sendHook")))
+                    .visit(to(ChannelEndpointInterceptor.UdpChannelTransportInterceptor.ReceiveHook.class)
+                        .on(named("receiveHook"))))
             .installOn(instrumentation);
 
         final Thread thread = new Thread(readerAgentRunner);
-        thread.setName("event log reader");
+        thread.setName("event-log-reader");
         thread.setDaemon(true);
         thread.start();
     }
@@ -180,19 +179,39 @@ public class EventLogAgent
         {
             readerAgentRunner.close();
             instrumentation.removeTransformer(logTransformer);
-            instrumentation.removeTransformer(new AgentBuilder.Default()
-                .type(nameEndsWith("DriverConductor")
-                    .or(nameEndsWith("ClientProxy"))
-                    .or(nameEndsWith("ClientCommandAdapter"))
-                    .or(nameEndsWith("SenderProxy"))
-                    .or(nameEndsWith("ReceiverProxy"))
-                    .or(inheritsAnnotation(EventLog.class)))
+
+            final ElementMatcher.Junction<TypeDescription> orClause = nameEndsWith("DriverConductor")
+                .or(nameEndsWith("ClientProxy"))
+                .or(nameEndsWith("ClientCommandAdapter"))
+                .or(nameEndsWith("SenderProxy"))
+                .or(nameEndsWith("ReceiverProxy"))
+                .or(nameEndsWith("UdpChannelTransport"));
+
+            final ResettableClassFileTransformer transformer = new AgentBuilder.Default()
+                .type(orClause)
                 .transform(AgentBuilder.Transformer.NoOp.INSTANCE)
-                .installOn(instrumentation));
+                .installOn(instrumentation);
+
+            instrumentation.removeTransformer(transformer);
 
             readerAgentRunner = null;
             instrumentation = null;
             logTransformer = null;
+        }
+    }
+
+    private static Agent getReaderAgent()
+    {
+        try
+        {
+            final Class<?> aClass = Class.forName(
+                System.getProperty(READER_CLASSNAME_PROP_NAME, READER_CLASSNAME_DEFAULT));
+
+            return (Agent)aClass.getDeclaredConstructor().newInstance();
+        }
+        catch (final Exception ex)
+        {
+            throw new RuntimeException(ex);
         }
     }
 }

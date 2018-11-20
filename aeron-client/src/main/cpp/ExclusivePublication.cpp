@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -27,6 +27,7 @@ ExclusivePublication::ExclusivePublication(
     std::int32_t streamId,
     std::int32_t sessionId,
     UnsafeBufferPosition& publicationLimit,
+    std::int32_t channelStatusId,
     std::shared_ptr<LogBuffers> buffers)
     :
     m_conductor(conductor),
@@ -34,16 +35,17 @@ ExclusivePublication::ExclusivePublication(
     m_channel(channel),
     m_registrationId(registrationId),
     m_originalRegistrationId(originalRegistrationId),
-    m_maxPossiblePosition(buffers->atomicBuffer(0).capacity() * (1L << 31L)),
+    m_maxPossiblePosition(static_cast<int64_t>(buffers->atomicBuffer(0).capacity()) << 31),
     m_streamId(streamId),
     m_sessionId(sessionId),
     m_initialTermId(LogBufferDescriptor::initialTermId(m_logMetaDataBuffer)),
     m_maxPayloadLength(LogBufferDescriptor::mtuLength(m_logMetaDataBuffer) - DataFrameHeader::LENGTH),
-    m_maxMessageLength(FrameDescriptor::computeExclusiveMaxMessageLength(buffers->atomicBuffer(0).capacity())),
+    m_maxMessageLength(FrameDescriptor::computeMaxMessageLength(buffers->atomicBuffer(0).capacity())),
     m_positionBitsToShift(util::BitUtil::numberOfTrailingZeroes(buffers->atomicBuffer(0).capacity())),
     m_activePartitionIndex(
         LogBufferDescriptor::indexByTermCount(LogBufferDescriptor::activeTermCount(m_logMetaDataBuffer))),
     m_publicationLimit(publicationLimit),
+    m_channelStatusId(channelStatusId),
     m_logbuffers(buffers),
     m_headerWriter(LogBufferDescriptor::defaultFrameHeader(m_logMetaDataBuffer))
 {
@@ -74,12 +76,32 @@ ExclusivePublication::~ExclusivePublication()
 
 void ExclusivePublication::addDestination(const std::string& endpointChannel)
 {
-    m_conductor.addDestination(m_registrationId, endpointChannel);
+    if (isClosed())
+    {
+        throw util::IllegalStateException(std::string("Publication is closed"), SOURCEINFO);
+    }
+
+    m_conductor.addDestination(m_originalRegistrationId, endpointChannel);
 }
 
 void ExclusivePublication::removeDestination(const std::string& endpointChannel)
 {
-    m_conductor.removeDestination(m_registrationId, endpointChannel);
+    if (isClosed())
+    {
+        throw util::IllegalStateException(std::string("Publication is closed"), SOURCEINFO);
+    }
+
+    m_conductor.removeDestination(m_originalRegistrationId, endpointChannel);
+}
+
+std::int64_t ExclusivePublication::channelStatus()
+{
+    if (isClosed())
+    {
+        return ChannelEndpointStatus::NO_ID_ALLOCATED;
+    }
+
+    return m_conductor.channelStatus(m_channelStatusId);
 }
 
 }

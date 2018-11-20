@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,16 +15,19 @@
  */
 package io.aeron;
 
+import io.aeron.exceptions.AeronException;
 import io.aeron.exceptions.DriverTimeoutException;
 import org.agrona.IoUtil;
 import org.agrona.SystemUtil;
 import org.agrona.concurrent.AtomicBuffer;
 import org.agrona.concurrent.UnsafeBuffer;
+import org.agrona.concurrent.errors.ErrorConsumer;
 import org.agrona.concurrent.errors.ErrorLogReader;
 import org.agrona.concurrent.ringbuffer.ManyToOneRingBuffer;
 
 import java.io.File;
 import java.io.PrintStream;
+import java.nio.ByteBuffer;
 import java.nio.MappedByteBuffer;
 import java.text.SimpleDateFormat;
 import java.util.Date;
@@ -47,7 +50,7 @@ import static java.lang.System.getProperty;
  * <li><code>aeron.dir</code>: Use value as directory name for Aeron buffers and status.</li>
  * </ul>
  */
-public class CommonContext implements AutoCloseable
+public class CommonContext implements AutoCloseable, Cloneable
 {
     /**
      * Property name for driver timeout after which the driver is considered inactive.
@@ -65,6 +68,11 @@ public class CommonContext implements AutoCloseable
     public static final long DRIVER_TIMEOUT_MS = getLong(DRIVER_TIMEOUT_PROP_NAME, DEFAULT_DRIVER_TIMEOUT_MS);
 
     /**
+     * Value to represent a sessionId that is not to be used.
+     */
+    public static final int NULL_SESSION_ID = Aeron.NULL_VALUE;
+
+    /**
      * The top level Aeron directory used for communication between a Media Driver and client.
      */
     public static final String AERON_DIR_PROP_NAME = "aeron.dir";
@@ -73,6 +81,16 @@ public class CommonContext implements AutoCloseable
      * The value of the top level Aeron directory unless overridden by {@link #aeronDirectoryName(String)}
      */
     public static final String AERON_DIR_PROP_DEFAULT;
+
+    /**
+     * Media type used for IPC shared memory from {@link Publication} to {@link Subscription} channels.
+     */
+    public static final String IPC_MEDIA = "ipc";
+
+    /**
+     * Media type used for UDP sockets from {@link Publication} to {@link Subscription} channels.
+     */
+    public static final String UDP_MEDIA = "udp";
 
     /**
      * URI used for IPC {@link Publication}s and {@link Subscription}s
@@ -117,7 +135,8 @@ public class CommonContext implements AutoCloseable
     public static final String TERM_LENGTH_PARAM_NAME = "term-length";
 
     /**
-     * MTU length parameter name for using as a channel URI param.
+     * MTU length parameter name for using as a channel URI param. If this is greater than the network MTU for UDP
+     * then the packet will be fragmented and can amplify the impact of loss.
      */
     public static final String MTU_LENGTH_PARAM_NAME = "mtu";
 
@@ -137,17 +156,42 @@ public class CommonContext implements AutoCloseable
     public static final String MDC_CONTROL_MODE_PARAM_NAME = "control-mode";
 
     /**
+     * Key for the session id for a publication or restricted subscription.
+     */
+    public static final String SESSION_ID_PARAM_NAME = "session-id";
+
+    /**
+     * Key for the linger timeout for a publication to wait around after draining in nanoseconds.
+     */
+    public static final String LINGER_PARAM_NAME = "linger";
+
+    /**
      * Valid value for {@link #MDC_CONTROL_MODE_PARAM_NAME} when manual control is desired.
      */
     public static final String MDC_CONTROL_MODE_MANUAL = "manual";
+
+    /**
+     * Valid value for {@link #MDC_CONTROL_MODE_PARAM_NAME} when dynamic control is desired. Default value.
+     */
+    public static final String MDC_CONTROL_MODE_DYNAMIC = "dynamic";
 
     /**
      * Parameter name for channel URI param to indicate if a subscribed must be reliable or not. Value is boolean.
      */
     public static final String RELIABLE_STREAM_PARAM_NAME = "reliable";
 
+    /**
+     * Key for the tags for a channel
+     */
+    public static final String TAGS_PARAM_NAME = "tags";
+
+    /**
+     * Parameter name for channel URI param to indicate if term buffers should be sparse. Value is boolean.
+     */
+    public static final String SPARSE_PARAM_NAME = "sparse";
+
     private long driverTimeoutMs = DRIVER_TIMEOUT_MS;
-    private String aeronDirectoryName;
+    private String aeronDirectoryName = getAeronDirectoryName();
     private File aeronDirectory;
     private File cncFile;
     private UnsafeBuffer countersMetaDataBuffer;
@@ -176,6 +220,34 @@ public class CommonContext implements AutoCloseable
     }
 
     /**
+     * Perform a shallow copy of the object.
+     *
+     * @return a shallow copy of the object.
+     */
+    public CommonContext clone()
+    {
+        try
+        {
+            return (CommonContext)super.clone();
+        }
+        catch (final CloneNotSupportedException ex)
+        {
+            throw new RuntimeException(ex);
+        }
+    }
+
+    /**
+     * Get the default directory name to be used if {@link #aeronDirectoryName(String)} is not set. This will take
+     * the {@link #AERON_DIR_PROP_NAME} if set and if not then {@link #AERON_DIR_PROP_DEFAULT}.
+     *
+     * @return the default directory name to be used if {@link #aeronDirectoryName(String)} is not set.
+     */
+    public static String getAeronDirectoryName()
+    {
+        return getProperty(AERON_DIR_PROP_NAME, AERON_DIR_PROP_DEFAULT);
+    }
+
+    /**
      * Convert the default Aeron directory name to be a random name for use with embedded drivers.
      *
      * @return random directory name with default directory name as base
@@ -183,14 +255,6 @@ public class CommonContext implements AutoCloseable
     public static String generateRandomDirName()
     {
         return AERON_DIR_PROP_DEFAULT + '-' + UUID.randomUUID().toString();
-    }
-
-    /**
-     * Create a new context with Aeron directory and delete on exit values based on the current system properties.
-     */
-    public CommonContext()
-    {
-        aeronDirectoryName = getProperty(AERON_DIR_PROP_NAME, AERON_DIR_PROP_DEFAULT);
     }
 
     /**
@@ -364,7 +428,7 @@ public class CommonContext implements AutoCloseable
     {
         final File cncFile = new File(aeronDirectory, CncFileDescriptor.CNC_FILE);
 
-        if (cncFile.exists())
+        if (cncFile.exists() && cncFile.length() > 0)
         {
             if (null != logger)
             {
@@ -390,7 +454,7 @@ public class CommonContext implements AutoCloseable
     {
         final File cncFile = new File(directory, CncFileDescriptor.CNC_FILE);
 
-        if (cncFile.exists())
+        if (cncFile.exists() && cncFile.length() > 0)
         {
             logger.accept("INFO: Aeron CnC file exists: " + cncFile);
 
@@ -438,7 +502,7 @@ public class CommonContext implements AutoCloseable
      * @return true if a driver is active or false if not.
      */
     public static boolean isDriverActive(
-        final long driverTimeoutMs, final Consumer<String> logger, final MappedByteBuffer cncByteBuffer)
+        final long driverTimeoutMs, final Consumer<String> logger, final ByteBuffer cncByteBuffer)
     {
         if (null == cncByteBuffer)
         {
@@ -461,7 +525,7 @@ public class CommonContext implements AutoCloseable
 
         if (CNC_VERSION != cncVersion)
         {
-            throw new IllegalStateException(
+            throw new AeronException(
                 "Aeron CnC version does not match: required=" + CNC_VERSION + " version=" + cncVersion);
         }
 
@@ -503,7 +567,7 @@ public class CommonContext implements AutoCloseable
      * @param cncByteBuffer containing the error log.
      * @return the number of observations from the error log.
      */
-    public int saveErrorLog(final PrintStream out, final MappedByteBuffer cncByteBuffer)
+    public int saveErrorLog(final PrintStream out, final ByteBuffer cncByteBuffer)
     {
         if (null == cncByteBuffer)
         {
@@ -515,24 +579,23 @@ public class CommonContext implements AutoCloseable
 
         if (CNC_VERSION != cncVersion)
         {
-            throw new IllegalStateException(
+            throw new AeronException(
                 "Aeron CnC version does not match: required=" + CNC_VERSION + " version=" + cncVersion);
         }
 
+        int distinctErrorCount = 0;
         final AtomicBuffer buffer = CncFileDescriptor.createErrorLogBuffer(cncByteBuffer, cncMetaDataBuffer);
-        final SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSSZ");
+        if (ErrorLogReader.hasErrors(buffer))
+        {
+            final SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSSZ");
+            final ErrorConsumer errorConsumer = (count, firstTimestamp, lastTimestamp, ex) ->
+                formatError(out, dateFormat, count, firstTimestamp, lastTimestamp, ex);
 
-        final int distinctErrorCount = ErrorLogReader.read(
-            buffer,
-            (observationCount, firstObservationTimestamp, lastObservationTimestamp, encodedException) ->
-                out.format(
-                    "***%n%d observations from %s to %s for:%n %s%n",
-                    observationCount,
-                    dateFormat.format(new Date(firstObservationTimestamp)),
-                    dateFormat.format(new Date(lastObservationTimestamp)),
-                    encodedException));
+            distinctErrorCount = ErrorLogReader.read(buffer, errorConsumer);
+        }
 
-        out.format("%n%d distinct errors observed.%n", distinctErrorCount);
+        out.println();
+        out.println(distinctErrorCount + " distinct errors observed.");
 
         return distinctErrorCount;
     }
@@ -542,5 +605,21 @@ public class CommonContext implements AutoCloseable
      */
     public void close()
     {
+    }
+
+    public static void formatError(
+        final PrintStream out,
+        final SimpleDateFormat dateFormat,
+        final int observationCount,
+        final long firstObservationTimestamp,
+        final long lastObservationTimestamp,
+        final String encodedException)
+    {
+        out.format(
+            "***%n%d observations from %s to %s for:%n %s%n",
+            observationCount,
+            dateFormat.format(new Date(firstObservationTimestamp)),
+            dateFormat.format(new Date(lastObservationTimestamp)),
+            encodedException);
     }
 }

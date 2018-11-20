@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 - 2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -43,7 +43,7 @@ typedef struct aeron_driver_sender_stct
         size_t length;
         size_t capacity;
     }
-    network_publicaitons;
+    network_publications;
 
     struct aeron_driver_sender_buffers_stct
     {

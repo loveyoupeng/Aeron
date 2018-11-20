@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -56,7 +56,7 @@ class TermReaderTest : public testing::Test
 public:
     TermReaderTest() :
         m_log(&m_logBuffer[0], m_logBuffer.size()),
-        m_fragmentHeader(INITIAL_TERM_ID, TERM_BUFFER_CAPACITY),
+        m_fragmentHeader(INITIAL_TERM_ID, TERM_BUFFER_CAPACITY, nullptr),
         m_handler_func(std::bind(&MockDataHandler::onData, &m_handler, _1, _2, _3, _4))
     {
         m_logBuffer.fill(0);

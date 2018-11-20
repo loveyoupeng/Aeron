@@ -1,6 +1,7 @@
 package io.aeron.archive;
 
 import io.aeron.archive.codecs.RecordingDescriptorDecoder;
+import io.aeron.archive.codecs.RecordingDescriptorHeaderDecoder;
 import org.agrona.CloseHelper;
 import org.agrona.IoUtil;
 import org.agrona.collections.MutableLong;
@@ -13,17 +14,17 @@ import org.mockito.stubbing.Answer;
 
 import java.io.File;
 
-import static io.aeron.archive.Catalog.wrapDescriptorDecoder;
 import static org.hamcrest.Matchers.is;
 import static org.junit.Assert.assertThat;
 import static org.mockito.Mockito.*;
 
 public class ListRecordingsSessionTest
 {
+    private static final int MAX_ENTRIES = 1024;
     private static final int SEGMENT_FILE_SIZE = 128 * 1024 * 1024;
     private final RecordingDescriptorDecoder recordingDescriptorDecoder = new RecordingDescriptorDecoder();
     private long[] recordingIds = new long[3];
-    private final File archiveDir = TestUtil.makeTempDir();
+    private final File archiveDir = TestUtil.makeTestDirectory();
     private final EpochClock clock = mock(EpochClock.class);
 
     private Catalog catalog;
@@ -33,9 +34,9 @@ public class ListRecordingsSessionTest
     private final UnsafeBuffer descriptorBuffer = new UnsafeBuffer();
 
     @Before
-    public void before() throws Exception
+    public void before()
     {
-        catalog = new Catalog(archiveDir, null, 0, clock);
+        catalog = new Catalog(archiveDir, null, 0, MAX_ENTRIES, clock);
         recordingIds[0] = catalog.addNewRecording(
             0L, 0L, 0, SEGMENT_FILE_SIZE, 4096, 1024, 6, 1, "channelG", "channelG?tag=f", "sourceA");
         recordingIds[1] = catalog.addNewRecording(
@@ -47,7 +48,7 @@ public class ListRecordingsSessionTest
     @After
     public void after()
     {
-        CloseHelper.quietClose(catalog);
+        CloseHelper.close(catalog);
         IoUtil.delete(archiveDir, false);
     }
 
@@ -62,12 +63,11 @@ public class ListRecordingsSessionTest
             controlResponseProxy,
             controlSession,
             descriptorBuffer);
-        session.doWork();
-        assertThat(session.isDone(), is(false));
-        when(controlSession.maxPayloadLength()).thenReturn(8096);
+
         final MutableLong counter = new MutableLong(0);
         when(controlSession.sendDescriptor(eq(correlationId), any(), eq(controlResponseProxy)))
             .then(verifySendDescriptor(counter));
+
         session.doWork();
         verify(controlSession, times(3)).sendDescriptor(eq(correlationId), any(), eq(controlResponseProxy));
     }
@@ -85,12 +85,10 @@ public class ListRecordingsSessionTest
             controlSession,
             descriptorBuffer);
 
-        session.doWork();
-        assertThat(session.isDone(), is(false));
-        when(controlSession.maxPayloadLength()).thenReturn(8096);
         final MutableLong counter = new MutableLong(fromId);
         when(controlSession.sendDescriptor(eq(correlationId), any(), eq(controlResponseProxy)))
             .then(verifySendDescriptor(counter));
+
         session.doWork();
         verify(controlSession, times(2)).sendDescriptor(eq(correlationId), any(), eq(controlResponseProxy));
     }
@@ -108,10 +106,6 @@ public class ListRecordingsSessionTest
             controlSession,
             descriptorBuffer);
 
-        session.doWork();
-        assertThat(session.isDone(), is(false));
-        when(controlSession.maxPayloadLength()).thenReturn(8096);
-
         when(controlSession.sendDescriptor(eq(correlationId), any(), eq(controlResponseProxy))).thenReturn(0);
         session.doWork();
         verify(controlSession, times(1)).sendDescriptor(eq(correlationId), any(), eq(controlResponseProxy));
@@ -119,6 +113,7 @@ public class ListRecordingsSessionTest
         final MutableLong counter = new MutableLong(fromRecordingId);
         when(controlSession.sendDescriptor(eq(correlationId), any(), eq(controlResponseProxy)))
             .then(verifySendDescriptor(counter));
+
         session.doWork();
         verify(controlSession, times(2)).sendDescriptor(eq(correlationId), any(), eq(controlResponseProxy));
     }
@@ -135,13 +130,12 @@ public class ListRecordingsSessionTest
             controlSession,
             descriptorBuffer);
 
-        session.doWork();
-        assertThat(session.isDone(), is(false));
-        when(controlSession.maxPayloadLength()).thenReturn(8096);
         final MutableLong counter = new MutableLong(1);
         when(controlSession.sendDescriptor(eq(correlationId), any(), eq(controlResponseProxy)))
             .then(verifySendDescriptor(counter));
+
         session.doWork();
+
         verify(controlSession, times(2)).sendDescriptor(eq(correlationId), any(), eq(controlResponseProxy));
         verify(controlSession).sendRecordingUnknown(eq(correlationId), eq(3L), eq(controlResponseProxy));
     }
@@ -149,8 +143,6 @@ public class ListRecordingsSessionTest
     @Test
     public void shouldSendRecordingUnknownOnFirst()
     {
-        when(controlSession.maxPayloadLength()).thenReturn(8096);
-
         final ListRecordingsSession session = new ListRecordingsSession(
             correlationId,
             3,
@@ -166,18 +158,23 @@ public class ListRecordingsSessionTest
         verify(controlSession).sendRecordingUnknown(eq(correlationId), eq(3L), eq(controlResponseProxy));
     }
 
-
     private Answer<Object> verifySendDescriptor(final MutableLong counter)
     {
         return (invocation) ->
         {
-            final UnsafeBuffer b = invocation.getArgument(1);
-            wrapDescriptorDecoder(recordingDescriptorDecoder, b);
+            final UnsafeBuffer buffer = invocation.getArgument(1);
+
+            recordingDescriptorDecoder.wrap(
+                buffer,
+                RecordingDescriptorHeaderDecoder.BLOCK_LENGTH,
+                RecordingDescriptorDecoder.BLOCK_LENGTH,
+                RecordingDescriptorDecoder.SCHEMA_VERSION);
+
             final int i = counter.intValue();
             assertThat(recordingDescriptorDecoder.recordingId(), is(recordingIds[i]));
             counter.set(i + 1);
-            return b.getInt(0);
+
+            return buffer.getInt(0);
         };
     }
-
 }

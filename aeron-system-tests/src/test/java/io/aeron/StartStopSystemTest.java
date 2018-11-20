@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,20 +20,22 @@ import org.junit.Test;
 
 public class StartStopSystemTest
 {
-    @Test(timeout = 10_000)
+    @Test
     public void shouldStartAndStopInstantly()
     {
-        final MediaDriver.Context driverCtx = new MediaDriver.Context();
-        try
-        {
-            final MediaDriver mediaDriver = MediaDriver.launchEmbedded(driverCtx);
+        final MediaDriver.Context driverCtx = new MediaDriver.Context()
+            .errorHandler(Throwable::printStackTrace);
 
+        try (MediaDriver ignore = MediaDriver.launchEmbedded(driverCtx))
+        {
             final Aeron.Context clientCtx = new Aeron.Context()
                 .aeronDirectoryName(driverCtx.aeronDirectoryName());
-            final Aeron aeron = Aeron.connect(clientCtx);
 
-            aeron.close();
-            mediaDriver.close();
+            //noinspection EmptyTryBlock
+            try (Aeron ignored = Aeron.connect(clientCtx))
+            {
+               // ignore
+            }
         }
         finally
         {

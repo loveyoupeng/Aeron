@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,16 +16,16 @@
 package io.aeron.driver.buffer;
 
 import io.aeron.logbuffer.LogBufferDescriptor;
+import org.agrona.ErrorHandler;
 import org.agrona.IoUtil;
 import org.agrona.LangUtil;
-import org.agrona.concurrent.errors.DistinctErrorLog;
 
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.*;
 
+import static io.aeron.CommonContext.IPC_MEDIA;
 import static io.aeron.driver.Configuration.LOW_FILE_STORE_WARNING_THRESHOLD;
-import static io.aeron.driver.buffer.FileMappingConvention.streamLocation;
 import static io.aeron.logbuffer.LogBufferDescriptor.TERM_MAX_LENGTH;
 
 /**
@@ -33,10 +33,12 @@ import static io.aeron.logbuffer.LogBufferDescriptor.TERM_MAX_LENGTH;
  */
 public class RawLogFactory
 {
+    private static final String PUBLICATIONS = "publications";
+    private static final String IMAGES = "images";
+
     private final int filePageSize;
-    private final boolean useSparseFiles;
     private final boolean checkStorage;
-    private final DistinctErrorLog errorLog;
+    private final ErrorHandler errorHandler;
     private final File publicationsDir;
     private final File imagesDir;
     private final FileStore fileStore;
@@ -44,28 +46,27 @@ public class RawLogFactory
     public RawLogFactory(
         final String dataDirectoryName,
         final int filePageSize,
-        final boolean useSparseFiles,
         final boolean checkStorage,
-        final DistinctErrorLog errorLog)
+        final ErrorHandler errorHandler)
     {
-        this.useSparseFiles = useSparseFiles;
         this.filePageSize = filePageSize;
         this.checkStorage = checkStorage;
-        this.errorLog = errorLog;
+        this.errorHandler = errorHandler;
 
-        final FileMappingConvention fileMappingConvention = new FileMappingConvention(dataDirectoryName);
-        publicationsDir = fileMappingConvention.publicationsDir();
-        imagesDir = fileMappingConvention.imagesDir();
+        final File dataDir = new File(dataDirectoryName);
 
-        IoUtil.ensureDirectoryExists(publicationsDir, FileMappingConvention.PUBLICATIONS);
-        IoUtil.ensureDirectoryExists(imagesDir, FileMappingConvention.IMAGES);
+        publicationsDir = new File(dataDir, PUBLICATIONS);
+        imagesDir = new File(dataDir, IMAGES);
+
+        IoUtil.ensureDirectoryExists(publicationsDir, PUBLICATIONS);
+        IoUtil.ensureDirectoryExists(imagesDir, IMAGES);
 
         FileStore fs = null;
         try
         {
             if (checkStorage)
             {
-                fs = Files.getFileStore(Paths.get(dataDirectoryName));
+                fs = Files.getFileStore(dataDir.toPath());
             }
         }
         catch (final IOException ex)
@@ -84,6 +85,7 @@ public class RawLogFactory
      * @param streamId         within the channel address to separate message flows.
      * @param correlationId    to use to distinguish this publication
      * @param termBufferLength length of each term
+     * @param useSparseFiles   for the log buffer.
      * @return the newly allocated {@link RawLog}
      */
     public RawLog newNetworkPublication(
@@ -91,9 +93,11 @@ public class RawLogFactory
         final int sessionId,
         final int streamId,
         final long correlationId,
-        final int termBufferLength)
+        final int termBufferLength,
+        final boolean useSparseFiles)
     {
-        return newInstance(publicationsDir, channel, sessionId, streamId, correlationId, termBufferLength);
+        return newInstance(
+            publicationsDir, channel, sessionId, streamId, correlationId, termBufferLength, useSparseFiles);
     }
 
     /**
@@ -104,6 +108,7 @@ public class RawLogFactory
      * @param streamId         within the channel address to separate message flows.
      * @param correlationId    to use to distinguish this connection
      * @param termBufferLength to use for the log buffer
+     * @param useSparseFiles   for the log buffer.
      * @return the newly allocated {@link RawLog}
      */
     public RawLog newNetworkedImage(
@@ -111,9 +116,10 @@ public class RawLogFactory
         final int sessionId,
         final int streamId,
         final long correlationId,
-        final int termBufferLength)
+        final int termBufferLength,
+        final boolean useSparseFiles)
     {
-        return newInstance(imagesDir, channel, sessionId, streamId, correlationId, termBufferLength);
+        return newInstance(imagesDir, channel, sessionId, streamId, correlationId, termBufferLength, useSparseFiles);
     }
 
     /**
@@ -123,12 +129,18 @@ public class RawLogFactory
      * @param streamId         within the IPC channel
      * @param correlationId    to use to distinguish this shared log
      * @param termBufferLength length of the each term
+     * @param useSparseFiles   for the log buffer.
      * @return the newly allocated {@link RawLog}
      */
     public RawLog newIpcPublication(
-        final int sessionId, final int streamId, final long correlationId, final int termBufferLength)
+        final int sessionId,
+        final int streamId,
+        final long correlationId,
+        final int termBufferLength,
+        final boolean useSparseFiles)
     {
-        return newInstance(publicationsDir, "ipc", sessionId, streamId, correlationId, termBufferLength);
+        return newInstance(
+            publicationsDir, IPC_MEDIA, sessionId, streamId, correlationId, termBufferLength, useSparseFiles);
     }
 
     private RawLog newInstance(
@@ -137,7 +149,8 @@ public class RawLogFactory
         final int sessionId,
         final int streamId,
         final long correlationId,
-        final int termBufferLength)
+        final int termBufferLength,
+        final boolean useSparseFiles)
     {
         validateTermBufferLength(termBufferLength);
 
@@ -148,7 +161,7 @@ public class RawLogFactory
 
         final File location = streamLocation(rootDir, channel, sessionId, streamId, correlationId);
 
-        return new MappedRawLog(location, useSparseFiles, termBufferLength, filePageSize, errorLog);
+        return new MappedRawLog(location, useSparseFiles, termBufferLength, filePageSize, errorHandler);
     }
 
     private void checkStorage(final int termBufferLength)
@@ -192,5 +205,20 @@ public class RawLogFactory
             throw new IllegalArgumentException(
                 "invalid buffer length: " + termBufferLength + " max is " + TERM_MAX_LENGTH);
         }
+    }
+
+    private static File streamLocation(
+        final File rootDir,
+        final String channel,
+        final int sessionId,
+        final int streamId,
+        final long correlationId)
+    {
+        final String fileName = channel + '-' +
+            Integer.toHexString(sessionId) + '-' +
+            Integer.toHexString(streamId) + '-' +
+            Long.toHexString(correlationId) + ".logbuffer";
+
+        return new File(rootDir, fileName);
     }
 }

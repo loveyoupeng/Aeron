@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,15 +22,12 @@ import io.aeron.logbuffer.FrameDescriptor;
 import io.aeron.logbuffer.Header;
 import io.aeron.protocol.DataHeaderFlyweight;
 import org.agrona.concurrent.UnsafeBuffer;
-import org.mockito.InOrder;
-import org.mockito.Mockito;
 
 import java.nio.ByteBuffer;
-import java.util.concurrent.locks.Lock;
 
-import static junit.framework.TestCase.assertTrue;
 import static org.hamcrest.Matchers.is;
 import static org.junit.Assert.assertThat;
+import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.*;
 
 public class SubscriptionTest
@@ -44,7 +41,6 @@ public class SubscriptionTest
     private static final int HEADER_LENGTH = DataHeaderFlyweight.HEADER_LENGTH;
 
     private final UnsafeBuffer atomicReadBuffer = new UnsafeBuffer(ByteBuffer.allocateDirect(READ_BUFFER_CAPACITY));
-    private final Lock conductorLock = mock(Lock.class);
     private final ClientConductor conductor = mock(ClientConductor.class);
     private final FragmentHandler fragmentHandler = mock(FragmentHandler.class);
     private final Image imageOneMock = mock(Image.class);
@@ -62,7 +58,6 @@ public class SubscriptionTest
         when(imageTwoMock.correlationId()).thenReturn(2L);
 
         when(header.flags()).thenReturn(FLAGS);
-        when(conductor.clientLock()).thenReturn(conductorLock);
 
         subscription = new Subscription(
             conductor,
@@ -71,6 +66,13 @@ public class SubscriptionTest
             SUBSCRIPTION_CORRELATION_ID,
             availableImageHandlerMock,
             unavailableImageHandlerMock);
+
+        doAnswer(
+            (invocation) ->
+            {
+                subscription.internalClose();
+                return null;
+            }).when(conductor).releaseSubscription(subscription);
     }
 
     @Test
@@ -79,10 +81,7 @@ public class SubscriptionTest
         subscription.close();
         assertTrue(subscription.isClosed());
 
-        final InOrder inOrder = Mockito.inOrder(conductorLock, conductor);
-        inOrder.verify(conductorLock).lock();
-        inOrder.verify(conductor).releaseSubscription(subscription);
-        inOrder.verify(conductorLock).unlock();
+        verify(conductor).releaseSubscription(subscription);
     }
 
     @Test

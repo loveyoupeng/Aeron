@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,9 +15,10 @@
  */
 package io.aeron;
 
+import io.aeron.exceptions.AeronException;
 import io.aeron.logbuffer.*;
+import io.aeron.status.ChannelEndpointStatus;
 import org.agrona.collections.ArrayUtil;
-import org.agrona.collections.LongHashSet;
 
 import java.util.*;
 import java.util.function.Consumer;
@@ -36,13 +37,12 @@ class SubscriptionFields extends SubscriptionLhsPadding
     protected int roundRobinIndex = 0;
     protected final int streamId;
     protected volatile boolean isClosed = false;
-
     protected volatile Image[] images = EMPTY_ARRAY;
-    protected final LongHashSet imageIdSet = new LongHashSet();
-    protected final ClientConductor clientConductor;
+    protected final ClientConductor conductor;
     protected final String channel;
     protected final AvailableImageHandler availableImageHandler;
     protected final UnavailableImageHandler unavailableImageHandler;
+    protected int channelStatusId = 0;
 
     protected SubscriptionFields(
         final long registrationId,
@@ -54,7 +54,7 @@ class SubscriptionFields extends SubscriptionLhsPadding
     {
         this.registrationId = registrationId;
         this.streamId = streamId;
-        this.clientConductor = clientConductor;
+        this.conductor = clientConductor;
         this.channel = channel;
         this.availableImageHandler = availableImageHandler;
         this.unavailableImageHandler = unavailableImageHandler;
@@ -94,7 +94,13 @@ public class Subscription extends SubscriptionFields implements AutoCloseable
         final AvailableImageHandler availableImageHandler,
         final UnavailableImageHandler unavailableImageHandler)
     {
-        super(registrationId, streamId, conductor, channel, availableImageHandler, unavailableImageHandler);
+        super(
+            registrationId,
+            streamId,
+            conductor,
+            channel,
+            availableImageHandler,
+            unavailableImageHandler);
     }
 
     /**
@@ -118,7 +124,7 @@ public class Subscription extends SubscriptionFields implements AutoCloseable
     }
 
     /**
-     * Return the registration id used to register this Publication with the media driver.
+     * Return the registration id used to register this Subscription with the media driver.
      *
      * @return registration id
      */
@@ -287,19 +293,27 @@ public class Subscription extends SubscriptionFields implements AutoCloseable
     }
 
     /**
-     * Is this subscription connected by having at least one publication {@link Image}.
+     * Is this subscription connected by having at least one open publication {@link Image}.
      *
-     * @return true if this subscription connected by having at least one publication {@link Image}.
+     * @return true if this subscription connected by having at least one open publication {@link Image}.
      */
     public boolean isConnected()
     {
-        return images.length > 0;
+        for (final Image image : images)
+        {
+            if (!image.isClosed())
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
-     * Has the subscription currently no images connected to it?
+     * Has this subscription currently no {@link Image}s?
      *
-     * @return he subscription currently no images connected to it?
+     * @return has subscription currently no {@link Image}s?
      */
     public boolean hasNoImages()
     {
@@ -307,9 +321,9 @@ public class Subscription extends SubscriptionFields implements AutoCloseable
     }
 
     /**
-     * Count of images connected to this subscription.
+     * Count of {@link Image}s associated to this subscription.
      *
-     * @return count of images connected to this subscription.
+     * @return count of {@link Image}s associated to this subscription.
      */
     public int imageCount()
     {
@@ -319,7 +333,7 @@ public class Subscription extends SubscriptionFields implements AutoCloseable
     /**
      * Return the {@link Image} associated with the given sessionId.
      *
-     * @param sessionId associated with the Image.
+     * @param sessionId associated with the {@link Image}.
      * @return Image associated with the given sessionId or null if no Image exist.
      */
     public Image imageBySessionId(final int sessionId)
@@ -339,7 +353,7 @@ public class Subscription extends SubscriptionFields implements AutoCloseable
     }
 
     /**
-     * Get the image at the given index from the images array.
+     * Get the {@link Image} at the given index from the images array.
      *
      * @param index in the array
      * @return image at given index
@@ -380,21 +394,9 @@ public class Subscription extends SubscriptionFields implements AutoCloseable
      */
     public void close()
     {
-        clientConductor.clientLock().lock();
-        try
+        if (!isClosed)
         {
-            if (!isClosed)
-            {
-                isClosed = true;
-
-                closeImages();
-
-                clientConductor.releaseSubscription(this);
-            }
-        }
-        finally
-        {
-            clientConductor.clientLock().unlock();
+            conductor.releaseSubscription(this);
         }
     }
 
@@ -408,33 +410,75 @@ public class Subscription extends SubscriptionFields implements AutoCloseable
         return isClosed;
     }
 
-    void forceClose()
+    /**
+     * Get the status of the media channel for this Subscription.
+     * <p>
+     * The status will be {@link io.aeron.status.ChannelEndpointStatus#ERRORED} if a socket exception occurs on setup
+     * and {@link io.aeron.status.ChannelEndpointStatus#ACTIVE} if all is well.
+     *
+     * @return status for the channel as one of the constants from {@link ChannelEndpointStatus} with it being
+     * {@link ChannelEndpointStatus#NO_ID_ALLOCATED} if the subscription is closed.
+     * @see io.aeron.status.ChannelEndpointStatus
+     */
+    public long channelStatus()
     {
-        isClosed = true;
+        if (isClosed)
+        {
+            return ChannelEndpointStatus.NO_ID_ALLOCATED;
+        }
 
-        closeImages();
-
-        clientConductor.asyncReleaseSubscription(this);
+        return conductor.channelStatus(channelStatusId);
     }
 
-    boolean containsImage(final long correlationId)
+    /**
+     * Add a destination manually to a multi-destination Subscription.
+     *
+     * @param endpointChannel for the destination to add
+     */
+    public void addDestination(final String endpointChannel)
     {
-        return imageIdSet.contains(correlationId);
+        if (isClosed)
+        {
+            throw new AeronException("Subscription is closed");
+        }
+
+        conductor.addRcvDestination(registrationId, endpointChannel);
+    }
+
+    /**
+     * Remove a previously added destination from a multi-destination Subscription.
+     *
+     * @param endpointChannel for the destination to remove
+     */
+    public void removeDestination(final String endpointChannel)
+    {
+        if (isClosed)
+        {
+            throw new AeronException("Subscription is closed");
+        }
+
+        conductor.removeRcvDestination(registrationId, endpointChannel);
+    }
+
+    void channelStatusId(final int id)
+    {
+        channelStatusId = id;
+    }
+
+    int channelStatusId()
+    {
+        return channelStatusId;
+    }
+
+    void internalClose()
+    {
+        isClosed = true;
+        closeImages();
     }
 
     void addImage(final Image image)
     {
-        if (isClosed)
-        {
-            clientConductor.releaseImage(image);
-        }
-        else
-        {
-            if (imageIdSet.add(image.correlationId()))
-            {
-                images = ArrayUtil.add(images, image);
-            }
-        }
+        images = ArrayUtil.add(images, image);
     }
 
     Image removeImage(final long correlationId)
@@ -442,22 +486,23 @@ public class Subscription extends SubscriptionFields implements AutoCloseable
         final Image[] oldArray = images;
         Image removedImage = null;
 
-        if (imageIdSet.remove(correlationId))
+        int i = 0;
+        for (final Image image : oldArray)
         {
-            int i = 0;
-            for (final Image image : oldArray)
+            if (image.correlationId() == correlationId)
             {
-                if (image.correlationId() == correlationId)
-                {
-                    removedImage = image;
-                    break;
-                }
-
-                i++;
+                image.close();
+                removedImage = image;
+                break;
             }
 
+            i++;
+        }
+
+        if (null != removedImage)
+        {
             images = ArrayUtil.remove(oldArray, i);
-            clientConductor.releaseImage(removedImage);
+            conductor.releaseLogBuffers(removedImage.logBuffers(), removedImage.correlationId());
         }
 
         return removedImage;
@@ -466,12 +511,16 @@ public class Subscription extends SubscriptionFields implements AutoCloseable
     private void closeImages()
     {
         final Image[] images = this.images;
-        imageIdSet.clear();
         this.images = EMPTY_ARRAY;
 
         for (final Image image : images)
         {
-            clientConductor.releaseImage(image);
+            image.close();
+        }
+
+        for (final Image image : images)
+        {
+            conductor.releaseLogBuffers(image.logBuffers(), image.correlationId());
 
             try
             {
@@ -482,7 +531,7 @@ public class Subscription extends SubscriptionFields implements AutoCloseable
             }
             catch (final Throwable ex)
             {
-                clientConductor.handleError(ex);
+                conductor.handleError(ex);
             }
         }
     }

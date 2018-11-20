@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 - 2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -49,6 +49,7 @@ int aeron_network_publication_create(
     int32_t initial_term_id,
     size_t mtu_length,
     aeron_position_t *pub_lmt_position,
+    aeron_position_t *pub_pos_position,
     aeron_position_t *snd_pos_position,
     aeron_position_t *snd_lmt_position,
     aeron_flow_control_strategy_t *flow_control_strategy,
@@ -67,6 +68,7 @@ int aeron_network_publication_create(
             session_id,
             stream_id,
             registration_id);
+
     aeron_network_publication_t *_pub = NULL;
     const uint64_t usable_fs_space = context->usable_fs_space_func(context->aeron_dir);
     const uint64_t log_length = aeron_logbuffer_compute_log_length(term_buffer_length, context->file_page_size);
@@ -161,6 +163,8 @@ int aeron_network_publication_create(
     _pub->stream_id = stream_id;
     _pub->pub_lmt_position.counter_id = pub_lmt_position->counter_id;
     _pub->pub_lmt_position.value_addr = pub_lmt_position->value_addr;
+    _pub->pub_pos_position.counter_id = pub_pos_position->counter_id;
+    _pub->pub_pos_position.value_addr = pub_pos_position->value_addr;
     _pub->snd_pos_position.counter_id = snd_pos_position->counter_id;
     _pub->snd_pos_position.value_addr = snd_pos_position->value_addr;
     _pub->snd_lmt_position.counter_id = snd_lmt_position->counter_id;
@@ -196,6 +200,7 @@ int aeron_network_publication_create(
         aeron_system_counter_addr(system_counters, AERON_SYSTEM_COUNTER_UNBLOCKED_PUBLICATIONS);
 
     *publication = _pub;
+
     return 0;
 }
 
@@ -206,6 +211,7 @@ void aeron_network_publication_close(aeron_counters_manager_t *counters_manager,
         aeron_subscribable_t *subscribable = &publication->conductor_fields.subscribable;
 
         aeron_counters_manager_free(counters_manager, (int32_t)publication->pub_lmt_position.counter_id);
+        aeron_counters_manager_free(counters_manager, (int32_t)publication->pub_pos_position.counter_id);
         aeron_counters_manager_free(counters_manager, (int32_t)publication->snd_pos_position.counter_id);
         aeron_counters_manager_free(counters_manager, (int32_t)publication->snd_lmt_position.counter_id);
 
@@ -218,7 +224,7 @@ void aeron_network_publication_close(aeron_counters_manager_t *counters_manager,
         publication->conductor_fields.managed_resource.clientd = NULL;
 
         aeron_retransmit_handler_close(&publication->retransmit_handler);
-        publication->map_raw_log_close_func(&publication->mapped_raw_log);
+        publication->map_raw_log_close_func(&publication->mapped_raw_log, publication->log_file_name);
         publication->flow_control->fini(publication->flow_control);
         aeron_free(publication->log_file_name);
     }
@@ -498,8 +504,7 @@ int aeron_network_publication_resend(void *clientd, int32_t term_id, int32_t ter
             size_t padding = 0;
             size_t max_length = remaining_bytes < publication->mtu_length ? remaining_bytes : publication->mtu_length;
 
-            size_t available =
-                aeron_term_scanner_scan_for_availability(ptr, term_length_left, max_length, &padding);
+            size_t available = aeron_term_scanner_scan_for_availability(ptr, term_length_left, max_length, &padding);
             if (available <= 0)
             {
                 break;
@@ -694,10 +699,10 @@ int aeron_network_publication_update_pub_lmt(aeron_network_publication_t *public
 }
 
 void aeron_network_publication_check_for_blocked_publisher(
-    aeron_network_publication_t *publication, int64_t now_ns, int64_t snd_pos)
+    aeron_network_publication_t *publication, int64_t now_ns, int64_t producer_position, int64_t snd_pos)
 {
     if (snd_pos == publication->conductor_fields.last_snd_pos &&
-        aeron_network_publication_is_possibly_blocked(publication, snd_pos))
+        aeron_network_publication_is_possibly_blocked(publication, producer_position, snd_pos))
     {
         if (now_ns > (publication->conductor_fields.time_of_last_activity_ns + publication->unblock_timeout_ns))
         {
@@ -793,20 +798,25 @@ void aeron_network_publication_on_time_event(
         AERON_PUT_ORDERED(publication->is_connected, current_connected_status);
     }
 
+    const int64_t producer_position = aeron_network_publication_producer_position(publication);
+
+    aeron_counter_set_ordered(publication->pub_pos_position.value_addr, producer_position);
+
     switch (publication->conductor_fields.status)
     {
         case AERON_NETWORK_PUBLICATION_STATUS_ACTIVE:
         {
-            aeron_network_publication_check_for_blocked_publisher(
-                publication, now_ns, aeron_counter_get_volatile(publication->snd_pos_position.value_addr));
-
+            if (!publication->is_exclusive)
+            {
+                aeron_network_publication_check_for_blocked_publisher(
+                    publication, now_ns, producer_position, aeron_counter_get_volatile(publication->snd_pos_position.value_addr));
+            }
             break;
         }
 
         case AERON_NETWORK_PUBLICATION_STATUS_DRAINING:
         {
             const int64_t sender_position = aeron_counter_get_volatile(publication->snd_pos_position.value_addr);
-            const int64_t producer_position = aeron_network_publication_producer_position(publication);
 
             if (producer_position > sender_position)
             {
@@ -814,7 +824,6 @@ void aeron_network_publication_on_time_event(
                     publication->mapped_raw_log.term_buffers, publication->log_meta_data, sender_position))
                 {
                     aeron_counter_ordered_increment(publication->unblocked_publications_counter, 1);
-                    publication->conductor_fields.time_of_last_activity_ns = now_ns;
                     break;
                 }
 
@@ -854,7 +863,7 @@ void aeron_network_publication_on_time_event(
 extern void aeron_network_publication_add_subscriber_hook(void *clientd, int64_t *value_addr);
 extern void aeron_network_publication_remove_subscriber_hook(void *clientd, int64_t *value_addr);
 extern bool aeron_network_publication_is_possibly_blocked(
-    aeron_network_publication_t *publication, int64_t consumer_position);
+    aeron_network_publication_t *publication, int64_t producer_position, int64_t consumer_position);
 extern int64_t aeron_network_publication_producer_position(aeron_network_publication_t *publication);
 extern int64_t aeron_network_publication_consumer_position(aeron_network_publication_t *publication);
 extern void aeron_network_publication_trigger_send_setup_frame(aeron_network_publication_t *publication);

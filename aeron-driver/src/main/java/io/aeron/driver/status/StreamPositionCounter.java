@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,6 +15,8 @@
  */
 package io.aeron.driver.status;
 
+import org.agrona.BitUtil;
+import org.agrona.MutableDirectBuffer;
 import org.agrona.concurrent.status.CountersManager;
 import org.agrona.concurrent.status.CountersReader;
 import org.agrona.concurrent.UnsafeBuffer;
@@ -22,17 +24,24 @@ import org.agrona.concurrent.status.UnsafeBufferPosition;
 
 import static org.agrona.BitUtil.SIZE_OF_INT;
 import static org.agrona.BitUtil.SIZE_OF_LONG;
+import static org.agrona.concurrent.status.CountersReader.MAX_LABEL_LENGTH;
 
 /**
- * Allocates {@link UnsafeBufferPosition} counters on a stream of messages. Positions tracked in bytes include:
+ * Allocates {@link UnsafeBufferPosition} counters on a stream of messages.
+ * <p>
+ * Positions tracked in bytes include:
  * <ul>
- * <li>{@link PublisherLimit}: Limit for flow controlling a {@link io.aeron.Publication} steam.</li>
+ * <li>{@link PublisherPos}: Highest position on a {@link io.aeron.Publication} reached for offers and claims as an approximation sampled once per second.</li>
+ * <li>{@link PublisherLimit}: Limit for flow controlling a {@link io.aeron.Publication} offers and claims.</li>
  * <li>{@link SenderPos}: Highest position on a {@link io.aeron.Publication} stream sent to the media.</li>
  * <li>{@link SenderLimit}: Limit for flow controlling a {@link io.aeron.driver.Sender} of a stream.</li>
  * <li>{@link ReceiverHwm}: Highest position observed by the Receiver when rebuilding an {@link io.aeron.Image} of a stream.</li>
- * <li>{@link ReceiverPos}: Highest position rebuilt by the Receiver when rebuilding an {@link io.aeron.Image} of a stream.</li>
- * <li>{@link SubscriberPos}: Consumption position in an {@link io.aeron.Image} of a stream for each Subscriber.</li>
+ * <li>{@link ReceiverPos}: Highest contiguous position rebuilt by the Receiver on an {@link io.aeron.Image} of a stream.</li>
+ * <li>{@link SubscriberPos}: Consumption position on an {@link io.aeron.Image} of a stream by individual Subscriber.</li>
  * </ul>
+ * <p>
+ * <b>Note:</b> All counters are real-time with the exception of {@link PublisherPos} which is sampled once per second
+ * which means it can appear to be behind.
  */
 public class StreamPositionCounter
 {
@@ -64,6 +73,7 @@ public class StreamPositionCounter
     /**
      * Allocate a counter for tracking a position on a stream of messages.
      *
+     * @param tempBuffer      to be used for labels and key.
      * @param name            of the counter for the label.
      * @param typeId          of the counter for classification.
      * @param countersManager from which to allocated the underlying storage.
@@ -74,6 +84,7 @@ public class StreamPositionCounter
      * @return a new {@link UnsafeBufferPosition} for tracking the stream.
      */
     public static UnsafeBufferPosition allocate(
+        final MutableDirectBuffer tempBuffer,
         final String name,
         final int typeId,
         final CountersManager countersManager,
@@ -82,12 +93,58 @@ public class StreamPositionCounter
         final int streamId,
         final String channel)
     {
-        return allocate(name, typeId, countersManager, registrationId, sessionId, streamId, channel, "");
+        return new UnsafeBufferPosition(
+            (UnsafeBuffer)countersManager.valuesBuffer(),
+            allocateCounterId(tempBuffer, name, typeId, countersManager, registrationId, sessionId, streamId, channel),
+            countersManager);
+    }
+
+    public static int allocateCounterId(
+        final MutableDirectBuffer tempBuffer,
+        final String name,
+        final int typeId,
+        final CountersManager countersManager,
+        final long registrationId,
+        final int sessionId,
+        final int streamId,
+        final String channel)
+    {
+        tempBuffer.putLong(REGISTRATION_ID_OFFSET, registrationId);
+        tempBuffer.putInt(SESSION_ID_OFFSET, sessionId);
+        tempBuffer.putInt(STREAM_ID_OFFSET, streamId);
+
+        final int channelLength = tempBuffer.putStringWithoutLengthAscii(
+            CHANNEL_OFFSET + SIZE_OF_INT, channel, 0, MAX_CHANNEL_LENGTH);
+        tempBuffer.putInt(CHANNEL_OFFSET, channelLength);
+        final int keyLength = CHANNEL_OFFSET + SIZE_OF_INT + channelLength;
+
+        final int labelOffset = BitUtil.align(keyLength, SIZE_OF_INT);
+        int labelLength = 0;
+        labelLength += tempBuffer.putStringWithoutLengthAscii(labelOffset + labelLength, name);
+        labelLength += tempBuffer.putStringWithoutLengthAscii(labelOffset + labelLength, ": ");
+        labelLength += tempBuffer.putLongAscii(labelOffset + labelLength, registrationId);
+        labelLength += tempBuffer.putStringWithoutLengthAscii(labelOffset + labelLength, " ");
+        labelLength += tempBuffer.putIntAscii(labelOffset + labelLength, sessionId);
+        labelLength += tempBuffer.putStringWithoutLengthAscii(labelOffset + labelLength, " ");
+        labelLength += tempBuffer.putIntAscii(labelOffset + labelLength, streamId);
+        labelLength += tempBuffer.putStringWithoutLengthAscii(labelOffset + labelLength, " ");
+        labelLength += tempBuffer.putStringWithoutLengthAscii(
+            labelOffset + labelLength, channel, 0, MAX_LABEL_LENGTH - labelLength);
+
+        return countersManager.allocate(
+            typeId,
+            tempBuffer,
+            0,
+            keyLength,
+            tempBuffer,
+            labelOffset,
+            labelLength);
     }
 
     /**
      * Allocate a counter for tracking a position on a stream of messages.
      *
+     * @param tempBuffer      to be used for labels and key.
      * @param name            of the counter for the label.
      * @param typeId          of the counter for classification.
      * @param countersManager from which to allocated the underlying storage.
@@ -95,10 +152,11 @@ public class StreamPositionCounter
      * @param sessionId       for the stream of messages.
      * @param streamId        for the stream of messages.
      * @param channel         for the stream of messages.
-     * @param suffix          for the label.
+     * @param joinPosition    for the label.
      * @return a new {@link UnsafeBufferPosition} for tracking the stream.
      */
     public static UnsafeBufferPosition allocate(
+        final MutableDirectBuffer tempBuffer,
         final String name,
         final int typeId,
         final CountersManager countersManager,
@@ -106,24 +164,44 @@ public class StreamPositionCounter
         final int sessionId,
         final int streamId,
         final String channel,
-        final String suffix)
+        final long joinPosition)
     {
-        final String label =
-            name + ": " + registrationId + ' ' + sessionId + ' ' + streamId + ' ' + channel + ' ' + suffix;
+        tempBuffer.putLong(REGISTRATION_ID_OFFSET, registrationId);
+        tempBuffer.putInt(SESSION_ID_OFFSET, sessionId);
+        tempBuffer.putInt(STREAM_ID_OFFSET, streamId);
+
+        final int channelLength = tempBuffer.putStringWithoutLengthAscii(
+            CHANNEL_OFFSET + SIZE_OF_INT, channel, 0, MAX_CHANNEL_LENGTH);
+        tempBuffer.putInt(CHANNEL_OFFSET, channelLength);
+        final int keyLength = CHANNEL_OFFSET + SIZE_OF_INT + channelLength;
+
+        final int labelOffset = BitUtil.align(keyLength, SIZE_OF_INT);
+        int labelLength = 0;
+        labelLength += tempBuffer.putStringWithoutLengthAscii(labelOffset + labelLength, name);
+        labelLength += tempBuffer.putStringWithoutLengthAscii(labelOffset + labelLength, ": ");
+        labelLength += tempBuffer.putLongAscii(labelOffset + labelLength, registrationId);
+        labelLength += tempBuffer.putStringWithoutLengthAscii(labelOffset + labelLength, " ");
+        labelLength += tempBuffer.putIntAscii(labelOffset + labelLength, sessionId);
+        labelLength += tempBuffer.putStringWithoutLengthAscii(labelOffset + labelLength, " ");
+        labelLength += tempBuffer.putIntAscii(labelOffset + labelLength, streamId);
+        labelLength += tempBuffer.putStringWithoutLengthAscii(labelOffset + labelLength, " ");
+        labelLength += tempBuffer.putStringWithoutLengthAscii(
+            labelOffset + labelLength, channel, 0, MAX_LABEL_LENGTH - labelLength);
+
+        if (labelLength < (MAX_LABEL_LENGTH - 20))
+        {
+            labelLength += tempBuffer.putStringWithoutLengthAscii(labelOffset + labelLength, " @");
+            labelLength += tempBuffer.putLongAscii(labelOffset + labelLength, joinPosition);
+        }
 
         final int counterId = countersManager.allocate(
-            label,
             typeId,
-            (buffer) ->
-            {
-                buffer.putLong(REGISTRATION_ID_OFFSET, registrationId);
-                buffer.putInt(SESSION_ID_OFFSET, sessionId);
-                buffer.putInt(STREAM_ID_OFFSET, streamId);
-                buffer.putStringAscii(
-                    CHANNEL_OFFSET,
-                    channel.length() > MAX_CHANNEL_LENGTH ? channel.substring(0, MAX_CHANNEL_LENGTH) : channel);
-            }
-        );
+            tempBuffer,
+            0,
+            keyLength,
+            tempBuffer,
+            labelOffset,
+            labelLength);
 
         return new UnsafeBufferPosition((UnsafeBuffer)countersManager.valuesBuffer(), counterId, countersManager);
     }
@@ -144,9 +222,6 @@ public class StreamPositionCounter
             case SenderPos.SENDER_POSITION_TYPE_ID:
                 return SenderPos.NAME;
 
-            case SenderLimit.SENDER_LIMIT_TYPE_ID:
-                return SenderLimit.NAME;
-
             case ReceiverHwm.RECEIVER_HWM_TYPE_ID:
                 return ReceiverHwm.NAME;
 
@@ -155,6 +230,12 @@ public class StreamPositionCounter
 
             case ReceiverPos.RECEIVER_POS_TYPE_ID:
                 return ReceiverPos.NAME;
+
+            case SenderLimit.SENDER_LIMIT_TYPE_ID:
+                return SenderLimit.NAME;
+
+            case PublisherPos.PUBLISHER_POS_TYPE_ID:
+                return PublisherPos.NAME;
 
             default:
                 return "<unknown>";

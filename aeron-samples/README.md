@@ -3,7 +3,7 @@
 Here you will find a collection of samples and tools for Aeron. The build process builds a complete
 jar of the samples and places it in this location
 
-     aeron-samples/build/libs/samples.jar
+     aeron-samples/build/libs/aeron-samples-<version>.jar
 
 Each of the Samples can be run with a simple script that can be found in:
 
@@ -11,8 +11,8 @@ Each of the Samples can be run with a simple script that can be found in:
 
 Before running any of the samples below the media driver needs to be launched by running one of:
 
-    aeron-samples/scripts/media-driver
-    aeron-samples/scripts/low-latency-media-driver
+    aeron-samples/scripts/media-driver <optional properties file>
+    aeron-samples/scripts/low-latency-media-driver <optional properties file>
     
 Here is a brief list of the samples and what each tries to do:
 
@@ -27,7 +27,7 @@ Here is a brief list of monitoring and diagnostic tools:
 
 - __AeronStat__: Monitoring tool that prints the labels and values of the counters in use by a media driver.
 - __ErrorStat__: Monitoring tool that prints the distinct errors observed by the media driver.
-- __LossStat__: Monitoring tool that prints a report of loss recorded buy stream.
+- __LossStat__: Monitoring tool that prints a report of loss recorded by stream.
 - __LogInspector__: Diagnostic tool that prints out the contents of a log buffer for a given stream for debugging.
 
 Also included is some performance tests that can run all in the same process for convenience without a media driver,

@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,9 +18,7 @@ package io.aeron.samples;
 import java.util.concurrent.locks.LockSupport;
 
 /**
- * Tracker and reporter of rates.
- * <p>
- * Uses volatile semantics for counters.
+ * Tracker and reporter of throughput rates.
  */
 public class RateReporter implements Runnable
 {
@@ -80,8 +78,9 @@ public class RateReporter implements Runnable
 
             final long timeSpanNs = currentTimestamp - lastTimestamp;
             final double messagesPerSec =
-                ((currentTotalMessages - lastTotalMessages) * reportIntervalNs) / (double)timeSpanNs;
-            final double bytesPerSec = ((currentTotalBytes - lastTotalBytes) * reportIntervalNs) / (double)timeSpanNs;
+                ((currentTotalMessages - lastTotalMessages) * (double)reportIntervalNs) / (double)timeSpanNs;
+            final double bytesPerSec =
+                ((currentTotalBytes - lastTotalBytes) * (double)reportIntervalNs) / (double)timeSpanNs;
 
             reportingFunc.onReport(messagesPerSec, bytesPerSec, currentTotalMessages, currentTotalBytes);
 
@@ -101,7 +100,7 @@ public class RateReporter implements Runnable
     }
 
     /**
-     * Tell rate reporter of number of messages and bytes received, sent, etc.
+     * Notify rate reporter of number of messages and bytes received, sent, etc.
      *
      * @param messages received, sent, etc.
      * @param bytes    received, sent, etc.

@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -34,7 +34,7 @@ import org.agrona.concurrent.UnsafeBuffer;
 import org.agrona.console.ContinueBarrier;
 
 /**
- * Publisher that sends as fast as possible a given number of messages at a given length.
+ * Publisher that sends a given number of messages at a given length as fast as possible.
  */
 public class StreamingPublisher
 {
@@ -56,7 +56,7 @@ public class StreamingPublisher
     {
         if (MESSAGE_LENGTH < SIZE_OF_LONG)
         {
-            throw new IllegalArgumentException(String.format("Message length must be at least %d bytes", SIZE_OF_LONG));
+            throw new IllegalArgumentException("Message length must be at least " + SIZE_OF_LONG + " bytes");
         }
 
         final MediaDriver driver = EMBEDDED_MEDIA_DRIVER ? MediaDriver.launchEmbedded() : null;
@@ -76,7 +76,7 @@ public class StreamingPublisher
         // The Aeron and Publication classes implement AutoCloseable, and will automatically
         // clean up resources when this try block is finished.
         try (Aeron aeron = Aeron.connect(context);
-             Publication publication = aeron.addPublication(CHANNEL, STREAM_ID))
+            Publication publication = aeron.addPublication(CHANNEL, STREAM_ID))
         {
             final ContinueBarrier barrier = new ContinueBarrier("Execute again?");
 

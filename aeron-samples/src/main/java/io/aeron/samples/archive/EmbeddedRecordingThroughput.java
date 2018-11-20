@@ -1,5 +1,5 @@
 /*
- *  Copyright 2017 Real Logic Ltd.
+ *  Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -40,6 +40,9 @@ import static io.aeron.samples.archive.TestUtil.MEGABYTE;
 import static org.agrona.BufferUtil.allocateDirectAligned;
 import static org.agrona.SystemUtil.loadPropertiesFiles;
 
+/**
+ * Tests the throughput when recording a stream of messages.
+ */
 public class EmbeddedRecordingThroughput implements AutoCloseable, RecordingEventsListener
 {
     private static final long NUMBER_OF_MESSAGES = SampleConfiguration.NUMBER_OF_MESSAGES;
@@ -80,13 +83,15 @@ public class EmbeddedRecordingThroughput implements AutoCloseable, RecordingEven
     public EmbeddedRecordingThroughput()
     {
         final String archiveDirName = Archive.Configuration.archiveDirName();
-        final File archiveDir =  ARCHIVE_DIR_DEFAULT.equals(archiveDirName) ?
+        final File archiveDir = ARCHIVE_DIR_DEFAULT.equals(archiveDirName) ?
             TestUtil.createTempDir() : new File(archiveDirName);
 
         archivingMediaDriver = ArchivingMediaDriver.launch(
             new MediaDriver.Context()
+                .spiesSimulateConnection(true)
                 .dirDeleteOnStart(true),
             new Archive.Context()
+                .deleteArchiveOnStart(true)
                 .archiveDir(archiveDir));
 
         aeron = Aeron.connect();
@@ -103,6 +108,7 @@ public class EmbeddedRecordingThroughput implements AutoCloseable, RecordingEven
     public void close()
     {
         CloseHelper.close(aeronArchive);
+        CloseHelper.close(aeron);
         CloseHelper.close(archivingMediaDriver);
 
         archivingMediaDriver.archive().context().deleteArchiveDirectory();
@@ -130,7 +136,10 @@ public class EmbeddedRecordingThroughput implements AutoCloseable, RecordingEven
             final double recordingMb = recordingLength / MEGABYTE;
             final long msgRate = (NUMBER_OF_MESSAGES / durationMs) * 1000L;
 
-            System.out.printf("Recorded %.02f MB @ %.02f MB/s - %,d msg/sec%n", recordingMb, dataRate, msgRate);
+            System.out.printf(
+                "Recorded %.02f MB @ %.02f MB/s - %,d msg/sec - %d byte payload + 32 byte header%n",
+                recordingMb, dataRate, msgRate, MESSAGE_LENGTH);
+
             isRecording = false;
         }
     }

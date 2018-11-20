@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -25,7 +25,9 @@ public class DefaultUnicastFlowControlSupplier implements FlowControlSupplier
         FlowControl flowControl = null;
         try
         {
-            flowControl = (FlowControl)Class.forName(Configuration.UNICAST_FLOW_CONTROL_STRATEGY).newInstance();
+            flowControl = (FlowControl)Class.forName(Configuration.UNICAST_FLOW_CONTROL_STRATEGY)
+                .getConstructor()
+                .newInstance();
         }
         catch (final Exception ex)
         {

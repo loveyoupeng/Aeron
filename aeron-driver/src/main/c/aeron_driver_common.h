@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 - 2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,6 +22,7 @@
 #include <stdbool.h>
 
 #define AERON_MAX_PATH (256)
+#define AERON_CHANNEL_STATUS_INDICATOR_NOT_ALLOCATED (-1)
 
 typedef void (*aeron_idle_strategy_func_t)(void *, int);
 typedef int (*aeron_idle_strategy_init_func_t)(void **);

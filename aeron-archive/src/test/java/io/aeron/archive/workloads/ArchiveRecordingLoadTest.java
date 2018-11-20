@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 - 2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -25,14 +25,17 @@ import io.aeron.archive.client.RecordingEventsAdapter;
 import io.aeron.archive.codecs.SourceLocation;
 import io.aeron.driver.MediaDriver;
 import io.aeron.driver.ThreadingMode;
+import io.aeron.driver.status.SystemCounterDescriptor;
 import io.aeron.logbuffer.FrameDescriptor;
+import io.aeron.logbuffer.LogBufferDescriptor;
 import io.aeron.protocol.DataHeaderFlyweight;
 import org.agrona.CloseHelper;
+import org.agrona.IoUtil;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.junit.*;
 import org.junit.rules.TestWatcher;
 
-import java.io.IOException;
+import java.io.File;
 import java.util.Random;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.LockSupport;
@@ -40,7 +43,6 @@ import java.util.function.BooleanSupplier;
 
 import static io.aeron.archive.TestUtil.*;
 import static io.aeron.logbuffer.LogBufferDescriptor.computeTermIdFromPosition;
-import static io.aeron.logbuffer.LogBufferDescriptor.computeTermOffsetFromPosition;
 import static org.agrona.BufferUtil.allocateDirectAligned;
 import static org.hamcrest.core.Is.is;
 import static org.junit.Assert.assertThat;
@@ -85,24 +87,24 @@ public class ArchiveRecordingLoadTest
     private BooleanSupplier recordingEnded;
 
     @Before
-    public void before() throws Exception
+    public void before()
     {
         rnd.setSeed(seed);
 
         driver = MediaDriver.launch(
             new MediaDriver.Context()
                 .threadingMode(ThreadingMode.DEDICATED)
-                .useConcurrentCountersManager(true)
                 .spiesSimulateConnection(true)
                 .errorHandler(Throwable::printStackTrace)
                 .dirDeleteOnStart(true));
 
         archive = Archive.launch(
             new Archive.Context()
-                .fileSyncLevel(2)
-                .archiveDir(TestUtil.makeTempDir())
+                .fileSyncLevel(0)
+                .deleteArchiveOnStart(true)
+                .archiveDir(new File(IoUtil.tmpDirName(), "archive-test"))
                 .threadingMode(ArchiveThreadingMode.SHARED)
-                .countersManager(driver.context().countersManager())
+                .errorCounter(driver.context().systemCounters().get(SystemCounterDescriptor.ERRORS))
                 .errorHandler(driver.context().errorHandler()));
 
         aeron = Aeron.connect();
@@ -111,25 +113,26 @@ public class ArchiveRecordingLoadTest
             new AeronArchive.Context()
                 .controlResponseChannel(CONTROL_RESPONSE_URI)
                 .controlResponseStreamId(CONTROL_RESPONSE_STREAM_ID)
-                .aeron(aeron));
+                .aeron(aeron)
+                .ownsAeronClient(true));
     }
 
     @After
-    public void after() throws Exception
+    public void after()
     {
-        CloseHelper.quietClose(aeronArchive);
-        CloseHelper.quietClose(archive);
-        CloseHelper.quietClose(driver);
+        CloseHelper.close(aeronArchive);
+        CloseHelper.close(archive);
+        CloseHelper.close(driver);
 
         archive.context().deleteArchiveDirectory();
         driver.context().deleteAeronDirectory();
     }
 
     @Test
-    public void archive() throws IOException, InterruptedException
+    public void archive() throws InterruptedException
     {
         try (Subscription recordingEvents = aeron.addSubscription(
-                archive.context().recordingEventsChannel(), archive.context().recordingEventsStreamId()))
+            archive.context().recordingEventsChannel(), archive.context().recordingEventsStreamId()))
         {
             initRecordingStartIndicator(recordingEvents);
             initRecordingEndIndicator(recordingEvents);
@@ -248,21 +251,21 @@ public class ArchiveRecordingLoadTest
 
         printf("Sending %d messages, total length=%d %n", MESSAGE_COUNT, totalDataLength);
 
-        publishDataToBeRecorded(publication, MESSAGE_COUNT);
+        publishDataToBeRecorded(publication);
     }
 
-    private void publishDataToBeRecorded(final ExclusivePublication publication, final int messageCount)
+    private void publishDataToBeRecorded(final ExclusivePublication publication)
     {
         buffer.setMemory(0, 1024, (byte)'z');
 
         final int termLength = publication.termBufferLength();
-        final int positionBitsToShift = Integer.numberOfTrailingZeros(termLength);
+        final int positionBitsToShift = LogBufferDescriptor.positionBitsToShift(termLength);
         final int initialTermId = publication.initialTermId();
         final long startPosition = publication.position();
-        final int startTermOffset = computeTermOffsetFromPosition(startPosition, positionBitsToShift);
+        final int startTermOffset = (int)startPosition & (termLength - 1);
         final int startTermId = computeTermIdFromPosition(startPosition, positionBitsToShift, initialTermId);
 
-        for (int i = 0; i < messageCount; i++)
+        for (int i = 0; i < MESSAGE_COUNT; i++)
         {
             final int dataLength = messageLengths[i] - DataHeaderFlyweight.HEADER_LENGTH;
             buffer.putInt(0, i);
@@ -270,7 +273,7 @@ public class ArchiveRecordingLoadTest
         }
 
         final long position = publication.position();
-        final int lastTermOffset = computeTermOffsetFromPosition(position, positionBitsToShift);
+        final int lastTermOffset = (int)position & (termLength - 1);
         final int lastTermId = computeTermIdFromPosition(position, positionBitsToShift, initialTermId);
         expectedRecordingLength = ((lastTermId - startTermId) * (long)termLength) + (lastTermOffset - startTermOffset);
 
@@ -281,7 +284,7 @@ public class ArchiveRecordingLoadTest
     {
         if (publication.offer(buffer, 0, length) < 0)
         {
-            final long deadlineNs = System.currentTimeMillis() + TestUtil.TIMEOUT_MS;
+            final long deadlineNs = System.nanoTime() + TestUtil.TIMEOUT_NS;
             slowOffer(publication, buffer, length, deadlineNs);
         }
     }
@@ -312,8 +315,8 @@ public class ArchiveRecordingLoadTest
 
         while (publication.offer(buffer, 0, length) < 0)
         {
-            LockSupport.parkNanos(TIMEOUT_MS);
-            if (System.currentTimeMillis() > deadlineNs)
+            LockSupport.parkNanos(1000);
+            if (System.nanoTime() > deadlineNs)
             {
                 fail("Offer has timed out");
             }

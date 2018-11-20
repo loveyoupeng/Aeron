@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 - 2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -39,12 +39,15 @@ int aeron_distinct_error_log_init(
 {
     if (NULL == log || NULL == clock || NULL == linger)
     {
-        aeron_set_err(EINVAL, "%s", "invalid argument");
+        aeron_set_err(EINVAL, "%s:%d: %s", __FILE__, __LINE__, strerror(EINVAL));
         return -1;
     }
 
     if (aeron_alloc((void **)&log->observation_list, sizeof(aeron_distinct_error_log_observation_list_t)) < 0)
     {
+        int errcode = errno;
+
+        aeron_set_err(errcode, "%s:%d: %s", __FILE__, __LINE__, strerror(errcode));
         return -1;
     }
 
@@ -141,7 +144,11 @@ static aeron_distinct_observation_t *aeron_distinct_error_log_new_observation(
         strncpy(new_description, description, description_length + 1);
         new_array[0].description_length = description_length;
         new_array[0].offset = offset;
-        memcpy(&new_array[1], observations, sizeof(aeron_distinct_observation_t) * num_observations);
+
+        if (num_observations != 0)
+        {
+            memcpy(&new_array[1], observations, sizeof(aeron_distinct_observation_t) * num_observations);
+        }
 
         aeron_distinct_error_log_observation_list_store(log, new_list);
 

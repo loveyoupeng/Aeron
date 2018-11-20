@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -31,7 +31,8 @@ import org.agrona.concurrent.SigInt;
 /**
  * Pong component of Ping-Pong.
  * <p>
- * Echoes back messages
+ * Echoes back messages from {@link Ping}.
+ * @see Ping
  */
 public class Pong
 {
@@ -44,7 +45,7 @@ public class Pong
     private static final String PONG_CHANNEL = SampleConfiguration.PONG_CHANNEL;
     private static final IdleStrategy PING_HANDLER_IDLE_STRATEGY = new BusySpinIdleStrategy();
 
-    public static void main(final String[] args) throws Exception
+    public static void main(final String[] args)
     {
         final MediaDriver driver = EMBEDDED_MEDIA_DRIVER ? MediaDriver.launchEmbedded() : null;
 
@@ -69,8 +70,8 @@ public class Pong
         SigInt.register(() -> running.set(false));
 
         try (Aeron aeron = Aeron.connect(ctx);
-             Publication pongPublication = aeron.addPublication(PONG_CHANNEL, PONG_STREAM_ID);
-             Subscription pingSubscription = aeron.addSubscription(PING_CHANNEL, PING_STREAM_ID))
+            Publication pongPublication = aeron.addPublication(PONG_CHANNEL, PONG_STREAM_ID);
+            Subscription pingSubscription = aeron.addSubscription(PING_CHANNEL, PING_STREAM_ID))
         {
             final FragmentAssembler dataHandler = new FragmentAssembler(
                 (buffer, offset, length, header) -> pingHandler(pongPublication, buffer, offset, length));

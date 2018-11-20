@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,7 +19,7 @@ import io.aeron.Aeron;
 import io.aeron.CommonContext;
 import io.aeron.Image;
 import io.aeron.Publication;
-import io.aeron.driver.exceptions.ConfigurationException;
+import io.aeron.exceptions.ConfigurationException;
 import io.aeron.driver.media.ReceiveChannelEndpoint;
 import io.aeron.driver.media.SendChannelEndpoint;
 import io.aeron.logbuffer.FrameDescriptor;
@@ -43,9 +43,9 @@ import static io.aeron.driver.ThreadingMode.DEDICATED;
 import static io.aeron.logbuffer.LogBufferDescriptor.PAGE_MAX_SIZE;
 import static io.aeron.logbuffer.LogBufferDescriptor.PAGE_MIN_SIZE;
 import static java.lang.Integer.getInteger;
-import static java.lang.Long.getLong;
 import static java.lang.System.getProperty;
 import static org.agrona.BitUtil.fromHex;
+import static org.agrona.SystemUtil.*;
 
 /**
  * Configuration options for the {@link MediaDriver}.
@@ -114,8 +114,7 @@ public class Configuration
     /**
      * Page size for alignment of all files.
      */
-    public static final int FILE_PAGE_SIZE =
-            getSize(FILE_PAGE_SIZE_PROP_NAME, FILE_PAGE_SIZE_DEFAULT);
+    public static final int FILE_PAGE_SIZE = getSizeAsInt(FILE_PAGE_SIZE_PROP_NAME, FILE_PAGE_SIZE_DEFAULT);
 
     /**
      * Property name for boolean value for if storage checks should be performed when allocating files.
@@ -151,7 +150,7 @@ public class Configuration
     /**
      * IPC Term buffer length in bytes.
      */
-    public static final int IPC_TERM_BUFFER_LENGTH = getSize(
+    public static final int IPC_TERM_BUFFER_LENGTH = getSizeAsInt(
         IPC_TERM_BUFFER_LENGTH_PROP_NAME, TERM_BUFFER_IPC_LENGTH_DEFAULT);
 
     /**
@@ -167,8 +166,8 @@ public class Configuration
     /**
      * Default value for low file storage warning threshold.
      */
-    public static final long LOW_FILE_STORE_WARNING_THRESHOLD =
-            getSize(LOW_FILE_STORE_WARNING_THRESHOLD_PROP_NAME, LOW_FILE_STORE_WARNING_THRESHOLD_DEFAULT);
+    public static final long LOW_FILE_STORE_WARNING_THRESHOLD = getSizeAsLong(
+        LOW_FILE_STORE_WARNING_THRESHOLD_PROP_NAME, LOW_FILE_STORE_WARNING_THRESHOLD_DEFAULT);
 
     /**
      * Length (in bytes) of the conductor buffer for control commands from the clients to the media driver conductor.
@@ -183,7 +182,7 @@ public class Configuration
     /**
      * Conductor buffer length in bytes.
      */
-    public static final int CONDUCTOR_BUFFER_LENGTH = getSize(
+    public static final int CONDUCTOR_BUFFER_LENGTH = getSizeAsInt(
         CONDUCTOR_BUFFER_LENGTH_PROP_NAME, CONDUCTOR_BUFFER_LENGTH_DEFAULT);
 
     /**
@@ -199,7 +198,7 @@ public class Configuration
     /**
      * Length for broadcast buffers from the media driver and the clients.
      */
-    public static final int TO_CLIENTS_BUFFER_LENGTH = getSize(
+    public static final int TO_CLIENTS_BUFFER_LENGTH = getSizeAsInt(
         TO_CLIENTS_BUFFER_LENGTH_PROP_NAME, TO_CLIENTS_BUFFER_LENGTH_DEFAULT);
 
     /**
@@ -215,7 +214,7 @@ public class Configuration
     /**
      * Length of the memory mapped buffers for the system counters file.
      */
-    public static final int COUNTERS_VALUES_BUFFER_LENGTH = getSize(
+    public static final int COUNTERS_VALUES_BUFFER_LENGTH = getSizeAsInt(
         COUNTERS_VALUES_BUFFER_LENGTH_PROP_NAME, COUNTERS_VALUES_BUFFER_LENGTH_DEFAULT);
 
     public static final int COUNTERS_METADATA_BUFFER_LENGTH =
@@ -234,7 +233,7 @@ public class Configuration
     /**
      * Buffer length for the error buffer for the media driver.
      */
-    public static final int ERROR_BUFFER_LENGTH = getSize(
+    public static final int ERROR_BUFFER_LENGTH = getSizeAsInt(
         ERROR_BUFFER_LENGTH_PROP_NAME, ERROR_BUFFER_LENGTH_DEFAULT);
     /**
      * Property name for length of the memory mapped buffer for the loss report buffer.
@@ -249,7 +248,7 @@ public class Configuration
     /**
      * Buffer length for the loss report buffer for the media driver.
      */
-    public static final int LOSS_REPORT_BUFFER_LENGTH = getSize(
+    public static final int LOSS_REPORT_BUFFER_LENGTH = getSizeAsInt(
         LOSS_REPORT_BUFFER_LENGTH_PROP_NAME, LOSS_REPORT_BUFFER_LENGTH_DEFAULT);
 
     /**
@@ -289,7 +288,7 @@ public class Configuration
     /**
      * The ratio for sending data to polling status messages in the Sender.
      */
-    public static final int SEND_TO_STATUS_POLL_RATIO_DEFAULT = 4;
+    public static final int SEND_TO_STATUS_POLL_RATIO_DEFAULT = 6;
 
     /**
      * Property name for SO_RCVBUF setting on UDP sockets which must be sufficient for Bandwidth Delay Produce (BDP).
@@ -304,7 +303,7 @@ public class Configuration
     /**
      * SO_RCVBUF length, 0 means use OS default.
      */
-    public static final int SOCKET_RCVBUF_LENGTH = getSize(
+    public static final int SOCKET_RCVBUF_LENGTH = getSizeAsInt(
         SOCKET_RCVBUF_LENGTH_PROP_NAME, SOCKET_RCVBUF_LENGTH_DEFAULT);
 
     /**
@@ -320,7 +319,7 @@ public class Configuration
     /**
      * SO_SNDBUF length, 0 means use OS default.
      */
-    public static final int SOCKET_SNDBUF_LENGTH = getSize(
+    public static final int SOCKET_SNDBUF_LENGTH = getSizeAsInt(
         SOCKET_SNDBUF_LENGTH_PROP_NAME, SOCKET_SNDBUF_LENGTH_DEFAULT);
 
     /**
@@ -340,7 +339,7 @@ public class Configuration
         SOCKET_MULTICAST_TTL_PROP_NAME, SOCKET_MULTICAST_TTL_DEFAULT);
 
     /**
-     * Property name for linger timeout on {@link Publication}s.
+     * Property name for linger timeout after draining on {@link Publication}s.
      */
     public static final String PUBLICATION_LINGER_PROP_NAME = "aeron.publication.linger.timeout";
 
@@ -350,9 +349,10 @@ public class Configuration
     public static final long PUBLICATION_LINGER_DEFAULT_NS = TimeUnit.SECONDS.toNanos(5);
 
     /**
-     * Time for {@link Publication}s to linger before cleanup in nanoseconds.
+     * Time for {@link Publication}s to linger before cleanup in nanoseconds. This is the time a publication will
+     * wait around after draining to the network so that tail loss can be recovered.
      */
-    public static final long PUBLICATION_LINGER_NS = getLong(
+    public static final long PUBLICATION_LINGER_NS = getDurationInNanos(
         PUBLICATION_LINGER_PROP_NAME, PUBLICATION_LINGER_DEFAULT_NS);
 
     /**
@@ -368,7 +368,7 @@ public class Configuration
     /**
      * Timeout for client liveness in nanoseconds.
      */
-    public static final long CLIENT_LIVENESS_TIMEOUT_NS = getLong(
+    public static final long CLIENT_LIVENESS_TIMEOUT_NS = getDurationInNanos(
         CLIENT_LIVENESS_TIMEOUT_PROP_NAME, CLIENT_LIVENESS_TIMEOUT_DEFAULT_NS);
 
     /**
@@ -384,7 +384,7 @@ public class Configuration
     /**
      * Timeout for {@link Image} liveness in nanoseconds.
      */
-    public static final long IMAGE_LIVENESS_TIMEOUT_NS = getLong(
+    public static final long IMAGE_LIVENESS_TIMEOUT_NS = getDurationInNanos(
         IMAGE_LIVENESS_TIMEOUT_PROP_NAME, IMAGE_LIVENESS_TIMEOUT_DEFAULT_NS);
 
     /**
@@ -395,7 +395,7 @@ public class Configuration
     /**
      * Publication term window length for flow control in bytes.
      */
-    public static final int PUBLICATION_TERM_WINDOW_LENGTH = getInteger(PUBLICATION_TERM_WINDOW_LENGTH_PROP_NAME, 0);
+    public static final int PUBLICATION_TERM_WINDOW_LENGTH = getSizeAsInt(PUBLICATION_TERM_WINDOW_LENGTH_PROP_NAME, 0);
 
     /**
      * Property name for window limit for IPC publications.
@@ -406,7 +406,7 @@ public class Configuration
     /**
      * IPC Publication term window length for flow control in bytes.
      */
-    public static final int IPC_PUBLICATION_TERM_WINDOW_LENGTH = getSize(
+    public static final int IPC_PUBLICATION_TERM_WINDOW_LENGTH = getSizeAsInt(
         IPC_PUBLICATION_TERM_WINDOW_LENGTH_PROP_NAME, 0);
 
     /**
@@ -422,7 +422,7 @@ public class Configuration
     /**
      * Publication timeout for when to unblock a partially written message.
      */
-    public static final long PUBLICATION_UNBLOCK_TIMEOUT_NS = getLong(
+    public static final long PUBLICATION_UNBLOCK_TIMEOUT_NS = getDurationInNanos(
         PUBLICATION_UNBLOCK_TIMEOUT_PROP_NAME, PUBLICATION_UNBLOCK_TIMEOUT_DEFAULT_NS);
 
     /**
@@ -438,7 +438,7 @@ public class Configuration
     /**
      * Publication timeout for when to indicate no connection from lack of status messages.
      */
-    public static final long PUBLICATION_CONNECTION_TIMEOUT_NS = getLong(
+    public static final long PUBLICATION_CONNECTION_TIMEOUT_NS = getDurationInNanos(
         PUBLICATION_CONNECTION_TIMEOUT_PROP_NAME, PUBLICATION_CONNECTION_TIMEOUT_DEFAULT_NS);
 
     /**
@@ -454,10 +454,27 @@ public class Configuration
 
     private static final String DEFAULT_IDLE_STRATEGY = "org.agrona.concurrent.BackoffIdleStrategy";
 
-    static final long AGENT_IDLE_MAX_SPINS = 100;
-    static final long AGENT_IDLE_MAX_YIELDS = 100;
-    static final long AGENT_IDLE_MIN_PARK_NS = 1;
-    static final long AGENT_IDLE_MAX_PARK_NS = TimeUnit.MICROSECONDS.toNanos(100);
+    /**
+     * Spin on no activity before backing off to yielding.
+     */
+    public static final long IDLE_MAX_SPINS = 10;
+
+    /**
+     * Yield the thread so others can run before backing off to parking.
+     */
+    public static final long IDLE_MAX_YIELDS = 20;
+
+    /**
+     * Park for the minimum period of time which is typically 50-55 microseconds on 64-bit non-virtualised Linux.
+     * You will typically get 50-55 microseconds plus the number of nanoseconds requested if a core is available.
+     * On Windows expect to wait for at least 16ms or 1ms if the high-res timers are enabled.
+     */
+    public static final long IDLE_MIN_PARK_NS = 1000;
+
+    /**
+     * Maximum back-off park time which doubles on each interval stepping up from the min park idle.
+     */
+    public static final long IDLE_MAX_PARK_NS = TimeUnit.MILLISECONDS.toNanos(1);
 
     private static final String CONTROLLABLE_IDLE_STRATEGY = "org.agrona.concurrent.ControllableIdleStrategy";
 
@@ -576,19 +593,23 @@ public class Configuration
     public static final int MAX_UDP_PAYLOAD_LENGTH = 65504;
 
     /**
-     * Length of the maximum transmission unit of the media driver's protocol
+     * Length of the maximum transmission unit of the media driver's protocol. If this is greater
+     * than the network MTU for UDP then the packet will be fragmented and can amplify the impact of loss.
      */
     public static final String MTU_LENGTH_PROP_NAME = "aeron.mtu.length";
 
     /**
-     * Default length is greater than typical Ethernet MTU so will fragment to save on system calls.
+     * The default is conservative to avoid fragmentation on IPv4 or IPv6 over Ethernet with PPPoE header,
+     * or for clouds such as Google, Oracle, and AWS.
+     * <p>
+     * On networks that suffer little congestion then a larger value can be used to reduce syscall costs.
      */
-    public static final int MTU_LENGTH_DEFAULT = 4096;
+    public static final int MTU_LENGTH_DEFAULT = 1408;
 
     /**
      * Length of the MTU to use for sending messages.
      */
-    public static final int MTU_LENGTH = getSize(MTU_LENGTH_PROP_NAME, MTU_LENGTH_DEFAULT);
+    public static final int MTU_LENGTH = getSizeAsInt(MTU_LENGTH_PROP_NAME, MTU_LENGTH_DEFAULT);
 
     /**
      * Length of the maximum transmission unit of the media driver's protocol for IPC.
@@ -598,7 +619,7 @@ public class Configuration
     /**
      * Length of the MTU to use for sending messages via IPC
      */
-    public static final int IPC_MTU_LENGTH = getSize(IPC_MTU_LENGTH_PROP_NAME, MTU_LENGTH_DEFAULT);
+    public static final int IPC_MTU_LENGTH = getSizeAsInt(IPC_MTU_LENGTH_PROP_NAME, MTU_LENGTH_DEFAULT);
 
     /**
      * {@link ThreadingMode} to be used by the Aeron {@link MediaDriver}.
@@ -624,7 +645,18 @@ public class Configuration
     /**
      * How often to check liveness and cleanup timers in nanoseconds.
      */
-    public static final long TIMER_INTERVAL_NS = getLong(TIMER_INTERVAL_PROP_NAME, DEFAULT_TIMER_INTERVAL_NS);
+    public static final long TIMER_INTERVAL_NS = getDurationInNanos(
+        TIMER_INTERVAL_PROP_NAME, DEFAULT_TIMER_INTERVAL_NS);
+
+    /**
+     *  Timeout between a counter being freed and being reused.
+     */
+    public static final String COUNTER_FREE_TO_REUSE_TIMEOUT_PROP_NAME = "aeron.counters.free.to.reuse.timeout";
+
+    /**
+     *  Timeout between a counter being freed and being reused
+     */
+    public static final long DEFAULT_COUNTER_FREE_TO_REUSE_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(1);
 
     /**
      * Property name for {@link SendChannelEndpointSupplier}.
@@ -670,6 +702,40 @@ public class Configuration
      */
     public static final String CONGESTION_CONTROL_STRATEGY_SUPPLIER = getProperty(
         CONGESTION_CONTROL_STRATEGY_SUPPLIER_PROP_NAME, "io.aeron.driver.DefaultCongestionControlSupplier");
+
+    /**
+     * Property name for low end of the publication reserved session id range which will not be automatically assigned.
+     */
+    public static final String PUBLICATION_RESERVED_SESSION_ID_LOW_PROP_NAME =
+        "aeron.publication.reserved.session.id.low";
+
+    /**
+     * Low end of the publication reserved session id range which will not be automatically assigned.
+     */
+    public static final int PUBLICATION_RESERVED_SESSION_ID_LOW_DEFAULT = -1;
+
+    /**
+     * Low end of the publication reserved session id range which will not be automatically assigned.
+     */
+    public static final int PUBLICATION_RESERVED_SESSION_ID_LOW = getInteger(
+        PUBLICATION_RESERVED_SESSION_ID_LOW_PROP_NAME, PUBLICATION_RESERVED_SESSION_ID_LOW_DEFAULT);
+
+    /**
+     * Property name for high end of the publication reserved session id range which will not be automatically assigned.
+     */
+    public static final String PUBLICATION_RESERVED_SESSION_ID_HIGH_PROP_NAME =
+        "aeron.publication.reserved.session.id.high";
+
+    /**
+     * High end of the publication reserved session id range which will not be automatically assigned.
+     */
+    public static final int PUBLICATION_RESERVED_SESSION_ID_HIGH_DEFAULT = 1000;
+
+    /**
+     * High end of the publication reserved session id range which will not be automatically assigned.
+     */
+    public static final int PUBLICATION_RESERVED_SESSION_ID_HIGH = getInteger(
+        PUBLICATION_RESERVED_SESSION_ID_HIGH_PROP_NAME, PUBLICATION_RESERVED_SESSION_ID_HIGH_DEFAULT);
 
     /**
      * Limit for the number of commands drained in one operation.
@@ -803,20 +869,6 @@ public class Configuration
     }
 
     /**
-     * Validate that the initial window length is greater than MTU.
-     *
-     * @param initialWindowLength to be validated.
-     * @param mtuLength           against which to validate.
-     */
-    public static void validateInitialWindowLength(final int initialWindowLength, final int mtuLength)
-    {
-        if (mtuLength > initialWindowLength)
-        {
-            throw new IllegalStateException("Initial window length must be >= to MTU length: " + mtuLength);
-        }
-    }
-
-    /**
      * Get the {@link IdleStrategy} that should be applied to {@link org.agrona.concurrent.Agent}s.
      *
      * @param strategyName       of the class to be created.
@@ -831,7 +883,7 @@ public class Configuration
         {
             case DEFAULT_IDLE_STRATEGY:
                 idleStrategy = new BackoffIdleStrategy(
-                    AGENT_IDLE_MAX_SPINS, AGENT_IDLE_MAX_YIELDS, AGENT_IDLE_MIN_PARK_NS, AGENT_IDLE_MAX_PARK_NS);
+                    IDLE_MAX_SPINS, IDLE_MAX_YIELDS, IDLE_MIN_PARK_NS, IDLE_MAX_PARK_NS);
                 break;
 
             case CONTROLLABLE_IDLE_STRATEGY:
@@ -842,7 +894,7 @@ public class Configuration
             default:
                 try
                 {
-                    idleStrategy = (IdleStrategy)Class.forName(strategyName).newInstance();
+                    idleStrategy = (IdleStrategy)Class.forName(strategyName).getConstructor().newInstance();
                 }
                 catch (final Exception ex)
                 {
@@ -881,22 +933,27 @@ public class Configuration
 
     static int termBufferLength()
     {
-        return getSize(TERM_BUFFER_LENGTH_PROP_NAME, TERM_BUFFER_LENGTH_DEFAULT);
+        return getSizeAsInt(TERM_BUFFER_LENGTH_PROP_NAME, TERM_BUFFER_LENGTH_DEFAULT);
     }
 
     static int initialWindowLength()
     {
-        return getSize(INITIAL_WINDOW_LENGTH_PROP_NAME, INITIAL_WINDOW_LENGTH_DEFAULT);
+        return getSizeAsInt(INITIAL_WINDOW_LENGTH_PROP_NAME, INITIAL_WINDOW_LENGTH_DEFAULT);
     }
 
     static long statusMessageTimeout()
     {
-        return getLong(STATUS_MESSAGE_TIMEOUT_PROP_NAME, STATUS_MESSAGE_TIMEOUT_DEFAULT_NS);
+        return getDurationInNanos(STATUS_MESSAGE_TIMEOUT_PROP_NAME, STATUS_MESSAGE_TIMEOUT_DEFAULT_NS);
     }
 
     static int sendToStatusMessagePollRatio()
     {
         return getInteger(SEND_TO_STATUS_POLL_RATIO_PROP_NAME, SEND_TO_STATUS_POLL_RATIO_DEFAULT);
+    }
+
+    static long counterFreeToReuseTimeout()
+    {
+        return getDurationInNanos(COUNTER_FREE_TO_REUSE_TIMEOUT_PROP_NAME, DEFAULT_COUNTER_FREE_TO_REUSE_TIMEOUT_NS);
     }
 
     /**
@@ -910,7 +967,9 @@ public class Configuration
         SendChannelEndpointSupplier supplier = null;
         try
         {
-            supplier = (SendChannelEndpointSupplier)Class.forName(SEND_CHANNEL_ENDPOINT_SUPPLIER).newInstance();
+            supplier = (SendChannelEndpointSupplier)Class.forName(SEND_CHANNEL_ENDPOINT_SUPPLIER)
+                .getConstructor()
+                .newInstance();
         }
         catch (final Exception ex)
         {
@@ -931,7 +990,9 @@ public class Configuration
         ReceiveChannelEndpointSupplier supplier = null;
         try
         {
-            supplier = (ReceiveChannelEndpointSupplier)Class.forName(RECEIVE_CHANNEL_ENDPOINT_SUPPLIER).newInstance();
+            supplier = (ReceiveChannelEndpointSupplier)Class.forName(RECEIVE_CHANNEL_ENDPOINT_SUPPLIER)
+                .getConstructor()
+                .newInstance();
         }
         catch (final Exception ex)
         {
@@ -952,7 +1013,9 @@ public class Configuration
         FlowControlSupplier supplier = null;
         try
         {
-            supplier = (FlowControlSupplier)Class.forName(UNICAST_FLOW_CONTROL_STRATEGY_SUPPLIER).newInstance();
+            supplier = (FlowControlSupplier)Class.forName(UNICAST_FLOW_CONTROL_STRATEGY_SUPPLIER)
+                .getConstructor()
+                .newInstance();
         }
         catch (final Exception ex)
         {
@@ -973,7 +1036,9 @@ public class Configuration
         FlowControlSupplier supplier = null;
         try
         {
-            supplier = (FlowControlSupplier)Class.forName(MULTICAST_FLOW_CONTROL_STRATEGY_SUPPLIER).newInstance();
+            supplier = (FlowControlSupplier)Class.forName(MULTICAST_FLOW_CONTROL_STRATEGY_SUPPLIER)
+                .getConstructor()
+                .newInstance();
         }
         catch (final Exception ex)
         {
@@ -993,7 +1058,9 @@ public class Configuration
         CongestionControlSupplier supplier = null;
         try
         {
-            supplier = (CongestionControlSupplier)Class.forName(CONGESTION_CONTROL_STRATEGY_SUPPLIER).newInstance();
+            supplier = (CongestionControlSupplier)Class.forName(CONGESTION_CONTROL_STRATEGY_SUPPLIER)
+                .getConstructor()
+                .newInstance();
         }
         catch (final Exception ex)
         {
@@ -1004,23 +1071,52 @@ public class Configuration
     }
 
     /**
-     * Validate the the MTU is an appropriate length. MTU lengths must be a multiple of
+     * Validate that the initial window length is greater than MTU.
+     *
+     * @param initialWindowLength to be validated.
+     * @param mtuLength           against which to validate.
+     */
+    static void validateInitialWindowLength(final int initialWindowLength, final int mtuLength)
+    {
+        if (mtuLength > initialWindowLength)
+        {
+            throw new IllegalStateException("Initial window length must be >= to MTU length: " + mtuLength);
+        }
+    }
+
+    /**
+     * Validate that the MTU is an appropriate length. MTU lengths must be a multiple of
      * {@link FrameDescriptor#FRAME_ALIGNMENT}.
      *
      * @param mtuLength to be validated.
      * @throws ConfigurationException if the MTU length is not valid.
      */
-    public static void validateMtuLength(final int mtuLength)
+    static void validateMtuLength(final int mtuLength)
     {
         if (mtuLength < DataHeaderFlyweight.HEADER_LENGTH || mtuLength > MAX_UDP_PAYLOAD_LENGTH)
         {
             throw new ConfigurationException(
-                "mtuLength must be a >= HEADER_LENGTH and <= MAX_UDP_PAYLOAD_LENGTH: mtuLength=" + mtuLength);
+                "mtuLength must be a >= HEADER_LENGTH and <= MAX_UDP_PAYLOAD_LENGTH: " + mtuLength);
         }
 
         if ((mtuLength & (FrameDescriptor.FRAME_ALIGNMENT - 1)) != 0)
         {
-            throw new ConfigurationException("mtuLength must be a multiple of FRAME_ALIGNMENT: mtuLength=" + mtuLength);
+            throw new ConfigurationException("mtuLength must be a multiple of FRAME_ALIGNMENT: " + mtuLength);
+        }
+    }
+
+    /**
+     * Validate the publication linger timeout is an appropriate value.
+     *
+     * @param timeoutNs to be validated.
+     * @param driverLingerTimeoutNs set for the driver operation.
+     */
+    static void validatePublicationLingerTimeoutNs(final long timeoutNs, final long driverLingerTimeoutNs)
+    {
+        if (timeoutNs < driverLingerTimeoutNs)
+        {
+            throw new ConfigurationException(
+                "linger must be greater than or equal to driver linger timeout: " + timeoutNs);
         }
     }
 
@@ -1041,7 +1137,7 @@ public class Configuration
             if (maxSoSndBuf < SOCKET_SNDBUF_LENGTH)
             {
                 System.err.format(
-                    "WARNING: Could not get desired SO_SNDBUF, adjust OS buffer to match %s: attempted=%d, actual=%d%n",
+                    "WARNING: Could not get desired SO_SNDBUF, adjust OS to allow %s: attempted=%d, actual=%d%n",
                     SOCKET_SNDBUF_LENGTH_PROP_NAME,
                     SOCKET_SNDBUF_LENGTH,
                     maxSoSndBuf);
@@ -1053,7 +1149,7 @@ public class Configuration
             if (maxSoRcvBuf < SOCKET_RCVBUF_LENGTH)
             {
                 System.err.format(
-                    "WARNING: Could not get desired SO_RCVBUF, adjust OS buffer to match %s: attempted=%d, actual=%d%n",
+                    "WARNING: Could not get desired SO_RCVBUF, adjust OS to allow %s: attempted=%d, actual=%d%n",
                     SOCKET_RCVBUF_LENGTH_PROP_NAME,
                     SOCKET_RCVBUF_LENGTH,
                     maxSoRcvBuf);
@@ -1069,6 +1165,13 @@ public class Configuration
                     ctx.mtuLength(),
                     soSndBuf));
             }
+
+            if (ctx.initialWindowLength() > maxSoRcvBuf)
+            {
+                throw new ConfigurationException("Window length greater than socket SO_RCVBUF, increase '" +
+                    Configuration.INITIAL_WINDOW_LENGTH_PROP_NAME +
+                    "' to match window: windowLength=" + ctx.initialWindowLength() + ", SO_RCVBUF=" + maxSoRcvBuf);
+            }
         }
         catch (final IOException ex)
         {
@@ -1082,110 +1185,23 @@ public class Configuration
      * @param pageSize to be checked.
      * @throws ConfigurationException if the size is not as expected.
      */
-    public static void validatePageSize(final int pageSize)
+    static void validatePageSize(final int pageSize)
     {
         if (pageSize < PAGE_MIN_SIZE)
         {
             throw new ConfigurationException(
-                "Page size less than min size of " + PAGE_MIN_SIZE + ": page size=" + pageSize);
+                "Page size less than min size of " + PAGE_MIN_SIZE + ": " + pageSize);
         }
 
         if (pageSize > PAGE_MAX_SIZE)
         {
             throw new ConfigurationException(
-                "Page size more than max size of " + PAGE_MAX_SIZE + ": page size=" + pageSize);
+                "Page size greater than max size of " + PAGE_MAX_SIZE + ": " + pageSize);
         }
 
         if (!BitUtil.isPowerOfTwo(pageSize))
         {
-            throw new ConfigurationException("Page size not a power of 2: page size=" + pageSize);
-        }
-    }
-
-    private static int getSize(final String propertyKey, final int defaultValue)
-    {
-        final String propertyValue = getProperty(propertyKey);
-        if (propertyValue != null)
-        {
-            final long value = parseSize(propertyKey, propertyValue);
-            if (value < 0 || value > Integer.MAX_VALUE)
-            {
-                throw new ConfigurationException(
-                    "Value " + value + " for property " + propertyKey +
-                    " is out of range, must positive and less than " + Integer.MAX_VALUE);
-            }
-
-            return (int)value;
-        }
-
-        return defaultValue;
-    }
-
-    private static long getSize(final String propertyKey, final long defaultValue)
-    {
-        final String propertyValue = getProperty(propertyKey);
-        if (propertyValue != null)
-        {
-            final long value = parseSize(propertyKey, propertyValue);
-            if (value < 0)
-            {
-                throw new ConfigurationException(
-                    "Value " + value + " for property " + propertyKey + " must be positive");
-            }
-
-            return value;
-        }
-
-        return defaultValue;
-    }
-
-    private static final long MAX_G_VALUE = 8589934591L;
-    private static final long MAX_M_VALUE = 8796093022207L;
-    private static final long MAX_K_VALUE = 9007199254739968L;
-
-    public static long parseSize(final String propertyKey, final String propertyValue)
-    {
-        final char lastCharacter = propertyValue.charAt(propertyValue.length() - 1);
-        if (Character.isDigit(lastCharacter))
-        {
-            return Long.valueOf(propertyValue);
-        }
-
-        final long value = Long.valueOf(propertyValue.substring(0, propertyValue.length() - 1));
-
-        switch (lastCharacter)
-        {
-            case 'k':
-            case 'K':
-                if (value > MAX_K_VALUE)
-                {
-                    throw new ConfigurationException(
-                        "Value " + propertyValue + " would overflow maximum long.");
-                }
-                return value * 1024;
-
-            case 'm':
-            case 'M':
-                if (value > MAX_M_VALUE)
-                {
-                    throw new ConfigurationException(
-                        "Value " + propertyValue + " would overflow maximum long.");
-                }
-                return value * 1024 * 1024;
-
-            case 'g':
-            case 'G':
-                if (value > MAX_G_VALUE)
-                {
-                    throw new ConfigurationException(
-                        "Value " + propertyValue + " would overflow maximum long.");
-                }
-                return value * 1024 * 1024 * 1024;
-
-            default:
-                throw new ConfigurationException(
-                    "Couldn't parse value: " + propertyValue + " for property " + propertyKey + ". " +
-                    "Trailing character should be one of k, m, or g, but was " + lastCharacter);
+            throw new ConfigurationException("Page size not a power of 2: " + pageSize);
         }
     }
 }

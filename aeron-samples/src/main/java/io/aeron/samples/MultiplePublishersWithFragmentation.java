@@ -22,11 +22,11 @@ import org.agrona.BufferUtil;
 import org.agrona.concurrent.UnsafeBuffer;
 
 /**
- * A publisher application with multiple publications which send
- * fragmented messages to a channel and two different stream IDs. The default STREAM_ID and CHANNEL are
- * configured in {@link SampleConfiguration}. The default
- * channel and stream IDs can be changed by setting Java system properties at the command line, e.g.:
- * -Daeron.sample.channel=aeron:udp?endpoint=localhost:5555 -Daeron.sample.streamId=20
+ * A publisher application with multiple publications which send fragmented messages to a channel and two different
+ * stream IDs. The default STREAM_ID and CHANNEL are configured in {@link SampleConfiguration}.
+ * <p>
+ * The default channel and stream IDs can be changed by setting Java system properties at the command line, e.g.:
+ * {@code -Daeron.sample.channel=aeron:udp?endpoint=localhost:5555 -Daeron.sample.streamId=20}
  */
 public class MultiplePublishersWithFragmentation
 {
@@ -38,14 +38,14 @@ public class MultiplePublishersWithFragmentation
     private static final UnsafeBuffer BUFFER_2 = new UnsafeBuffer(
         BufferUtil.allocateDirectAligned(9000, BitUtil.CACHE_LINE_LENGTH));
 
-    public static void main(final String[] args) throws Exception
+    public static void main(final String[] args)
     {
         System.out.println(
             "Publishing to " + CHANNEL + " on stream Id " + STREAM_ID_1 + " and stream Id " + STREAM_ID_2);
 
         try (Aeron aeron = Aeron.connect();
-             Publication publication1 = aeron.addPublication(CHANNEL, STREAM_ID_1);
-             Publication publication2 = aeron.addPublication(CHANNEL, STREAM_ID_2))
+            Publication publication1 = aeron.addPublication(CHANNEL, STREAM_ID_1);
+            Publication publication2 = aeron.addPublication(CHANNEL, STREAM_ID_2))
         {
             int j = 1;
             int k = 1;
@@ -81,6 +81,7 @@ public class MultiplePublishersWithFragmentation
                             {
                                 System.out.println(" Offer failed due to unknown reason");
                             }
+
                             offerStatus1 = false;
                         }
                         else

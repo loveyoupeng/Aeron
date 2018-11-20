@@ -1,21 +1,25 @@
 Aeron Archive
 ===
 
-The aeron-archive is an service which enables Aeron data stream recording
-and replay support from an archive. 
+[![Javadocs](http://www.javadoc.io/badge/io.aeron/aeron-all.svg)](http://www.javadoc.io/doc/io.aeron/aeron-all)
+
+The aeron-archive is an service which enables Aeron data stream recording and replay support from an archive. 
 
 Currently implemented functionality:
-- **Record:** service can record a particular subscription, described
-by `<channel, streamId>`. Each resulting image for the subscription
-will be recorded under a new `recordingId`. Local network publications are
-recorded using the spy feature for efficiency.
+- **Record:** service can record a particular subscription, described by `<channel, streamId>`. Each resulting image
+for the subscription will be recorded under a new `recordingId`. Local network publications are recorded using the spy
+feature for efficiency. If no subscribers are active then the recording can advance the stream by setting the
+`aeron.spies.simulate.connection` system property to true.
 
-- **Replay:** service can replay a recorded `recordingId` from
-a particular `termId + termOffset`, and for a particular length.
+- **Extend:** service can extend an existing recording by appending.
 
-- **Query:** service provides a rudimentary query interface which
-allows `recordingId` discovery and description. Currently this
-supports a query for all descriptors or filtered by `<channel, streamId>`.
+- **Replay:** service can replay a recorded `recordingId` from a particular `position`, and for a particular length.
+
+- **Query:** service provides a rudimentary query interface which allows `recordingId` discovery and description. 
+Currently this supports a query for all descriptors, filtered by `<channel, streamId>`, or by specific `recordingId`.
+
+- **Truncate:** allows a stopped recording to have its length truncated, and if truncated to the start position then it
+is effectively deleted.
 
 Usage
 =====
@@ -63,7 +67,7 @@ The Archiver is backed by 2 file types, all of which are expected to reside in t
  The Archiver copies data as is from the recorded Image. As such the files follow the same convention
  as Aeron data streams. Data starts at `startPosition`, which translates into the offset
  `startPosition % termBufferLength` in the first segment file. From there one can read fragments
- as described by the DataFragmentHeader up to the `stopPosition`. 
+ as described by the DataFragmentHeader up to the `stopPosition`. Segment length is a multiple of `termBufferLength`.
  
  
  

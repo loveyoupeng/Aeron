@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -55,7 +55,8 @@ public:
     ExclusivePublicationTest() :
         m_srcBuffer(m_src, 0),
         m_logBuffers(new LogBuffers(m_log.data(), static_cast<std::int64_t>(m_log.size()), TERM_LENGTH)),
-        m_publicationLimit(m_counterValuesBuffer, PUBLICATION_LIMIT_COUNTER_ID)
+        m_publicationLimit(m_counterValuesBuffer, PUBLICATION_LIMIT_COUNTER_ID),
+        m_channelStatusIndicator(m_counterValuesBuffer, ChannelEndpointStatus::NO_ID_ALLOCATED)
     {
         m_log.fill(0);
 
@@ -81,7 +82,8 @@ public:
     void createPub()
     {
         m_publication = std::unique_ptr<ExclusivePublication>(new ExclusivePublication(
-            m_conductor, CHANNEL, CORRELATION_ID, CORRELATION_ID, STREAM_ID, SESSION_ID, m_publicationLimit, m_logBuffers));
+            m_conductor, CHANNEL, CORRELATION_ID, CORRELATION_ID, STREAM_ID, SESSION_ID,
+            m_publicationLimit, ChannelEndpointStatus::NO_ID_ALLOCATED, m_logBuffers));
     }
 
 protected:
@@ -94,6 +96,7 @@ protected:
 
     std::shared_ptr<LogBuffers> m_logBuffers;
     UnsafeBufferPosition m_publicationLimit;
+    StatusIndicatorReader m_channelStatusIndicator;
     std::unique_ptr<ExclusivePublication> m_publication;
 };
 
@@ -106,7 +109,7 @@ TEST_F(ExclusivePublicationTest, shouldReportInitialPosition)
 TEST_F(ExclusivePublicationTest, shouldReportMaxMessageLength)
 {
     createPub();
-    EXPECT_EQ(m_publication->maxMessageLength(), FrameDescriptor::computeExclusiveMaxMessageLength(TERM_LENGTH));
+    EXPECT_EQ(m_publication->maxMessageLength(), FrameDescriptor::computeMaxMessageLength(TERM_LENGTH));
 }
 
 TEST_F(ExclusivePublicationTest, shouldReportCorrectTermBufferLength)
@@ -200,7 +203,7 @@ TEST_F(ExclusivePublicationTest, shouldRotateWhenAppendTrips)
     const int nextIndex = LogBufferDescriptor::indexByTerm(TERM_ID_1, TERM_ID_1 + 1);
     EXPECT_EQ(m_logMetaDataBuffer.getInt32(LogBufferDescriptor::LOG_ACTIVE_TERM_COUNT_OFFSET), 1);
 
-    EXPECT_EQ(m_logMetaDataBuffer.getInt64(termTailCounterOffset(nextIndex)), static_cast<std::int64_t>(TERM_ID_1 + 1) << 32);
+    EXPECT_EQ(m_logMetaDataBuffer.getInt64(termTailCounterOffset(nextIndex)), (static_cast<std::int64_t>(TERM_ID_1 + 1)) << 32);
 
     EXPECT_GT(m_publication->offer(m_srcBuffer), initialPosition + DataFrameHeader::LENGTH + m_srcBuffer.capacity());
     EXPECT_GT(m_publication->position(), initialPosition + DataFrameHeader::LENGTH + m_srcBuffer.capacity());
@@ -222,7 +225,7 @@ TEST_F(ExclusivePublicationTest, shouldRotateWhenClaimTrips)
     const int nextIndex = LogBufferDescriptor::indexByTerm(TERM_ID_1, TERM_ID_1 + 1);
     EXPECT_EQ(m_logMetaDataBuffer.getInt32(LogBufferDescriptor::LOG_ACTIVE_TERM_COUNT_OFFSET), 1);
 
-    EXPECT_EQ(m_logMetaDataBuffer.getInt64(termTailCounterOffset(nextIndex)), static_cast<std::int64_t>(TERM_ID_1 + 1) << 32);
+    EXPECT_EQ(m_logMetaDataBuffer.getInt64(termTailCounterOffset(nextIndex)), (static_cast<std::int64_t>(TERM_ID_1 + 1)) << 32);
 
     EXPECT_GT(m_publication->tryClaim(SRC_BUFFER_LENGTH, bufferClaim), initialPosition + DataFrameHeader::LENGTH + m_srcBuffer.capacity());
     EXPECT_GT(m_publication->position(), initialPosition + DataFrameHeader::LENGTH + m_srcBuffer.capacity());

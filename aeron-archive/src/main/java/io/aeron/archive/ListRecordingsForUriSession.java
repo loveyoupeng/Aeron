@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,14 +16,11 @@
 package io.aeron.archive;
 
 import io.aeron.archive.codecs.RecordingDescriptorDecoder;
+import io.aeron.archive.codecs.RecordingDescriptorHeaderDecoder;
 import org.agrona.concurrent.UnsafeBuffer;
-
-import static io.aeron.archive.Catalog.wrapDescriptorDecoder;
 
 class ListRecordingsForUriSession extends AbstractListRecordingsSession
 {
-    private static final int MAX_SCANS_PER_WORK_CYCLE = 16;
-
     private final RecordingDescriptorDecoder decoder;
     private final int count;
     private final String channel;
@@ -57,9 +54,7 @@ class ListRecordingsForUriSession extends AbstractListRecordingsSession
         int totalBytesSent = 0;
         int recordsScanned = 0;
 
-        while (sent < count &&
-               totalBytesSent < controlSession.maxPayloadLength() &&
-               recordsScanned < MAX_SCANS_PER_WORK_CYCLE)
+        while (sent < count && recordsScanned < MAX_SCANS_PER_WORK_CYCLE)
         {
             if (!catalog.wrapDescriptor(recordingId, descriptorBuffer))
             {
@@ -69,11 +64,15 @@ class ListRecordingsForUriSession extends AbstractListRecordingsSession
                 break;
             }
 
-            wrapDescriptorDecoder(decoder, descriptorBuffer);
+            decoder.wrap(
+                descriptorBuffer,
+                RecordingDescriptorHeaderDecoder.BLOCK_LENGTH,
+                RecordingDescriptorDecoder.BLOCK_LENGTH,
+                RecordingDescriptorDecoder.SCHEMA_VERSION);
 
-            if (decoder.streamId() == streamId &&
-                decoder.strippedChannel().equals(channel) &&
-                isDescriptorValid(descriptorBuffer))
+            if (Catalog.isValidDescriptor(descriptorBuffer) &&
+                decoder.streamId() == streamId &&
+                decoder.strippedChannel().contains(channel))
             {
                 final int bytesSent = controlSession.sendDescriptor(correlationId, descriptorBuffer, proxy);
                 if (bytesSent == 0)
@@ -81,10 +80,11 @@ class ListRecordingsForUriSession extends AbstractListRecordingsSession
                     isDone = controlSession.isDone();
                     break;
                 }
-                totalBytesSent += bytesSent;
 
+                totalBytesSent += bytesSent;
                 ++sent;
             }
+
             recordingId++;
             recordsScanned++;
         }

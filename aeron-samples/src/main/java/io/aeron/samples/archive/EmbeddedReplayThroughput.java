@@ -1,5 +1,5 @@
 /*
- *  Copyright 2017 Real Logic Ltd.
+ *  Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,6 +19,8 @@ import io.aeron.*;
 import io.aeron.archive.Archive;
 import io.aeron.archive.ArchivingMediaDriver;
 import io.aeron.archive.client.AeronArchive;
+import io.aeron.archive.client.RecordingDescriptorConsumer;
+import io.aeron.archive.status.RecordingPos;
 import io.aeron.driver.MediaDriver;
 import io.aeron.logbuffer.FragmentHandler;
 import io.aeron.logbuffer.Header;
@@ -27,6 +29,7 @@ import org.agrona.CloseHelper;
 import org.agrona.DirectBuffer;
 import org.agrona.collections.MutableLong;
 import org.agrona.concurrent.UnsafeBuffer;
+import org.agrona.concurrent.status.CountersReader;
 import org.agrona.console.ContinueBarrier;
 
 import java.io.File;
@@ -38,6 +41,9 @@ import static io.aeron.samples.archive.TestUtil.NOOP_FRAGMENT_HANDLER;
 import static org.agrona.BufferUtil.allocateDirectAligned;
 import static org.agrona.SystemUtil.loadPropertiesFiles;
 
+/**
+ * Tests the throughput when replaying a recorded stream of messages.
+ */
 public class EmbeddedReplayThroughput implements AutoCloseable
 {
     private static final int REPLAY_STREAM_ID = 101;
@@ -55,6 +61,7 @@ public class EmbeddedReplayThroughput implements AutoCloseable
     private final UnsafeBuffer buffer = new UnsafeBuffer(allocateDirectAligned(MESSAGE_LENGTH, FRAME_ALIGNMENT));
     private FragmentHandler fragmentHandler = new FragmentAssembler(this::onMessage);
     private int messageCount;
+    private int publicationSessionId;
 
     public static void main(final String[] args) throws Exception
     {
@@ -67,7 +74,8 @@ public class EmbeddedReplayThroughput implements AutoCloseable
             Thread.sleep(10);
 
             System.out.println("Finding the recording...");
-            final long recordingId = test.findRecordingId(CHANNEL, STREAM_ID);
+            final long recordingId =
+                test.findRecordingId(ChannelUri.addSessionId(CHANNEL, test.publicationSessionId), STREAM_ID);
             final ContinueBarrier barrier = new ContinueBarrier("Execute again?");
 
             do
@@ -83,7 +91,9 @@ public class EmbeddedReplayThroughput implements AutoCloseable
                 final long msgRate = (NUMBER_OF_MESSAGES / durationMs) * 1000L;
 
                 System.out.println("Performance inclusive of replay request and connection setup:");
-                System.out.printf("Replayed %.02f MB @ %.02f MB/s - %,d msg/sec%n", recordingMb, dataRate, msgRate);
+                System.out.printf(
+                    "Replayed %.02f MB @ %.02f MB/s - %,d msg/sec - %d byte payload + 32 byte header%n",
+                    recordingMb, dataRate, msgRate, MESSAGE_LENGTH);
             }
             while (barrier.await());
         }
@@ -92,7 +102,7 @@ public class EmbeddedReplayThroughput implements AutoCloseable
     public EmbeddedReplayThroughput()
     {
         final String archiveDirName = Archive.Configuration.archiveDirName();
-        final File archiveDir =  ARCHIVE_DIR_DEFAULT.equals(archiveDirName) ?
+        final File archiveDir = ARCHIVE_DIR_DEFAULT.equals(archiveDirName) ?
             TestUtil.createTempDir() : new File(archiveDirName);
 
         archivingMediaDriver = ArchivingMediaDriver.launch(
@@ -111,6 +121,7 @@ public class EmbeddedReplayThroughput implements AutoCloseable
     public void close()
     {
         CloseHelper.close(aeronArchive);
+        CloseHelper.close(aeron);
         CloseHelper.close(archivingMediaDriver);
 
         archivingMediaDriver.archive().context().deleteArchiveDirectory();
@@ -123,7 +134,7 @@ public class EmbeddedReplayThroughput implements AutoCloseable
         final int count = buffer.getInt(offset);
         if (count != messageCount)
         {
-            throw new IllegalStateException("Invalid message count=" + count + " @ " + messageCount);
+            throw new IllegalStateException("invalid message count=" + count + " @ " + messageCount);
         }
 
         messageCount++;
@@ -132,39 +143,57 @@ public class EmbeddedReplayThroughput implements AutoCloseable
     private long makeRecording()
     {
         try (ExclusivePublication publication = aeronArchive.addRecordedExclusivePublication(CHANNEL, STREAM_ID);
-             Subscription subscription = aeron.addSubscription(CHANNEL, STREAM_ID))
+            Subscription subscription = aeron.addSubscription(CHANNEL, STREAM_ID))
         {
-            while (!subscription.isConnected())
+            try
             {
-                Thread.yield();
-            }
+                publicationSessionId = publication.sessionId();
 
-            final Image image = subscription.imageAtIndex(0);
-
-            int i = 0;
-            while (i < NUMBER_OF_MESSAGES)
-            {
-                buffer.putInt(0, i);
-
-                if (publication.offer(buffer, 0, MESSAGE_LENGTH) > 0)
+                while (!subscription.isConnected())
                 {
-                    i++;
+                    Thread.yield();
                 }
 
-                image.poll(NOOP_FRAGMENT_HANDLER, 10);
-            }
+                final Image image = subscription.imageAtIndex(0);
 
-            final long position = publication.position();
-            while (image.position() < position)
+                int i = 0;
+                while (i < NUMBER_OF_MESSAGES)
+                {
+                    buffer.putInt(0, i);
+
+                    if (publication.offer(buffer, 0, MESSAGE_LENGTH) > 0)
+                    {
+                        i++;
+                    }
+
+                    image.poll(NOOP_FRAGMENT_HANDLER, 10);
+                }
+
+                final long position = publication.position();
+                while (image.position() < position)
+                {
+                    image.poll(NOOP_FRAGMENT_HANDLER, 10);
+                }
+
+                awaitRecordingComplete(position);
+
+                return position;
+            }
+            finally
             {
-                image.poll(NOOP_FRAGMENT_HANDLER, 10);
+                aeronArchive.stopRecording(publication);
             }
-
-            return position;
         }
-        finally
+    }
+
+    private void awaitRecordingComplete(final long position)
+    {
+        final CountersReader counters = aeron.countersReader();
+        final int counterId = RecordingPos.findCounterIdBySession(counters, publicationSessionId);
+
+        while (counters.getCounterValue(counterId) < position)
         {
-            aeronArchive.stopRecording(CHANNEL, STREAM_ID);
+            Thread.yield();
         }
     }
 
@@ -185,7 +214,7 @@ public class EmbeddedReplayThroughput implements AutoCloseable
                 final int fragments = subscription.poll(fragmentHandler, FRAGMENT_COUNT_LIMIT);
                 if (0 == fragments)
                 {
-                    if (subscription.hasNoImages())
+                    if (!subscription.isConnected())
                     {
                         System.out.println("Unexpected end of stream at message count: " + messageCount);
                         break;
@@ -201,33 +230,30 @@ public class EmbeddedReplayThroughput implements AutoCloseable
     {
         final MutableLong foundRecordingId = new MutableLong();
 
+        final RecordingDescriptorConsumer consumer =
+            (controlSessionId,
+            correlationId,
+            recordingId,
+            startTimestamp,
+            stopTimestamp,
+            startPosition,
+            stopPosition,
+            initialTermId,
+            segmentFileLength,
+            termBufferLength,
+            mtuLength,
+            sessionId,
+            streamId,
+            strippedChannel,
+            originalChannel,
+            sourceIdentity) -> foundRecordingId.set(recordingId);
+
         final int recordingsFound = aeronArchive.listRecordingsForUri(
-            0L,
-            10,
-            expectedChannel,
-            expectedStreamId,
-            (
-                controlSessionId,
-                correlationId,
-                recordingId,
-                startTimestamp,
-                stopTimestamp,
-                startPosition,
-                stopPosition,
-                initialTermId,
-                segmentFileLength,
-                termBufferLength,
-                mtuLength,
-                sessionId,
-                streamId,
-                strippedChannel,
-                originalChannel,
-                sourceIdentity
-            ) -> foundRecordingId.set(recordingId));
+            0L, 10, expectedChannel, expectedStreamId, consumer);
 
         if (1 != recordingsFound)
         {
-            throw new IllegalStateException("Should have been one recording");
+            throw new IllegalStateException("should have been one recording");
         }
 
         return foundRecordingId.get();

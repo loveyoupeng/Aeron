@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,6 +17,7 @@ package io.aeron.archive;
 
 import io.aeron.Image;
 import io.aeron.ImageFragmentAssembler;
+import io.aeron.archive.client.ArchiveException;
 import io.aeron.archive.codecs.SourceLocation;
 import io.aeron.logbuffer.FragmentHandler;
 import org.agrona.collections.Long2ObjectHashMap;
@@ -28,7 +29,7 @@ class ControlSessionDemuxer implements Session, ControlRequestListener
         ACTIVE, INACTIVE, CLOSED
     }
 
-    private static final int FRAGMENT_LIMIT = 16;
+    private static final int FRAGMENT_LIMIT = 10;
 
     private final Image image;
     private final ArchiveConductor conductor;
@@ -72,6 +73,10 @@ class ControlSessionDemuxer implements Session, ControlRequestListener
             if (image.isClosed())
             {
                 state = State.INACTIVE;
+                for (final Session session : controlSessionByIdMap.values())
+                {
+                    session.abort();
+                }
             }
             else
             {
@@ -104,28 +109,22 @@ class ControlSessionDemuxer implements Session, ControlRequestListener
         final String channel,
         final SourceLocation sourceLocation)
     {
-        final ControlSession controlSession = controlSessionByIdMap.get(controlSessionId);
-        if (controlSession == null)
-        {
-            throw new IllegalArgumentException("Unknown controlSessionId: " + controlSessionId);
-        }
-
+        final ControlSession controlSession = getControlSession(controlSessionId);
         controlSession.onStartRecording(correlationId, channel, streamId, sourceLocation);
     }
 
     public void onStopRecording(
-        final long controlSessionId,
-        final long correlationId,
-        final int streamId,
-        final String channel)
+        final long controlSessionId, final long correlationId, final int streamId, final String channel)
     {
-        final ControlSession controlSession = controlSessionByIdMap.get(controlSessionId);
-        if (controlSession == null)
-        {
-            throw new IllegalArgumentException("Unknown controlSessionId: " + controlSessionId);
-        }
-
+        final ControlSession controlSession = getControlSession(controlSessionId);
         controlSession.onStopRecording(correlationId, streamId, channel);
+    }
+
+    public void onStopRecordingSubscription(
+        final long controlSessionId, final long correlationId, final long subscriptionId)
+    {
+        final ControlSession controlSession = getControlSession(controlSessionId);
+        controlSession.onStopRecordingSubscription(correlationId, subscriptionId);
     }
 
     public void onStartReplay(
@@ -137,13 +136,14 @@ class ControlSessionDemuxer implements Session, ControlRequestListener
         final int replayStreamId,
         final String replayChannel)
     {
-        final ControlSession controlSession = controlSessionByIdMap.get(controlSessionId);
-        if (controlSession == null)
-        {
-            throw new IllegalArgumentException("Unknown controlSessionId: " + controlSessionId);
-        }
-
+        final ControlSession controlSession = getControlSession(controlSessionId);
         controlSession.onStartReplay(correlationId, recordingId, position, length, replayStreamId, replayChannel);
+    }
+
+    public void onStopReplay(final long controlSessionId, final long correlationId, final long replaySessionId)
+    {
+        final ControlSession controlSession = getControlSession(controlSessionId);
+        controlSession.onStopReplay(correlationId, replaySessionId);
     }
 
     public void onListRecordingsForUri(
@@ -154,12 +154,7 @@ class ControlSessionDemuxer implements Session, ControlRequestListener
         final int streamId,
         final String channel)
     {
-        final ControlSession controlSession = controlSessionByIdMap.get(controlSessionId);
-        if (controlSession == null)
-        {
-            throw new IllegalArgumentException("Unknown controlSessionId: " + controlSessionId);
-        }
-
+        final ControlSession controlSession = getControlSession(controlSessionId);
         controlSession.onListRecordingsForUri(correlationId, fromRecordingId, recordCount, streamId, channel);
     }
 
@@ -169,17 +164,72 @@ class ControlSessionDemuxer implements Session, ControlRequestListener
         final long fromRecordingId,
         final int recordCount)
     {
-        final ControlSession controlSession = controlSessionByIdMap.get(controlSessionId);
-        if (controlSession == null)
-        {
-            throw new IllegalArgumentException("Unknown controlSessionId: " + controlSessionId);
-        }
-
+        final ControlSession controlSession = getControlSession(controlSessionId);
         controlSession.onListRecordings(correlationId, fromRecordingId, recordCount);
     }
 
-    void notifyControlSessionClosed(final ControlSession controlSession)
+    public void onListRecording(final long controlSessionId, final long correlationId, final long recordingId)
+    {
+        final ControlSession controlSession = getControlSession(controlSessionId);
+        controlSession.onListRecording(correlationId, recordingId);
+    }
+
+    public void onExtendRecording(
+        final long controlSessionId,
+        final long correlationId,
+        final long recordingId,
+        final int streamId,
+        final String channel,
+        final SourceLocation sourceLocation)
+    {
+        final ControlSession controlSession = getControlSession(controlSessionId);
+        controlSession.onExtendRecording(correlationId, recordingId, channel, streamId, sourceLocation);
+    }
+
+    public void onGetRecordingPosition(final long controlSessionId, final long correlationId, final long recordingId)
+    {
+        final ControlSession controlSession = getControlSession(controlSessionId);
+        controlSession.onGetRecordingPosition(correlationId, recordingId);
+    }
+
+    public void onTruncateRecording(
+        final long controlSessionId, final long correlationId, final long recordingId, final long position)
+    {
+        final ControlSession controlSession = getControlSession(controlSessionId);
+        controlSession.onTruncateRecording(correlationId, recordingId, position);
+    }
+
+    public void onGetStopPosition(final long controlSessionId, final long correlationId, final long recordingId)
+    {
+        final ControlSession controlSession = getControlSession(controlSessionId);
+        controlSession.onGetStopPosition(correlationId, recordingId);
+    }
+
+    public void onFindLastMatchingRecording(
+        final long controlSessionId,
+        final long correlationId,
+        final long minRecordingId,
+        final int sessionId,
+        final int streamId,
+        final String channel)
+    {
+        final ControlSession controlSession = getControlSession(controlSessionId);
+        controlSession.onFindLastMatchingRecording(correlationId, minRecordingId, sessionId, streamId, channel);
+    }
+
+    void removeControlSession(final ControlSession controlSession)
     {
         controlSessionByIdMap.remove(controlSession.sessionId());
+    }
+
+    private ControlSession getControlSession(final long controlSessionId)
+    {
+        final ControlSession controlSession = controlSessionByIdMap.get(controlSessionId);
+        if (controlSession == null)
+        {
+            throw new ArchiveException("unknown controlSessionId: " + controlSessionId);
+        }
+
+        return controlSession;
     }
 }

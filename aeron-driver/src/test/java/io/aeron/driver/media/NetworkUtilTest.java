@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -42,7 +42,7 @@ public class NetworkUtilTest
     }
 
     @Test
-    public void shouldMatchIfAllBytesMatch() throws Exception
+    public void shouldMatchIfAllBytesMatch()
     {
         final byte[] a = { 'a', 'b', 'c', 'd' };
         final byte[] b = { 'a', 'b', 'c', 'd' };
@@ -50,7 +50,7 @@ public class NetworkUtilTest
     }
 
     @Test
-    public void shouldMatchIfAllBytesWithPrefixMatch() throws Exception
+    public void shouldMatchIfAllBytesWithPrefixMatch()
     {
         final byte[] a = { 'a', 'b', 'c', 'd' };
         final byte[] b = { 'a', 'b', 'c', 'e' };
@@ -58,7 +58,7 @@ public class NetworkUtilTest
     }
 
     @Test
-    public void shouldNotMatchIfNotAllBytesWithPrefixMatch() throws Exception
+    public void shouldNotMatchIfNotAllBytesWithPrefixMatch()
     {
         final byte[] a = { 'a', 'b', 'c', 'd' };
         final byte[] b = { 'a', 'b', 'd', 'd' };
@@ -66,7 +66,7 @@ public class NetworkUtilTest
     }
 
     @Test
-    public void shouldMatchIfAllBytesWithPrefixUnalignedMatch() throws Exception
+    public void shouldMatchIfAllBytesWithPrefixUnalignedMatch()
     {
         assertTrue(isMatchWithPrefix(
             asBytes(0b10101010_11111111_00000000_00000000),
@@ -75,7 +75,7 @@ public class NetworkUtilTest
     }
 
     @Test
-    public void shouldNotMatchIfNotAllBytesWithUnalignedPrefixMatch() throws Exception
+    public void shouldNotMatchIfNotAllBytesWithUnalignedPrefixMatch()
     {
         assertFalse(isMatchWithPrefix(
             asBytes(0b10101010_11111111_00000000_00000000),
@@ -173,14 +173,14 @@ public class NetworkUtilTest
         assertThat(filteredBySubnet[2], sameInstance(ifc1));
     }
 
-    private static class NetworkInterfaceStub implements NetworkInterfaceShim
+    static class NetworkInterfaceStub implements NetworkInterfaceShim
     {
         private int counter = 0;
 
         private final IdentityHashMap<NetworkInterface, List<InterfaceAddress>> addressesByInterface =
             new IdentityHashMap<>();
 
-        public Enumeration<NetworkInterface> getNetworkInterfaces() throws SocketException
+        public Enumeration<NetworkInterface> getNetworkInterfaces()
         {
             return Collections.enumeration(addressesByInterface.keySet());
         }
@@ -190,7 +190,7 @@ public class NetworkUtilTest
             return addressesByInterface.get(ifc);
         }
 
-        public boolean isLoopback(final NetworkInterface ifc) throws SocketException
+        public boolean isLoopback(final NetworkInterface ifc)
         {
             return false;
         }

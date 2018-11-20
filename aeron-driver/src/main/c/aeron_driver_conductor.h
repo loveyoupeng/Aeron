@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 - 2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -38,15 +38,25 @@
 typedef struct aeron_publication_link_stct
 {
     aeron_driver_managed_resource_t *resource;
+    int64_t registration_id;
 }
 aeron_publication_link_t;
+
+typedef struct aeron_counter_link_stct
+{
+    int64_t registration_id;
+    int32_t counter_id;
+}
+aeron_counter_link_t;
 
 typedef struct aeron_client_stct
 {
     int64_t client_id;
-    int64_t client_liveness_timeout_ns;
-    int64_t time_of_last_keepalive;
+    int64_t client_liveness_timeout_ms;
+    int64_t time_of_last_keepalive_ms;
     bool reached_end_of_life;
+
+    aeron_counter_t heartbeat_status;
 
     struct publication_link_stct
     {
@@ -55,6 +65,14 @@ typedef struct aeron_client_stct
         size_t capacity;
     }
     publication_links;
+
+    struct counter_link_stct
+    {
+        aeron_counter_link_t *array;
+        size_t length;
+        size_t capacity;
+    }
+    counter_links;
 }
 aeron_client_t;
 
@@ -239,8 +257,8 @@ typedef struct aeron_driver_conductor_stct
     lingering_resources;
 
     int64_t *errors_counter;
-    int64_t *client_keep_alives_counter;
     int64_t *unblocked_commands_counter;
+    int64_t *client_timeouts_counter;
 
     aeron_clock_func_t nano_clock;
     aeron_clock_func_t epoch_clock;
@@ -310,6 +328,7 @@ void aeron_driver_conductor_client_transmit(
 void aeron_driver_conductor_on_unavailable_image(
     aeron_driver_conductor_t *conductor,
     int64_t correlation_id,
+    int64_t subscription_registration_id,
     int32_t stream_id,
     const char *channel,
     size_t channel_length);
@@ -379,13 +398,25 @@ int aeron_driver_conductor_on_client_keepalive(
     aeron_driver_conductor_t *conductor,
     int64_t client_id);
 
-int aeron_driver_conductoor_on_add_destination(
+int aeron_driver_conductor_on_add_destination(
     aeron_driver_conductor_t *conductor,
     aeron_destination_command_t *command);
 
-int aeron_driver_conductoor_on_remove_destination(
+int aeron_driver_conductor_on_remove_destination(
     aeron_driver_conductor_t *conductor,
     aeron_destination_command_t *command);
+
+int aeron_driver_conductor_on_add_counter(
+    aeron_driver_conductor_t *conductor,
+    aeron_counter_command_t *command);
+
+int aeron_driver_conductor_on_remove_counter(
+    aeron_driver_conductor_t *conductor,
+    aeron_remove_command_t *command);
+
+int aeron_driver_conductor_on_client_close(
+    aeron_driver_conductor_t *conductor,
+    aeron_correlated_command_t *command);
 
 void aeron_driver_conductor_on_create_publication_image(void *clientd, void *item);
 

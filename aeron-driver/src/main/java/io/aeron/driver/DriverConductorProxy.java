@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,8 +15,6 @@
  */
 package io.aeron.driver;
 
-import io.aeron.driver.cmd.CreatePublicationImageCmd;
-import io.aeron.driver.cmd.DriverConductorCmd;
 import io.aeron.driver.media.ReceiveChannelEndpoint;
 import org.agrona.concurrent.status.AtomicCounter;
 
@@ -32,13 +30,13 @@ import static io.aeron.driver.ThreadingMode.SHARED;
 public class DriverConductorProxy
 {
     private final ThreadingMode threadingMode;
-    private final Queue<DriverConductorCmd> commandQueue;
+    private final Queue<Runnable> commandQueue;
     private final AtomicCounter failCount;
 
     private DriverConductor driverConductor;
 
     public DriverConductorProxy(
-        final ThreadingMode threadingMode, final Queue<DriverConductorCmd> commandQueue, final AtomicCounter failCount)
+        final ThreadingMode threadingMode, final Queue<Runnable> commandQueue, final AtomicCounter failCount)
     {
         this.threadingMode = threadingMode;
         this.commandQueue = commandQueue;
@@ -58,6 +56,7 @@ public class DriverConductorProxy
         final int termOffset,
         final int termLength,
         final int mtuLength,
+        final int transportIndex,
         final InetSocketAddress controlAddress,
         final InetSocketAddress srcAddress,
         final ReceiveChannelEndpoint channelEndpoint)
@@ -72,13 +71,14 @@ public class DriverConductorProxy
                 termOffset,
                 termLength,
                 mtuLength,
+                transportIndex,
                 controlAddress,
                 srcAddress,
                 channelEndpoint);
         }
         else
         {
-            offer(new CreatePublicationImageCmd(
+            offer(() -> driverConductor.onCreatePublicationImage(
                 sessionId,
                 streamId,
                 initialTermId,
@@ -86,18 +86,31 @@ public class DriverConductorProxy
                 termOffset,
                 termLength,
                 mtuLength,
+                transportIndex,
                 controlAddress,
                 srcAddress,
                 channelEndpoint));
         }
     }
 
-    private boolean notConcurrent()
+    public void channelEndpointError(final long statusIndicatorId, final Exception error)
+    {
+        if (notConcurrent())
+        {
+            driverConductor.onChannelEndpointError(statusIndicatorId, error);
+        }
+        else
+        {
+            offer(() -> driverConductor.onChannelEndpointError(statusIndicatorId, error));
+        }
+    }
+
+    public boolean notConcurrent()
     {
         return threadingMode == SHARED || threadingMode == INVOKER;
     }
 
-    private void offer(final DriverConductorCmd cmd)
+    private void offer(final Runnable cmd)
     {
         while (!commandQueue.offer(cmd))
         {

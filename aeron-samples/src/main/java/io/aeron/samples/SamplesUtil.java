@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -28,7 +28,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 
 /**
- * Utility functions for samples
+ * Utility functions for the samples.
  */
 public class SamplesUtil
 {
@@ -134,6 +134,7 @@ public class SamplesUtil
      * @param message   indicating what the error was
      * @param cause     of the error
      */
+    @SuppressWarnings("unused")
     public static void printError(
         final String channel,
         final int streamId,
@@ -159,7 +160,7 @@ public class SamplesUtil
         final long totalBytes)
     {
         System.out.println(String.format(
-            "%.02g msgs/sec, %.02g bytes/sec, totals %d messages %d MB",
+            "%.02g msgs/sec, %.02g payload bytes/sec, totals %d messages %d MB",
             messagesPerSec, bytesPerSec, totalMessages, totalBytes / (1024 * 1024)));
     }
 

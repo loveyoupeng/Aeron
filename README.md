@@ -3,16 +3,33 @@ Aeron
 
 [![Gitter](https://img.shields.io/gitter/room/gitterHQ/gitter.svg)](https://gitter.im/real-logic/Aeron?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge&utm_content=badge) To chat with other Aeron users and the contributors.
 
-Efficient reliable UDP unicast, UDP multicast, and IPC message transport. Java and C++ clients are available in this repository, and a [.NET client](https://github.com/AdaptiveConsulting/Aeron.NET) is available from a 3rd party. All three clients can exchange messages across machines, or on the same machine via IPC, very efficiently. Streams can be recorded to an Archive for later replay.
+[![Javadocs](http://www.javadoc.io/badge/io.aeron/aeron-all.svg)](http://www.javadoc.io/doc/io.aeron/aeron-all)
+[![Build Status](https://travis-ci.org/real-logic/aeron.svg?branch=master)](https://travis-ci.org/real-logic/aeron)
+[![GitHub](https://img.shields.io/github/license/real-logic/Aeron.svg)](https://github.com/real-logic/aeron/blob/master/LICENSE)
+[![Code Quality: Java](https://img.shields.io/lgtm/grade/java/g/real-logic/aeron.svg?logo=lgtm&logoWidth=18)](https://lgtm.com/projects/g/real-logic/aeron/context:java)
+[![Code Quality: C/C++](https://img.shields.io/lgtm/grade/cpp/g/real-logic/aeron.svg?logo=lgtm&logoWidth=18)](https://lgtm.com/projects/g/real-logic/aeron/context:cpp)
+[![Total Alerts](https://img.shields.io/lgtm/alerts/g/real-logic/aeron.svg?logo=lgtm&logoWidth=18)](https://lgtm.com/projects/g/real-logic/aeron/alerts)
 
-Performance is the key focus. Aeron is designed to be the highest throughput with the lowest and most predictable latency possible of any messaging system. Aeron integrates with [Simple Binary Encoding (SBE)](https://github.com/real-logic/simple-binary-encoding) for the best possible performance in message encoding and decoding. Many of the data structures used in the creation of Aeron have been factored out to the [Agrona](https://github.com/real-logic/agrona) project.
+Efficient reliable UDP unicast, UDP multicast, and IPC message transport. Java and C++ clients are available in this
+repository, and a [.NET client](https://github.com/AdaptiveConsulting/Aeron.NET) is available from a 3rd party. All
+three clients can exchange messages across machines, or on the same machine via IPC, very efficiently. Message streams
+can be recorded by the [Archive](https://github.com/real-logic/aeron/tree/master/aeron-archive) module to persistent
+storage for later or real-time replay.
+
+Performance is the key focus. Aeron is designed to be the highest throughput with the lowest and most predictable
+latency possible of any messaging system. Aeron integrates with
+[Simple Binary Encoding (SBE)](https://github.com/real-logic/simple-binary-encoding) for the best possible performance
+in message encoding and decoding. Many of the data structures used in the creation of Aeron have been factored out to
+the [Agrona](https://github.com/real-logic/agrona) project.
 
 For details of usage, protocol specification, FAQ, etc. please check out the
 [Wiki](https://github.com/real-logic/aeron/wiki).
 
-For those who prefer to watch a video then try [Aeron Messaging](https://www.youtube.com/watch?v=tM4YskS94b0) from StrangeLoop 2014. Things have moved on quite a bit with performance and some features but the basic design still applies.
+For those who prefer to watch a video then try [Aeron Messaging](https://www.youtube.com/watch?v=tM4YskS94b0) from
+StrangeLoop 2014. Things have moved on quite a bit with performance and some features but the basic design still applies.
 
-For the latest version information and changes see the [Change Log](https://github.com/real-logic/aeron/wiki/Change-Log) with **downloads** at [Maven Central](http://search.maven.org/#search%7Cga%7C1%7Caeron).
+For the latest version information and changes see the [Change Log](https://github.com/real-logic/aeron/wiki/Change-Log)
+with **downloads** at [Maven Central](http://search.maven.org/#search%7Cga%7C1%7Caeron).
 
 ### How do I use Aeron?
 
@@ -22,7 +39,7 @@ For the latest version information and changes see the [Change Log](https://gith
 1. [Monitoring and Debugging](https://github.com/real-logic/aeron/wiki/Monitoring-and-Debugging)
 1. [Configuration Options](https://github.com/real-logic/aeron/wiki/Configuration-Options)
 1. [Channel Specific Configuration](https://github.com/real-logic/aeron/wiki/Channel-Configuration)
-1. [Aeron Archive](https://github.com/real-logic/aeron/wiki/Aeron-Archive)
+1. [Aeron Archive (Persistent Stream Storage)](https://github.com/real-logic/aeron/wiki/Aeron-Archive)
 
 ### How does Aeron work?
 
@@ -37,34 +54,23 @@ For the latest version information and changes see the [Change Log](https://gith
 1. [Hacking on Aeron](https://github.com/real-logic/aeron/wiki/Hacking-on-Aeron)
 1. [Performance Testing](https://github.com/real-logic/aeron/wiki/Performance-Testing)
 
-Directory Structure
--------------------
-
-Client API and common classes
-
-    aeron-client
-
-Samples
-
-    aeron-samples
-
-Media Driver
-
-    aeron-driver
-
-
 Build
 -----
 
 ### Java Build
 
-The project is built with [Gradle](http://gradle.org/) using this [build.gradle](https://github.com/real-logic/aeron/blob/master/build.gradle) file.
+The project is built with [Gradle](http://gradle.org/) using this
+[build.gradle](https://github.com/real-logic/aeron/blob/master/build.gradle) file.
 
 You require the following to build Aeron:
 
-* Latest stable [Oracle JDK 8](http://www.oracle.com/technetwork/java/)
+* Latest stable [Oracle JDK 8](http://www.oracle.com/technetwork/java/), Java versions before 1.8.0_65 are very buggy
+   and can cause tests to fail.
 
-You must first build and install [Agrona](https://github.com/real-logic/agrona) and [Simple Binary Encoding (SBE)](https://github.com/real-logic/simple-binary-encoding) into the local maven repository
+You must first build and install [Agrona](https://github.com/real-logic/agrona) and
+[Simple Binary Encoding (SBE)](https://github.com/real-logic/simple-binary-encoding) into the local maven repository 
+**if** the current master for Aeron depends on changes to Agrona or SBE. However we will try to not have this as the
+normal case.
 
 ```shell
     $ ./gradlew
@@ -85,13 +91,14 @@ You require the following to build the C++ API for Aeron:
 * 3.0.2 or higher of [CMake](http://www.cmake.org/)
 * C++11 supported compiler for the supported platform
 * C11 supported compiler for the supported platform
-* Requirements to build [HdrHistogram_c](https://github.com/HdrHistogram/HdrHistogram_c). HdrHistogram requires `zlib.h` currently. So on Ubuntu:
+* Requirements to build [HdrHistogram_c](https://github.com/HdrHistogram/HdrHistogram_c). HdrHistogram requires
+  `zlib.h` currently. So on Ubuntu:
 
 ```shell
     $ sudo apt-get install libz-dev
 ```
 
-__NOTE__: Aeron is supported on Linux, Mac, and Windows. Windows builds require Visual Studio and are being developed
+__Note__: Aeron is supported on Linux, Mac, and Windows. Windows builds require Visual Studio and are being developed
 with Visual Studio 2013 and 2015 with 64-bit builds only. Cygwin, MSys, etc. may work, but are not maintained at this time.
 
 For convenience, a script is provided that does a full clean, build, and test of all targets as a Release build.
@@ -119,7 +126,7 @@ For convenience, a script is provided that does a full clean, build, and test of
 C++ API and the C Media Driver.
 
 ```shell
-    $ ./cppbuild/cppbuild-driver
+    $ ./cppbuild/cppbuild -b
 ```
 
 If you are comfortable with using CMake, then a full clean, build, and test looks like:
@@ -132,7 +139,7 @@ If you are comfortable with using CMake, then a full clean, build, and test look
     $ ctest
 ```
 
-__NOTE__: C Media Driver is currently only supported on Mac and Linux.
+__Note__: C Media Driver is currently only supported on Mac and Linux.
 
 For dependencies and other information, see the
 [README](https://github.com/real-logic/aeron/blob/master/aeron-driver/src/main/c/README.md).
@@ -158,25 +165,29 @@ by running `cpack` directly.
 Running Samples
 ---------------
 
-Start up a media driver which will create the data and conductor directories. On Linux, this will probably be in `/dev/shm/aeron` or `/tmp/aeron`.
+Start up a media driver which will create the data and conductor directories. On Linux, this will probably be in
+`/dev/shm/aeron` or `/tmp/aeron`.
 
 ```shell
     $ java -cp aeron-samples/build/libs/samples.jar io.aeron.driver.MediaDriver
 ```
 
-Alternatively, specify the data and conductor directories. The following example uses the shared memory 'directory' on Linux, but you could just as easily point to the regular filesystem.
+Alternatively, specify the data and conductor directories. The following example uses the shared memory 'directory' on
+Linux, but you could just as easily point to the regular filesystem.
 
 ```shell
     $ java -cp aeron-samples/build/libs/samples.jar -Daeron.dir=/dev/shm/aeron io.aeron.driver.MediaDriver
 ```
 
-You can run the `BasicSubscriber` from a command line. On Linux, this will be pointing to the `/dev/shm` shared memory directory, so be sure your `MediaDriver` is doing the same!
+You can run the `BasicSubscriber` from a command line. On Linux, this will be pointing to the `/dev/shm` shared memory
+directory, so be sure your `MediaDriver` is doing the same!
 
 ```shell
     $ java -cp aeron-samples/build/libs/samples.jar io.aeron.samples.BasicSubscriber
 ```
     
-You can run the `BasicPublisher` from a command line. On Linux, this will be pointing to the `/dev/shm` shared memory directory, so be sure your `MediaDriver` is doing the same!
+You can run the `BasicPublisher` from a command line. On Linux, this will be pointing to the `/dev/shm` shared memory
+directory, so be sure your `MediaDriver` is doing the same!
 
 ```shell
     $ java -cp aeron-samples/build/libs/samples.jar io.aeron.samples.BasicPublisher
@@ -220,7 +231,7 @@ Troubleshooting
 
 License (See LICENSE file for full license)
 -------------------------------------------
-Copyright 2014-2017 Real Logic Limited
+Copyright 2014-2018 Real Logic Limited
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.

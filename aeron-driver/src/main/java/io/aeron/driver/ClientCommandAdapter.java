@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -38,6 +38,7 @@ class ClientCommandAdapter implements MessageHandler
     private final CorrelatedMessageFlyweight correlatedMsgFlyweight = new CorrelatedMessageFlyweight();
     private final RemoveMessageFlyweight removeMsgFlyweight = new RemoveMessageFlyweight();
     private final DestinationMessageFlyweight destinationMsgFlyweight = new DestinationMessageFlyweight();
+    private final CounterMessageFlyweight counterMsgFlyweight = new CounterMessageFlyweight();
     private final DriverConductor conductor;
     private final RingBuffer toDriverCommands;
     private final ClientProxy clientProxy;
@@ -165,6 +166,66 @@ class ClientCommandAdapter implements MessageHandler
                     correlatedMsgFlyweight.wrap(buffer, index);
 
                     conductor.onClientKeepalive(correlatedMsgFlyweight.clientId());
+                    break;
+                }
+
+                case ADD_COUNTER:
+                {
+                    counterMsgFlyweight.wrap(buffer, index);
+
+                    correlationId = counterMsgFlyweight.correlationId();
+                    conductor.onAddCounter(
+                        counterMsgFlyweight.typeId(),
+                        buffer,
+                        index + counterMsgFlyweight.keyBufferOffset(),
+                        counterMsgFlyweight.keyBufferLength(),
+                        buffer,
+                        index + counterMsgFlyweight.labelBufferOffset(),
+                        counterMsgFlyweight.labelBufferLength(),
+                        correlationId,
+                        counterMsgFlyweight.clientId());
+                    break;
+                }
+
+                case REMOVE_COUNTER:
+                {
+                    removeMsgFlyweight.wrap(buffer, index);
+
+                    correlationId = removeMsgFlyweight.correlationId();
+                    conductor.onRemoveCounter(removeMsgFlyweight.registrationId(), correlationId);
+                    break;
+                }
+
+                case CLIENT_CLOSE:
+                {
+                    correlatedMsgFlyweight.wrap(buffer, index);
+
+                    correlationId = correlatedMsgFlyweight.correlationId();
+                    conductor.onClientClose(correlatedMsgFlyweight.clientId(), correlationId);
+                    break;
+                }
+
+                case ADD_RCV_DESTINATION:
+                {
+                    destinationMsgFlyweight.wrap(buffer, index);
+
+                    correlationId = destinationMsgFlyweight.correlationId();
+                    final long channelRegistrationId = destinationMsgFlyweight.registrationCorrelationId();
+                    final String channel = destinationMsgFlyweight.channel();
+
+                    conductor.onAddRcvDestination(channelRegistrationId, channel, correlationId);
+                    break;
+                }
+
+                case REMOVE_RCV_DESTINATION:
+                {
+                    destinationMsgFlyweight.wrap(buffer, index);
+
+                    correlationId = destinationMsgFlyweight.correlationId();
+                    final long channelRegistrationId = destinationMsgFlyweight.registrationCorrelationId();
+                    final String channel = destinationMsgFlyweight.channel();
+
+                    conductor.onRemoveRcvDestination(channelRegistrationId, channel, correlationId);
                     break;
                 }
             }

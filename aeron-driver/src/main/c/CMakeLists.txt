@@ -1,4 +1,4 @@
-# Copyright 2014-2017 Real Logic Ltd.
+# Copyright 2014-2018 Real Logic Ltd.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,14 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-include_directories(${CMAKE_CURRENT_SOURCE_DIR})
-
 include(CheckSymbolExists)
 include(CheckIncludeFile)
 include(CheckTypeSize)
 
 if("${CMAKE_SYSTEM_NAME}" MATCHES "Linux")
     set(CMAKE_REQUIRED_DEFINITIONS "-D_GNU_SOURCE")
+    add_definitions(-D_DEFAULT_SOURCE)
 endif()
 
 check_include_file("bsd/stdlib.h" BSDSTDLIB_H_EXISTS)
@@ -57,6 +56,7 @@ set(CMAKE_EXTRA_INCLUDE_FILES)
 
 check_symbol_exists(recvmmsg "sys/socket.h" RECVMMSG_PROTOTYPE_EXISTS)
 check_symbol_exists(sendmmsg "sys/socket.h" SENDMMSG_PROTOTYPE_EXISTS)
+check_symbol_exists(fallocate "fcntl.h" FALLOCATE_PROTOTYPE_EXISTS)
 
 if(ARC4RANDOM_PROTOTYPE_EXISTS)
     add_definitions(-DHAVE_ARC4RANDOM)
@@ -88,6 +88,10 @@ endif()
 
 if(SENDMMSG_PROTOTYPE_EXISTS)
     add_definitions(-DHAVE_SENDMMSG)
+endif()
+
+if(FALLOCATE_PROTOTYPE_EXISTS)
+    add_definitions(-DHAVE_FALLOCATE)
 endif()
 
 SET(SOURCE
@@ -219,9 +223,18 @@ set(AGENT_HEADERS
     aeron_alloc.h)
 
 add_library(aeron_driver_agent SHARED ${AGENT_SOURCE} ${AGENT_HEADERS})
+target_include_directories(aeron_driver_agent
+    PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}
+)
 
 add_library(aeron_driver SHARED ${SOURCE} ${HEADERS})
+target_include_directories(aeron_driver
+    PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}
+)
 add_executable(aeronmd aeronmd.c)
+target_include_directories(aeronmd
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
+)
 
 set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -DDISABLE_BOUNDS_CHECKS")
 
@@ -268,9 +281,11 @@ target_link_libraries(
     ${AERON_LIB_M_LIBS}
     ${CMAKE_THREAD_LIBS_INIT})
 
-install(
-    TARGETS aeron_driver aeron_driver_agent
-    RUNTIME DESTINATION lib
-    LIBRARY DESTINATION lib)
-install(TARGETS aeronmd DESTINATION bin)
-install(DIRECTORY . DESTINATION  include/aeronmd FILES_MATCHING PATTERN "*.h")
+if (AERON_INSTALL_TARGETS)
+    install(
+        TARGETS aeron_driver aeron_driver_agent
+        RUNTIME DESTINATION lib
+        LIBRARY DESTINATION lib)
+    install(TARGETS aeronmd DESTINATION bin)
+    install(DIRECTORY . DESTINATION  include/aeronmd FILES_MATCHING PATTERN "*.h")
+endif()

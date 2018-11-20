@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,6 +15,8 @@
  */
 package io.aeron.driver.status;
 
+import io.aeron.Aeron;
+import io.aeron.status.ChannelEndpointStatus;
 import org.agrona.collections.MutableInteger;
 import org.agrona.concurrent.status.CountersReader;
 import org.agrona.concurrent.status.StatusIndicator;
@@ -38,7 +40,7 @@ public class StatusUtil
         final MutableInteger id = new MutableInteger(-1);
 
         countersReader.forEach(
-            (counterId, typeId, keyBuffer, label) ->
+            (counterId, label) ->
             {
                 if (counterId == SystemCounterDescriptor.CONTROLLABLE_IDLE_STRATEGY.id() &&
                     label.equals(SystemCounterDescriptor.CONTROLLABLE_IDLE_STRATEGY.label()))
@@ -47,7 +49,7 @@ public class StatusUtil
                 }
             });
 
-        if (-1 != id.value)
+        if (Aeron.NULL_VALUE != id.value)
         {
             statusIndicator = new UnsafeBufferStatusIndicator(countersReader.valuesBuffer(), id.value);
         }
@@ -80,7 +82,7 @@ public class StatusUtil
                 }
             });
 
-        if (-1 != id.value)
+        if (Aeron.NULL_VALUE != id.value)
         {
             statusReader = new UnsafeBufferStatusIndicator(countersReader.valuesBuffer(), id.value);
         }
@@ -113,7 +115,7 @@ public class StatusUtil
                 }
             });
 
-        if (-1 != id.value)
+        if (Aeron.NULL_VALUE != id.value)
         {
             statusReader = new UnsafeBufferStatusIndicator(countersReader.valuesBuffer(), id.value);
         }

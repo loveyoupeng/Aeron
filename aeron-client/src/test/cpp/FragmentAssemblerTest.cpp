@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -39,7 +39,7 @@ class FragmentAssemblerTest : public testing::Test
 public:
     FragmentAssemblerTest() :
         m_buffer(&m_fragment[0], m_fragment.size()),
-        m_header(INITIAL_TERM_ID, TERM_LENGTH)
+        m_header(INITIAL_TERM_ID, TERM_LENGTH, nullptr)
     {
         m_header.buffer(m_buffer);
         m_fragment.fill(0);

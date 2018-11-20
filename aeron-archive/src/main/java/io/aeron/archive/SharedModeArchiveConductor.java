@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 - 2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -15,7 +15,6 @@
  */
 package io.aeron.archive;
 
-import io.aeron.Aeron;
 import org.agrona.CloseHelper;
 import org.agrona.ErrorHandler;
 import org.agrona.concurrent.AgentInvoker;
@@ -25,9 +24,9 @@ final class SharedModeArchiveConductor extends ArchiveConductor
     private AgentInvoker replayerAgentInvoker;
     private AgentInvoker recorderAgentInvoker;
 
-    SharedModeArchiveConductor(final Aeron aeron, final Archive.Context ctx)
+    SharedModeArchiveConductor(final Archive.Context ctx)
     {
-        super(aeron, ctx);
+        super(ctx);
     }
 
     public void onStart()
@@ -53,16 +52,20 @@ final class SharedModeArchiveConductor extends ArchiveConductor
 
     protected int preWork()
     {
-        return super.preWork() + replayerAgentInvoker.invoke() + recorderAgentInvoker.invoke();
+        return super.preWork() +
+            replayerAgentInvoker.invoke() +
+            invokeDriverConductor() +
+            recorderAgentInvoker.invoke() +
+            invokeDriverConductor();
     }
 
     protected void closeSessionWorkers()
     {
-        CloseHelper.quietClose(recorderAgentInvoker);
-        CloseHelper.quietClose(replayerAgentInvoker);
+        CloseHelper.close(recorderAgentInvoker);
+        CloseHelper.close(replayerAgentInvoker);
     }
 
-    private class SharedModeRecorder extends SessionWorker<RecordingSession>
+    class SharedModeRecorder extends SessionWorker<RecordingSession>
     {
         SharedModeRecorder(final ErrorHandler errorHandler)
         {
@@ -75,7 +78,7 @@ final class SharedModeArchiveConductor extends ArchiveConductor
         }
     }
 
-    private class SharedModeReplayer extends SessionWorker<ReplaySession>
+    class SharedModeReplayer extends SessionWorker<ReplaySession>
     {
         SharedModeReplayer(final ErrorHandler errorHandler)
         {

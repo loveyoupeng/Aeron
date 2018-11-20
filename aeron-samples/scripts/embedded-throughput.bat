@@ -1,5 +1,5 @@
 ::
-:: Copyright 2014-2017 Real Logic Ltd.
+:: Copyright 2014-2018 Real Logic Ltd.
 ::
 :: Licensed under the Apache License, Version 2.0 (the "License");
 :: you may not use this file except in compliance with the License.
@@ -17,12 +17,14 @@
 @echo off
 "%JAVA_HOME%\bin\java" ^
     -cp ..\build\libs\samples.jar ^
+    -XX:BiasedLockingStartupDelay=0 ^
+    -Djava.net.preferIPv4Stack=true ^
     -Dagrona.disable.bounds.checks=true ^
     -Daeron.sample.messageLength=32 ^
     -Daeron.sample.messages=500000000 ^
     -Daeron.term.buffer.sparse.file=false ^
-    -Daeron.mtu.length=16384 ^
-    -Daeron.socket.so_sndbuf=2097152 ^
-    -Daeron.socket.so_rcvbuf=2097152 ^
-    -Daeron.rcv.initial.window.length=2097152 ^
+    -Daeron.mtu.length=16k ^
+    -Daeron.socket.so_sndbuf=2m ^
+    -Daeron.socket.so_rcvbuf=2m ^
+    -Daeron.rcv.initial.window.length=2m ^
     %JVM_OPTS% io.aeron.samples.EmbeddedThroughput %*

@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 - 2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -46,7 +46,7 @@ static double receive_data_loss_rate = 0.0;
 static unsigned short receive_data_loss_xsubi[3];
 static pthread_t log_reader_thread;
 
-int64_t aeron_agent_epochclock()
+int64_t aeron_agent_epoch_clock()
 {
     struct timespec ts;
     if (clock_gettime(CLOCK_REALTIME, &ts) < 0)
@@ -131,7 +131,7 @@ static void initialize_agent_logging()
         }
         else
         {
-            seed_value = aeron_agent_epochclock();
+            seed_value = aeron_agent_epoch_clock();
         }
 
         receive_data_loss_xsubi[2] = (unsigned short)(seed_value & 0xFFFF);
@@ -145,7 +145,7 @@ void aeron_driver_agent_conductor_to_driver_interceptor(
 {
     uint8_t buffer[MAX_CMD_LENGTH + sizeof(aeron_driver_agent_cmd_log_header_t)];
     aeron_driver_agent_cmd_log_header_t *hdr = (aeron_driver_agent_cmd_log_header_t *)buffer;
-    hdr->time_ms = aeron_agent_epochclock();
+    hdr->time_ms = aeron_agent_epoch_clock();
     hdr->cmd_id = msg_type_id;
     memcpy(buffer + sizeof(aeron_driver_agent_cmd_log_header_t), message, length);
 
@@ -157,7 +157,7 @@ void aeron_driver_agent_conductor_to_client_interceptor(
 {
     uint8_t buffer[MAX_CMD_LENGTH + sizeof(aeron_driver_agent_cmd_log_header_t)];
     aeron_driver_agent_cmd_log_header_t *hdr = (aeron_driver_agent_cmd_log_header_t *)buffer;
-    hdr->time_ms = aeron_agent_epochclock();
+    hdr->time_ms = aeron_agent_epoch_clock();
     hdr->cmd_id = msg_type_id;
     memcpy(buffer + sizeof(aeron_driver_agent_cmd_log_header_t), message, length);
 
@@ -177,7 +177,7 @@ int aeron_driver_agent_map_raw_log_interceptor(
     aeron_driver_agent_map_raw_log_op_header_t *hdr = (aeron_driver_agent_map_raw_log_op_header_t *)buffer;
     size_t path_len = strlen(path);
 
-    hdr->time_ms = aeron_agent_epochclock();
+    hdr->time_ms = aeron_agent_epoch_clock();
     hdr->map_raw_log.path_len = (int32_t)path_len;
     hdr->map_raw_log.result = result;
     hdr->map_raw_log.addr = (uintptr_t)mapped_raw_log;
@@ -189,15 +189,15 @@ int aeron_driver_agent_map_raw_log_interceptor(
     return result;
 }
 
-int aeron_driver_agent_map_raw_log_close_interceptor(aeron_mapped_raw_log_t *mapped_raw_log)
+int aeron_driver_agent_map_raw_log_close_interceptor(aeron_mapped_raw_log_t *mapped_raw_log, const char *filename)
 {
     uint8_t buffer[AERON_MAX_PATH + sizeof(aeron_driver_agent_map_raw_log_op_header_t)];
     aeron_driver_agent_map_raw_log_op_header_t *hdr = (aeron_driver_agent_map_raw_log_op_header_t *)buffer;
 
-    hdr->time_ms = aeron_agent_epochclock();
+    hdr->time_ms = aeron_agent_epoch_clock();
     hdr->map_raw_log_close.addr = (uintptr_t)mapped_raw_log;
     memcpy(&hdr->map_raw_log_close.log, mapped_raw_log, sizeof(hdr->map_raw_log.log));
-    hdr->map_raw_log_close.result = aeron_map_raw_log_close(mapped_raw_log);
+    hdr->map_raw_log_close.result = aeron_map_raw_log_close(mapped_raw_log, filename);
 
     aeron_mpsc_rb_write(&logging_mpsc_rb, AERON_MAP_RAW_LOG_OP_CLOSE, buffer, sizeof(aeron_driver_agent_map_raw_log_op_header_t));
     return hdr->map_raw_log_close.result;
@@ -262,7 +262,7 @@ void aeron_driver_agent_log_frame(
     aeron_driver_agent_frame_log_header_t *hdr = (aeron_driver_agent_frame_log_header_t *)buffer;
     size_t length = sizeof(aeron_driver_agent_frame_log_header_t);
 
-    hdr->time_ms = aeron_agent_epochclock();
+    hdr->time_ms = aeron_agent_epoch_clock();
     hdr->result = (int32_t)result;
     hdr->sockaddr_len = msghdr->msg_namelen;
     hdr->message_len = message_len;
@@ -465,6 +465,36 @@ static const char *dissect_timestamp(int64_t time_ms)
     return buffer;
 }
 
+static const char *dissect_command_type_id(int64_t cmd_type_id)
+{
+    switch (cmd_type_id)
+    {
+        case AERON_COMMAND_ADD_PUBLICATION:
+            return "ADD_PUBLICATION";
+
+        case AERON_COMMAND_ADD_EXCLUSIVE_PUBLICATION:
+            return "ADD_EXCLUSIVE_PUBLICATION";
+
+        case AERON_COMMAND_REMOVE_PUBLICATION:
+            return "REMOVE_PUBLICATION";
+
+        case AERON_COMMAND_REMOVE_SUBSCRIPTION:
+            return "REMOVE_SUBSCRIPTION";
+
+        case AERON_COMMAND_REMOVE_COUNTER:
+            return "REMOVE_COUNTER";
+
+        case AERON_COMMAND_ADD_DESTINATION:
+            return "ADD_DESTINATION";
+
+        case AERON_COMMAND_REMOVE_DESTINATION:
+            return "REMOVE_DESTINATION";
+
+        default:
+            return "unknown command";
+    }
+}
+
 static const char *dissect_cmd_in(int64_t cmd_id, const void *message, size_t length)
 {
     static char buffer[256];
@@ -479,7 +509,7 @@ static const char *dissect_cmd_in(int64_t cmd_id, const void *message, size_t le
 
             const char *channel = (const char *)message + sizeof(aeron_publication_command_t);
             snprintf(buffer, sizeof(buffer) - 1, "%s %d %*s [%" PRId64 ":%" PRId64 "]",
-                (cmd_id == AERON_COMMAND_ADD_PUBLICATION) ? "ADD_PUBLICATION" : "ADD_EXCLUSIVE_PUBLCIATION",
+                dissect_command_type_id(cmd_id),
                 command->stream_id,
                 command->channel_length,
                 channel,
@@ -490,11 +520,12 @@ static const char *dissect_cmd_in(int64_t cmd_id, const void *message, size_t le
 
         case AERON_COMMAND_REMOVE_PUBLICATION:
         case AERON_COMMAND_REMOVE_SUBSCRIPTION:
+        case AERON_COMMAND_REMOVE_COUNTER:
         {
             aeron_remove_command_t *command = (aeron_remove_command_t *)message;
 
             snprintf(buffer, sizeof(buffer) - 1, "%s %" PRId64 " [%" PRId64 ":%" PRId64 "]",
-                (cmd_id == AERON_COMMAND_REMOVE_PUBLICATION) ? "REMOVE_PUBLICATION" : "REMOVE_SUBSCRIPTION",
+                dissect_command_type_id(cmd_id),
                 command->registration_id,
                 command->correlated.client_id,
                 command->correlated.correlation_id);
@@ -527,6 +558,54 @@ static const char *dissect_cmd_in(int64_t cmd_id, const void *message, size_t le
             break;
         }
 
+        case AERON_COMMAND_ADD_DESTINATION:
+        case AERON_COMMAND_REMOVE_DESTINATION:
+        {
+            aeron_destination_command_t *command = (aeron_destination_command_t *)message;
+
+            const char *channel = (const char *)message + sizeof(aeron_destination_command_t);
+            snprintf(buffer, sizeof(buffer) - 1, "%s %*s %" PRId64 " [%" PRId64 ":%" PRId64 "]",
+                dissect_command_type_id(cmd_id),
+                command->channel_length,
+                channel,
+                command->registration_id,
+                command->correlated.client_id,
+                command->correlated.correlation_id);
+            break;
+        }
+
+        case AERON_COMMAND_ADD_COUNTER:
+        {
+            aeron_counter_command_t *command = (aeron_counter_command_t *)message;
+
+            const uint8_t *cursor = (const uint8_t *)message + sizeof(aeron_counter_command_t);
+            int32_t key_length = *((int32_t *)cursor);
+            const uint8_t *key = cursor + sizeof(int32_t);
+
+            cursor = key + key_length;
+            int32_t label_length = *((int32_t *)cursor);
+
+            snprintf(buffer, sizeof(buffer) - 1, "ADD_COUNTER %d [%d %d][%d %d][%" PRId64 ":%" PRId64 "]",
+                command->type_id,
+                (int)(sizeof(aeron_counter_command_t) + sizeof(int32_t)),
+                key_length,
+                (int)(sizeof(aeron_counter_command_t) + (2 * sizeof(int32_t)) + AERON_ALIGN(key_length, sizeof(int32_t))),
+                label_length,
+                command->correlated.client_id,
+                command->correlated.correlation_id);
+            break;
+        }
+
+        case AERON_COMMAND_CLIENT_CLOSE:
+        {
+            aeron_correlated_command_t *command = (aeron_correlated_command_t *)message;
+
+            snprintf(buffer, sizeof(buffer) - 1, "CLIENT_CLOSE [%" PRId64 ":%" PRId64 "]",
+                command->client_id,
+                command->correlation_id);
+            break;
+        }
+
         default:
             break;
     }
@@ -543,11 +622,9 @@ static const char *dissect_cmd_out(int64_t cmd_id, const void *message, size_t l
     {
         case AERON_RESPONSE_ON_OPERATION_SUCCESS:
         {
-            aeron_correlated_command_t *command = (aeron_correlated_command_t *)message;
+            aeron_operation_succeeded_t *command = (aeron_operation_succeeded_t *)message;
 
-            snprintf(buffer, sizeof(buffer) - 1, "ON_OPERATION_SUCCESS [%" PRId64 ":%" PRId64 "]",
-                command->client_id,
-                command->correlation_id);
+            snprintf(buffer, sizeof(buffer) - 1, "ON_OPERATION_SUCCEEDED %" PRId64, command->correlation_id);
             break;
         }
 
@@ -557,15 +634,26 @@ static const char *dissect_cmd_out(int64_t cmd_id, const void *message, size_t l
             aeron_publication_buffers_ready_t *command = (aeron_publication_buffers_ready_t *)message;
 
             const char *log_file_name = (const char *)message + sizeof(aeron_publication_buffers_ready_t);
-            snprintf(buffer, sizeof(buffer) - 1, "%s %d:%d %d [%" PRId64 " %" PRId64 "]\n    \"%*s\"",
+            snprintf(buffer, sizeof(buffer) - 1, "%s %d:%d %d %d [%" PRId64 " %" PRId64 "]\n    \"%*s\"",
                 (cmd_id == AERON_RESPONSE_ON_PUBLICATION_READY) ? "ON_PUBLICATION_READY" : "ON_EXCLUSIVE_PUBLICATION_READY",
                 command->session_id,
                 command->stream_id,
                 command->position_limit_counter_id,
+                command->channel_status_indicator_id,
                 command->correlation_id,
                 command->registration_id,
                 command->log_file_length,
                 log_file_name);
+            break;
+        }
+
+        case AERON_RESPONSE_ON_SUBSCRIPTION_READY:
+        {
+            aeron_subscription_ready_t *command = (aeron_subscription_ready_t *)message;
+
+            snprintf(buffer, sizeof(buffer) - 1, "ON_SUBSCRIPTION_READY %" PRId64 " %d",
+                command->correlation_id,
+                command->channel_status_indicator_id);
             break;
         }
 
@@ -612,13 +700,23 @@ static const char *dissect_cmd_out(int64_t cmd_id, const void *message, size_t l
             const char *log_file_name = log_file_name_ptr + sizeof(int32_t);
 
             char *source_identity_ptr =
-                log_file_name_ptr + *log_file_name_length + sizeof(int32_t);
+                log_file_name_ptr + AERON_ALIGN(*log_file_name_length, sizeof(int32_t)) + sizeof(int32_t);
             int32_t *source_identity_length = (int32_t *)source_identity_ptr;
             const char *source_identity = source_identity_ptr + sizeof(int32_t);
             len += snprintf(ptr + len, sizeof(buffer) - 1 - len, " \"%*s\" [%" PRId64 "]\n",
                 *source_identity_length, source_identity, command->correlation_id);
 
             len += snprintf(ptr + len, sizeof(buffer) - 1 - len, "    \"%*s\"", *log_file_name_length, log_file_name);
+            break;
+        }
+
+        case AERON_RESPONSE_ON_COUNTER_READY:
+        {
+            aeron_counter_update_t *command = (aeron_counter_update_t *)message;
+
+            snprintf(buffer, sizeof(buffer) -1 , "ON_COUNTER_READY %" PRId64 " %d",
+                command->correlation_id,
+                command->counter_id);
             break;
         }
 

@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,6 +24,7 @@
 
 #include <gtest/gtest.h>
 #include <arpa/inet.h>
+#include <concurrent/CountersReader.h>
 
 extern "C"
 {
@@ -42,7 +43,11 @@ extern "C"
 #include "command/SubscriptionMessageFlyweight.h"
 #include "command/RemoveMessageFlyweight.h"
 #include "command/ImageMessageFlyweight.h"
-#include <command/ErrorResponseFlyweight.h>
+#include "command/ErrorResponseFlyweight.h"
+#include "command/OperationSucceededFlyweight.h"
+#include "command/SubscriptionReadyFlyweight.h"
+#include "command/CounterMessageFlyweight.h"
+#include "command/CounterUpdateFlyweight.h"
 
 using namespace aeron::concurrent::broadcast;
 using namespace aeron::concurrent::ringbuffer;
@@ -109,7 +114,7 @@ static int test_malloc_map_raw_log(
     return 0;
 }
 
-static int test_malloc_map_raw_log_close(aeron_mapped_raw_log_t *log)
+static int test_malloc_map_raw_log_close(aeron_mapped_raw_log_t *log, const char *filename)
 {
     free(log->mapped_file.addr);
     return 0;
@@ -341,6 +346,54 @@ public:
         command.clientId(client_id);
 
         return writeCommand(AERON_COMMAND_CLIENT_KEEPALIVE, command::CORRELATED_MESSAGE_LENGTH);
+    }
+
+    int addCounter(
+        int64_t client_id, int64_t correlation_id, int32_t type_id, const uint8_t *key, size_t key_length, std::string& label)
+    {
+        command::CounterMessageFlyweight command(m_command, 0);
+
+        command.clientId(client_id);
+        command.correlationId(correlation_id);
+        command.typeId(type_id);
+        command.keyBuffer(key, key_length);
+        command.label(label);
+
+        return writeCommand(AERON_COMMAND_ADD_COUNTER, command.length());
+    }
+
+    int removeCounter(int64_t client_id, int64_t correlation_id, int64_t registration_id)
+    {
+        command::RemoveMessageFlyweight command(m_command, 0);
+
+        command.clientId(client_id);
+        command.correlationId(correlation_id);
+        command.registrationId(registration_id);
+
+        return writeCommand(AERON_COMMAND_REMOVE_COUNTER, command.length());
+    }
+
+    template<typename F>
+    bool findCounter(int32_t counter_id, F&& func)
+    {
+        aeron_driver_context_t *ctx = m_context.m_context;
+        AtomicBuffer metadata(ctx->counters_metadata_buffer, static_cast<util::index_t>(ctx->counters_metadata_buffer_length));
+        AtomicBuffer values(ctx->counters_values_buffer, static_cast<util::index_t>(ctx->counters_values_buffer_length));
+
+        CountersReader reader(metadata, values);
+        bool found = false;
+
+        reader.forEach(
+            [&](std::int32_t id, std::int32_t typeId, const AtomicBuffer& key, const std::string& label)
+            {
+                if (id == counter_id)
+                {
+                    func(id, typeId, key, label);
+                    found = true;
+                }
+            });
+
+        return found;
     }
 
     int doWork()

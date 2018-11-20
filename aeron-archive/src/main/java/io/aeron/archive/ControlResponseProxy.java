@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,20 +16,24 @@
 package io.aeron.archive;
 
 import io.aeron.Publication;
-import io.aeron.archive.codecs.ControlResponseCode;
-import io.aeron.archive.codecs.ControlResponseEncoder;
-import io.aeron.archive.codecs.MessageHeaderEncoder;
-import io.aeron.archive.codecs.RecordingDescriptorEncoder;
+import io.aeron.archive.client.ArchiveException;
+import io.aeron.archive.codecs.*;
+import io.aeron.logbuffer.BufferClaim;
 import org.agrona.DirectBuffer;
-import org.agrona.ExpandableDirectByteBuffer;
-import org.agrona.Strings;
+import org.agrona.ExpandableArrayBuffer;
+import org.agrona.MutableDirectBuffer;
 import org.agrona.concurrent.UnsafeBuffer;
+
+import static io.aeron.archive.codecs.RecordingDescriptorEncoder.recordingIdEncodingOffset;
 
 class ControlResponseProxy
 {
-    private static final int HEADER_LENGTH = MessageHeaderEncoder.ENCODED_LENGTH;
-    private static final byte[] EMPTY_BYTE_ARRAY = new byte[0];
-    private final ExpandableDirectByteBuffer buffer = new ExpandableDirectByteBuffer(2048);
+    private static final int MESSAGE_HEADER_LENGTH = MessageHeaderEncoder.ENCODED_LENGTH;
+    private static final int DESCRIPTOR_CONTENT_OFFSET =
+        RecordingDescriptorHeaderDecoder.BLOCK_LENGTH + recordingIdEncodingOffset();
+
+    private final ExpandableArrayBuffer buffer = new ExpandableArrayBuffer(1024);
+    private final BufferClaim bufferClaim = new BufferClaim();
 
     private final MessageHeaderEncoder messageHeaderEncoder = new MessageHeaderEncoder();
     private final ControlResponseEncoder responseEncoder = new ControlResponseEncoder();
@@ -41,15 +45,34 @@ class ControlResponseProxy
         final UnsafeBuffer descriptorBuffer,
         final Publication controlPublication)
     {
-        final int offset = Catalog.DESCRIPTOR_HEADER_LENGTH - HEADER_LENGTH;
-        final int length = descriptorBuffer.getInt(0) + HEADER_LENGTH;
+        final int messageLength = Catalog.descriptorLength(descriptorBuffer) + MESSAGE_HEADER_LENGTH;
+        final int contentLength = messageLength - recordingIdEncodingOffset() - MESSAGE_HEADER_LENGTH;
 
-        recordingDescriptorEncoder
-            .wrapAndApplyHeader(descriptorBuffer, offset, messageHeaderEncoder)
-            .controlSessionId(controlSessionId)
-            .correlationId(correlationId);
+        for (int i = 0; i < 3; i++)
+        {
+            final long result = controlPublication.tryClaim(messageLength, bufferClaim);
+            if (result > 0)
+            {
+                final MutableDirectBuffer buffer = bufferClaim.buffer();
+                final int bufferOffset = bufferClaim.offset();
 
-        return send(controlPublication, descriptorBuffer, offset, length) ? length : 0;
+                recordingDescriptorEncoder
+                    .wrapAndApplyHeader(buffer, bufferOffset, messageHeaderEncoder)
+                    .controlSessionId(controlSessionId)
+                    .correlationId(correlationId);
+
+                final int contentOffset = bufferOffset + MESSAGE_HEADER_LENGTH + recordingIdEncodingOffset();
+                buffer.putBytes(contentOffset, descriptorBuffer, DESCRIPTOR_CONTENT_OFFSET, contentLength);
+
+                bufferClaim.commit();
+
+                return messageLength;
+            }
+
+            checkResult(controlPublication, result);
+        }
+
+        return 0;
     }
 
     boolean sendResponse(
@@ -65,40 +88,70 @@ class ControlResponseProxy
             .controlSessionId(controlSessionId)
             .correlationId(correlationId)
             .relevantId(relevantId)
-            .code(code);
+            .code(code)
+            .errorMessage(null == errorMessage ? "" : errorMessage);
 
-        if (!Strings.isEmpty(errorMessage))
-        {
-            responseEncoder.errorMessage(errorMessage);
-        }
-        else
-        {
-            responseEncoder.putErrorMessage(EMPTY_BYTE_ARRAY, 0, 0);
-        }
-
-        return send(controlPublication, buffer, 0, HEADER_LENGTH + responseEncoder.encodedLength());
+        return send(controlPublication, buffer, MESSAGE_HEADER_LENGTH + responseEncoder.encodedLength());
     }
 
-    private boolean send(
-        final Publication controlPublication,
-        final DirectBuffer buffer,
-        final int offset,
-        final int length)
+    void attemptErrorResponse(
+        final long controlSessionId,
+        final long correlationId,
+        final long relevantId,
+        final String errorMessage,
+        final Publication controlPublication)
+    {
+        responseEncoder
+            .wrapAndApplyHeader(buffer, 0, messageHeaderEncoder)
+            .controlSessionId(controlSessionId)
+            .correlationId(correlationId)
+            .relevantId(relevantId)
+            .code(ControlResponseCode.ERROR)
+            .errorMessage(null == errorMessage ? "" : errorMessage);
+
+        final int length = MESSAGE_HEADER_LENGTH + responseEncoder.encodedLength();
+
+        for (int i = 0; i < 3; i++)
+        {
+            final long result = controlPublication.offer(buffer, 0, length);
+            if (result > 0)
+            {
+                break;
+            }
+        }
+    }
+
+    private boolean send(final Publication controlPublication, final DirectBuffer buffer, final int length)
     {
         for (int i = 0; i < 3; i++)
         {
-            final long result = controlPublication.offer(buffer, offset, length);
+            final long result = controlPublication.offer(buffer, 0, length);
             if (result > 0)
             {
                 return true;
             }
 
-            if (result == Publication.NOT_CONNECTED || result == Publication.CLOSED)
-            {
-                throw new IllegalStateException("Response channel is down: " + controlPublication);
-            }
+            checkResult(controlPublication, result);
         }
 
         return false;
+    }
+
+    private static void checkResult(final Publication controlPublication, final long result)
+    {
+        if (result == Publication.NOT_CONNECTED)
+        {
+            throw new ArchiveException("response publication is not connected: " + controlPublication.channel());
+        }
+
+        if (result == Publication.CLOSED)
+        {
+            throw new ArchiveException("response publication is closed: " + controlPublication.channel());
+        }
+
+        if (result == Publication.MAX_POSITION_EXCEEDED)
+        {
+            throw new ArchiveException("response publication at max position: " + controlPublication.channel());
+        }
     }
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,32 +15,28 @@
  */
 package io.aeron.archive;
 
+import io.aeron.Counter;
 import io.aeron.Image;
 import io.aeron.Subscription;
-import io.aeron.archive.codecs.RecordingDescriptorDecoder;
-import io.aeron.archive.codecs.RecordingDescriptorEncoder;
+import io.aeron.archive.client.AeronArchive;
+import io.aeron.logbuffer.BlockHandler;
 import io.aeron.logbuffer.FrameDescriptor;
-import io.aeron.logbuffer.RawBlockHandler;
+import io.aeron.logbuffer.LogBufferDescriptor;
 import io.aeron.protocol.DataHeaderFlyweight;
 import org.agrona.CloseHelper;
 import org.agrona.IoUtil;
 import org.agrona.concurrent.EpochClock;
 import org.agrona.concurrent.UnsafeBuffer;
-import org.agrona.concurrent.status.AtomicCounter;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
-import org.mockito.Mockito;
 
 import java.io.File;
 import java.nio.channels.FileChannel;
 
 import static io.aeron.archive.Archive.segmentFileName;
-import static io.aeron.archive.Catalog.wrapDescriptorDecoder;
-import static io.aeron.archive.TestUtil.newRecordingFragmentReader;
-import static io.aeron.logbuffer.FrameDescriptor.FRAME_ALIGNMENT;
+import static io.aeron.archive.client.AeronArchive.NULL_POSITION;
 import static java.nio.file.StandardOpenOption.*;
-import static org.agrona.BufferUtil.allocateDirectAligned;
 import static org.junit.Assert.*;
 import static org.mockito.Mockito.*;
 
@@ -48,8 +44,8 @@ public class RecordingSessionTest
 {
     private static final int RECORDED_BLOCK_LENGTH = 100;
     private static final long RECORDING_ID = 12345;
-    private static final int TERM_BUFFER_LENGTH = 4096;
-    private static final int SEGMENT_FILE_SIZE = TERM_BUFFER_LENGTH;
+    private static final int TERM_BUFFER_LENGTH = LogBufferDescriptor.TERM_MIN_LENGTH;
+    private static final int SEGMENT_LENGTH = TERM_BUFFER_LENGTH;
 
     private static final String CHANNEL = "channel";
     private static final String SOURCE_IDENTITY = "sourceIdentity";
@@ -60,36 +56,32 @@ public class RecordingSessionTest
     private static final int MTU_LENGTH = 1024;
     private static final long START_POSITION = TERM_OFFSET;
     private static final int INITIAL_TERM_ID = 0;
-    public static final long START_TIMESTAMP = 0L;
     public static final FileChannel ARCHIVE_CHANNEL = null;
 
     private final RecordingEventsProxy recordingEventsProxy = mock(RecordingEventsProxy.class);
-    private final AtomicCounter position = mock(AtomicCounter.class);
-    private Image image = mockImage(
-        SESSION_ID, INITIAL_TERM_ID, SOURCE_IDENTITY, TERM_BUFFER_LENGTH, mockSubscription(CHANNEL, STREAM_ID));
-    private File tempDirForTest = TestUtil.makeTempDir();
+    private final Counter mockPosition = mock(Counter.class);
+    private final Image image = mockImage(mockSubscription());
+    private final File archiveDir = TestUtil.makeTestDirectory();
     private FileChannel mockLogBufferChannel;
     private UnsafeBuffer mockLogBufferMapped;
     private File termFile;
-    private EpochClock epochClock = Mockito.mock(EpochClock.class);
+    private EpochClock epochClock = mock(EpochClock.class);
+    private Catalog mockCatalog = mock(Catalog.class);
     private Archive.Context context;
-    private UnsafeBuffer descriptorBuffer =
-        new UnsafeBuffer(allocateDirectAligned(Catalog.DEFAULT_RECORD_LENGTH, FRAME_ALIGNMENT));
-
     private long positionLong;
 
     @Before
     public void before() throws Exception
     {
-        when(position.getWeak()).then((invocation) -> positionLong);
-        when(position.get()).then((invocation) -> positionLong);
+        when(mockPosition.getWeak()).then((invocation) -> positionLong);
+        when(mockPosition.get()).then((invocation) -> positionLong);
         doAnswer(
             (invocation) ->
             {
                 positionLong = invocation.getArgument(0);
                 return null;
             })
-            .when(position).setOrdered(anyLong());
+            .when(mockPosition).setOrdered(anyLong());
 
         termFile = File.createTempFile("test.rec", "sourceIdentity");
 
@@ -107,27 +99,10 @@ public class RecordingSessionTest
             .frameLength(RECORDED_BLOCK_LENGTH);
 
         context = new Archive.Context()
-            .segmentFileLength(SEGMENT_FILE_SIZE)
-            .archiveDir(tempDirForTest)
+            .segmentFileLength(SEGMENT_LENGTH)
+            .archiveDir(archiveDir)
+            .catalog(mockCatalog)
             .epochClock(epochClock);
-
-        final RecordingDescriptorDecoder descriptorDecoder = new RecordingDescriptorDecoder();
-        wrapDescriptorDecoder(descriptorDecoder, descriptorBuffer);
-
-        Catalog.initDescriptor(
-            new RecordingDescriptorEncoder().wrap(descriptorBuffer, Catalog.DESCRIPTOR_HEADER_LENGTH),
-            RECORDING_ID,
-            START_TIMESTAMP,
-            START_POSITION,
-            INITIAL_TERM_ID,
-            context.segmentFileLength(),
-            TERM_BUFFER_LENGTH,
-            MTU_LENGTH,
-            SESSION_ID,
-            STREAM_ID,
-            CHANNEL,
-            CHANNEL,
-            SOURCE_IDENTITY);
     }
 
     @After
@@ -135,32 +110,38 @@ public class RecordingSessionTest
     {
         IoUtil.unmap(mockLogBufferMapped.byteBuffer());
         CloseHelper.close(mockLogBufferChannel);
-        IoUtil.delete(tempDirForTest, false);
+        IoUtil.delete(archiveDir, false);
         IoUtil.delete(termFile, false);
     }
 
     @Test
-    public void shouldRecordFragmentsFromImage() throws Exception
+    public void shouldRecordFragmentsFromImage()
     {
         final RecordingSession session = new RecordingSession(
-            RECORDING_ID, recordingEventsProxy, CHANNEL, image, position, ARCHIVE_CHANNEL, context);
+            RECORDING_ID,
+            START_POSITION,
+            SEGMENT_LENGTH,
+            CHANNEL,
+            recordingEventsProxy,
+            image,
+            mockPosition,
+            ARCHIVE_CHANNEL,
+            context);
 
         assertEquals(RECORDING_ID, session.sessionId());
 
         session.doWork();
 
-        when(image.rawPoll(any(), anyInt())).thenAnswer(
+        when(image.blockPoll(any(), anyInt())).thenAnswer(
             (invocation) ->
             {
-                final RawBlockHandler handle = invocation.getArgument(0);
+                final BlockHandler handle = invocation.getArgument(0);
                 if (handle == null)
                 {
                     return 0;
                 }
 
                 handle.onBlock(
-                    mockLogBufferChannel,
-                    TERM_OFFSET,
                     mockLogBufferMapped,
                     TERM_OFFSET,
                     RECORDED_BLOCK_LENGTH,
@@ -172,16 +153,29 @@ public class RecordingSessionTest
 
         assertNotEquals("Expect some work", 0, session.doWork());
 
-        final File segmentFile = new File(tempDirForTest, segmentFileName(RECORDING_ID, 0));
+        final File segmentFile = new File(archiveDir, segmentFileName(RECORDING_ID, 0));
         assertTrue(segmentFile.exists());
-        new RecordingDescriptorEncoder()
-            .wrap(descriptorBuffer, Catalog.DESCRIPTOR_HEADER_LENGTH)
-            .stopPosition(START_POSITION + RECORDED_BLOCK_LENGTH);
 
-        try (RecordingFragmentReader reader = newRecordingFragmentReader(descriptorBuffer, tempDirForTest))
+        final RecordingSummary recordingSummary = new RecordingSummary();
+        recordingSummary.recordingId = RECORDING_ID;
+        recordingSummary.startPosition = START_POSITION;
+        recordingSummary.segmentFileLength = context.segmentFileLength();
+        recordingSummary.initialTermId = INITIAL_TERM_ID;
+        recordingSummary.termBufferLength = TERM_BUFFER_LENGTH;
+        recordingSummary.streamId = STREAM_ID;
+        recordingSummary.sessionId = SESSION_ID;
+        recordingSummary.stopPosition = START_POSITION + RECORDED_BLOCK_LENGTH;
+
+        try (RecordingFragmentReader reader = new RecordingFragmentReader(
+            mockCatalog,
+            recordingSummary,
+            archiveDir,
+            NULL_POSITION,
+            AeronArchive.NULL_LENGTH,
+            null))
         {
-            final int polled = reader.controlledPoll(
-                (buffer, offset, length) ->
+            final int fragments = reader.controlledPoll(
+                (buffer, offset, length, frameType, flags, reservedValue) ->
                 {
                     final int frameOffset = offset - DataHeaderFlyweight.HEADER_LENGTH;
                     assertEquals(TERM_OFFSET, frameOffset);
@@ -191,44 +185,40 @@ public class RecordingSessionTest
                 },
                 1);
 
-            assertEquals(1, polled);
+            assertEquals(1, fragments);
         }
 
-        when(image.rawPoll(any(), anyInt())).thenReturn(0);
+        when(image.blockPoll(any(), anyInt())).thenReturn(0);
         assertEquals("Expect no work", 0, session.doWork());
 
         when(image.isClosed()).thenReturn(true);
+        session.doWork();
         session.doWork();
         assertTrue(session.isDone());
         session.close();
     }
 
-    private Subscription mockSubscription(final String channel, final int streamId)
+    private static Subscription mockSubscription()
     {
         final Subscription subscription = mock(Subscription.class);
 
-        when(subscription.channel()).thenReturn(channel);
-        when(subscription.streamId()).thenReturn(streamId);
+        when(subscription.channel()).thenReturn(CHANNEL);
+        when(subscription.streamId()).thenReturn(STREAM_ID);
 
         return subscription;
     }
 
-    private Image mockImage(
-        final int sessionId,
-        final int initialTermId,
-        final String sourceIdentity,
-        final int termBufferLength,
-        final Subscription subscription)
+    private static Image mockImage(final Subscription subscription)
     {
         final Image image = mock(Image.class);
 
-        when(image.sessionId()).thenReturn(sessionId);
-        when(image.initialTermId()).thenReturn(initialTermId);
-        when(image.sourceIdentity()).thenReturn(sourceIdentity);
-        when(image.termBufferLength()).thenReturn(termBufferLength);
-        when(image.subscription()).thenReturn(subscription);
+        when(image.sessionId()).thenReturn(SESSION_ID);
+        when(image.initialTermId()).thenReturn(INITIAL_TERM_ID);
+        when(image.sourceIdentity()).thenReturn(SOURCE_IDENTITY);
+        when(image.termBufferLength()).thenReturn(TERM_BUFFER_LENGTH);
         when(image.mtuLength()).thenReturn(MTU_LENGTH);
         when(image.joinPosition()).thenReturn(START_POSITION);
+        when(image.subscription()).thenReturn(subscription);
 
         return image;
     }

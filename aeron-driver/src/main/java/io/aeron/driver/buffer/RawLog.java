@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,7 +23,7 @@ import java.nio.ByteBuffer;
  * Represents the collection of term and associated state buffers for the image between a publisher and subscriber
  * image for the replicated log.
  */
-public interface RawLog extends AutoCloseable
+public interface RawLog
 {
     /**
      * The length of each term in bytes.
@@ -60,5 +60,22 @@ public interface RawLog extends AutoCloseable
      */
     String fileName();
 
+    /**
+     * Free the mapped buffers and delete the file.
+     *
+     * @return true if successful or false if it should be reattempted.
+     */
+    boolean free();
+
+    /**
+     * Has the {@link #free()} method been called.
+     *
+     * @return true if an attempt to free is in progress or completed.
+     */
+    boolean isInactive();
+
+    /**
+     * Close the resource regardless of if {@link #free()} has succeeded or not.
+     */
     void close();
 }

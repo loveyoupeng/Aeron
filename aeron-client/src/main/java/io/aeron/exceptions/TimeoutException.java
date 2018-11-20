@@ -1,5 +1,5 @@
 /*
- *  Copyright 2017 Real Logic Ltd.
+ *  Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,7 +18,7 @@ package io.aeron.exceptions;
 /**
  * Generic timeout has occurred while waiting on some action or event.
  */
-public class TimeoutException extends RuntimeException
+public class TimeoutException extends AeronException
 {
     public TimeoutException()
     {

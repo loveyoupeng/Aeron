@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -113,7 +113,7 @@ public class SelectorAndTransportTest
     }
 
     @Test(timeout = 1000)
-    public void shouldHandleBasicSetupAndTearDown() throws Exception
+    public void shouldHandleBasicSetupAndTearDown()
     {
         receiveChannelEndpoint = new ReceiveChannelEndpoint(
             RCV_DST, mockDispatcher, mockReceiveStatusIndicator, context);
@@ -128,7 +128,7 @@ public class SelectorAndTransportTest
     }
 
     @Test(timeout = 1000)
-    public void shouldSendEmptyDataFrameUnicastFromSourceToReceiver() throws Exception
+    public void shouldSendEmptyDataFrameUnicastFromSourceToReceiver()
     {
         final AtomicInteger dataHeadersReceived = new AtomicInteger(0);
 
@@ -143,7 +143,8 @@ public class SelectorAndTransportTest
             any(DataHeaderFlyweight.class),
             any(UnsafeBuffer.class),
             anyInt(),
-            any(InetSocketAddress.class));
+            any(InetSocketAddress.class),
+            anyInt());
 
         receiveChannelEndpoint = new ReceiveChannelEndpoint(
             RCV_DST, mockDispatcher, mockReceiveStatusIndicator, context);
@@ -177,7 +178,7 @@ public class SelectorAndTransportTest
     }
 
     @Test(timeout = 1000)
-    public void shouldSendMultipleDataFramesPerDatagramUnicastFromSourceToReceiver() throws Exception
+    public void shouldSendMultipleDataFramesPerDatagramUnicastFromSourceToReceiver()
     {
         final AtomicInteger dataHeadersReceived = new AtomicInteger(0);
 
@@ -192,7 +193,8 @@ public class SelectorAndTransportTest
             any(DataHeaderFlyweight.class),
             any(UnsafeBuffer.class),
             anyInt(),
-            any(InetSocketAddress.class));
+            any(InetSocketAddress.class),
+            anyInt());
 
         receiveChannelEndpoint = new ReceiveChannelEndpoint(
             RCV_DST, mockDispatcher, mockReceiveStatusIndicator, context);
@@ -239,7 +241,7 @@ public class SelectorAndTransportTest
     }
 
     @Test(timeout = 1000)
-    public void shouldHandleSmFrameFromReceiverToSender() throws Exception
+    public void shouldHandleSmFrameFromReceiverToSender()
     {
         final AtomicInteger controlMessagesReceived = new AtomicInteger(0);
 
@@ -282,10 +284,10 @@ public class SelectorAndTransportTest
             processLoop(controlTransportPoller, 1);
         }
 
-        verify(mockStatusMessagesReceivedCounter, times(1)).orderedIncrement();
+        verify(mockStatusMessagesReceivedCounter, times(1)).incrementOrdered();
     }
 
-    private void processLoop(final UdpTransportPoller transportPoller, final int iterations) throws Exception
+    private void processLoop(final UdpTransportPoller transportPoller, final int iterations)
     {
         for (int i = 0; i < iterations; i++)
         {

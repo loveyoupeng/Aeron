@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,10 +22,10 @@ import java.nio.ByteBuffer;
 import static java.nio.ByteOrder.LITTLE_ENDIAN;
 
 /**
- * Flyweight for an RTT Measurement Packet
+ * Flyweight for an RTT Measurement Frame Header.
  * <p>
- * <a href="https://github.com/real-logic/Aeron/wiki/Protocol-Specification#rtt-measurement-header">
- * RTT Measurement Header</a>
+ * <a target="_blank" href="https://github.com/real-logic/aeron/wiki/Protocol-Specification#rtt-measurement-header">
+ * RTT Measurement Frame Header</a> wiki page.
  */
 public class RttMeasurementFlyweight extends HeaderFlyweight
 {

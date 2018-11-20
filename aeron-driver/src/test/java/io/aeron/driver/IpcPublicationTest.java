@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -31,9 +31,11 @@ import org.agrona.concurrent.status.UnsafeBufferPosition;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 
+import static org.agrona.concurrent.status.CountersReader.METADATA_LENGTH;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.greaterThan;
 import static org.hamcrest.Matchers.is;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.mock;
@@ -57,27 +59,29 @@ public class IpcPublicationTest
 
     @SuppressWarnings("unchecked")
     @Before
-    public void setUp() throws Exception
+    public void setUp()
     {
-        final RingBuffer fromClientCommands =
-            new ManyToOneRingBuffer(new UnsafeBuffer(
-                ByteBuffer.allocateDirect(Configuration.CONDUCTOR_BUFFER_LENGTH)));
+        final RingBuffer fromClientCommands = new ManyToOneRingBuffer(new UnsafeBuffer(
+            ByteBuffer.allocateDirect(Configuration.CONDUCTOR_BUFFER_LENGTH)));
 
         final RawLogFactory mockRawLogFactory = mock(RawLogFactory.class);
         final UnsafeBuffer counterBuffer = new UnsafeBuffer(ByteBuffer.allocateDirect(BUFFER_LENGTH));
         final CountersManager countersManager = new CountersManager(
             new UnsafeBuffer(ByteBuffer.allocateDirect(BUFFER_LENGTH * 2)), counterBuffer, StandardCharsets.US_ASCII);
 
-        when(mockRawLogFactory.newIpcPublication(anyInt(), anyInt(), anyLong(), anyInt()))
+        when(mockRawLogFactory.newIpcPublication(anyInt(), anyInt(), anyLong(), anyInt(), anyBoolean()))
             .thenReturn(LogBufferHelper.newTestLogBuffers(TERM_BUFFER_LENGTH));
 
         final MediaDriver.Context ctx = new MediaDriver.Context()
+            .tempBuffer(new UnsafeBuffer(new byte[METADATA_LENGTH]))
             .ipcTermBufferLength(TERM_BUFFER_LENGTH)
             .toDriverCommands(fromClientCommands)
             .rawLogBuffersFactory(mockRawLogFactory)
             .clientProxy(mock(ClientProxy.class))
-            .driverCommandQueue(mock(OneToOneConcurrentArrayQueue.class))
+            .driverCommandQueue(mock(ManyToOneConcurrentArrayQueue.class))
             .epochClock(new SystemEpochClock())
+            .cachedEpochClock(new CachedEpochClock())
+            .cachedNanoClock(new CachedNanoClock())
             .countersManager(countersManager)
             .systemCounters(mock(SystemCounters.class))
             .nanoClock(nanoClock);
@@ -104,7 +108,7 @@ public class IpcPublicationTest
     @Test
     public void shouldKeepPublisherLimitZeroOnNoSubscriptionUpdate()
     {
-        ipcPublication.updatePublishersLimit();
+        ipcPublication.updatePublisherLimit();
         assertThat(publisherLimit.get(), is(0L));
     }
 
@@ -115,7 +119,7 @@ public class IpcPublicationTest
     }
 
     @Test
-    public void shouldIncrementPublisherLimitOnSubscription() throws Exception
+    public void shouldIncrementPublisherLimitOnSubscription()
     {
         driverProxy.addSubscription(CommonContext.IPC_CHANNEL, STREAM_ID);
         driverConductor.doWork();

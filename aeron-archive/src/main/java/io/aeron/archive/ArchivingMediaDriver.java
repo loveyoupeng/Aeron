@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,25 +15,72 @@
  */
 package io.aeron.archive;
 
-import io.aeron.driver.Configuration;
 import io.aeron.driver.MediaDriver;
-import io.aeron.driver.ThreadingMode;
+import io.aeron.driver.status.SystemCounterDescriptor;
+import org.agrona.CloseHelper;
 import org.agrona.concurrent.ShutdownSignalBarrier;
 
 import static org.agrona.SystemUtil.loadPropertiesFiles;
 
 /**
- * Archiving {@link MediaDriver}.
+ * Archiving media driver which is an aggregate of a {@link MediaDriver} and an {@link Archive}.
  */
-public final class ArchivingMediaDriver implements AutoCloseable
+public class ArchivingMediaDriver implements AutoCloseable
 {
     private final MediaDriver driver;
     private final Archive archive;
 
-    private ArchivingMediaDriver(final MediaDriver driver, final Archive archive)
+    ArchivingMediaDriver(final MediaDriver driver, final Archive archive)
     {
         this.driver = driver;
         this.archive = archive;
+    }
+
+    /**
+     * Launch an {@link Archive} with an embedded {@link MediaDriver} and await a shutdown signal.
+     *
+     * @param args command line argument which is a list for properties files as URLs or filenames.
+     */
+    public static void main(final String[] args)
+    {
+        loadPropertiesFiles(args);
+
+        try (ArchivingMediaDriver ignore = launch())
+        {
+            new ShutdownSignalBarrier().await();
+
+            System.out.println("Shutdown Archive...");
+        }
+    }
+
+    /**
+     * Launch a new {@link ArchivingMediaDriver} with defaults for {@link MediaDriver.Context} and
+     * {@link Archive.Context}.
+     *
+     * @return a new {@link ArchivingMediaDriver} with default contexts.
+     */
+    public static ArchivingMediaDriver launch()
+    {
+        return launch(new MediaDriver.Context(), new Archive.Context());
+    }
+
+    /**
+     * Launch a new {@link ArchivingMediaDriver} with provided contexts.
+     *
+     * @param driverCtx  for configuring the {@link MediaDriver}.
+     * @param archiveCtx for configuring the {@link Archive}.
+     * @return a new {@link ArchivingMediaDriver} with the provided contexts.
+     */
+    public static ArchivingMediaDriver launch(final MediaDriver.Context driverCtx, final Archive.Context archiveCtx)
+    {
+        final MediaDriver driver = MediaDriver.launch(driverCtx);
+
+        final Archive archive = Archive.launch(archiveCtx
+            .mediaDriverAgentInvoker(driver.sharedAgentInvoker())
+            .errorHandler(driverCtx.errorHandler())
+            .errorCounter(driverCtx.systemCounters().get(SystemCounterDescriptor.ERRORS)));
+
+        return new ArchivingMediaDriver(driver, archive);
     }
 
     /**
@@ -58,59 +105,7 @@ public final class ArchivingMediaDriver implements AutoCloseable
 
     public void close()
     {
-        archive.close();
-        driver.close();
-    }
-
-    /**
-     * Launch an {@link Archive} with an embedded {@link MediaDriver} and await a shutdown signal.
-     *
-     * @param args command line argument which is a list for properties files as URLs or filenames.
-     */
-    public static void main(final String[] args)
-    {
-        loadPropertiesFiles(args);
-
-        try (ArchivingMediaDriver ignore = launch())
-        {
-            new ShutdownSignalBarrier().await();
-
-            System.out.println("Shutdown Archive...");
-        }
-    }
-
-    /**
-     * Launch a new {@link ArchivingMediaDriver} with default contexts.
-     *
-     * @return a new {@link ArchivingMediaDriver} with default contexts.
-     */
-    public static ArchivingMediaDriver launch()
-    {
-        return launch(new MediaDriver.Context(), new Archive.Context());
-    }
-
-    /**
-     * Launch a new {@link ArchivingMediaDriver} with provided contexts.
-     *
-     * @param driverCtx  for configuring the {@link MediaDriver}.
-     * @param archiveCtx for configuring the {@link Archive}.
-     * @return a new {@link ArchivingMediaDriver} with the provided contexts.
-     */
-    public static ArchivingMediaDriver launch(final MediaDriver.Context driverCtx, final Archive.Context archiveCtx)
-    {
-        final boolean useConcurrentCounterManager =
-            driverCtx.threadingMode() != ThreadingMode.INVOKER ||
-                (driverCtx.threadingMode() == null && Configuration.THREADING_MODE_DEFAULT != ThreadingMode.INVOKER);
-
-        final MediaDriver driver = MediaDriver.launch(driverCtx
-            .spiesSimulateConnection(true)
-            .useConcurrentCountersManager(useConcurrentCounterManager));
-
-        final Archive archive = Archive.launch(archiveCtx
-            .mediaDriverAgentInvoker(driver.sharedAgentInvoker())
-            .countersManager(driver.context().countersManager())
-            .errorHandler(driver.context().errorHandler()));
-
-        return new ArchivingMediaDriver(driver, archive);
+        CloseHelper.close(archive);
+        CloseHelper.close(driver);
     }
 }

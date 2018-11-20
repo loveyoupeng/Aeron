@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 - 2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -136,10 +136,10 @@ inline int aeron_receive_channel_endpoint_on_remove_pending_setup(
     return aeron_data_packet_dispatcher_remove_pending_setup(&endpoint->dispatcher, session_id, stream_id);
 }
 
-inline int aeron_receive_channel_endpoint_on_remove_cooldown(
+inline int aeron_receive_channel_endpoint_on_remove_cool_down(
     aeron_receive_channel_endpoint_t *endpoint, int32_t session_id, int32_t stream_id)
 {
-    return aeron_data_packet_dispatcher_remove_cooldown(&endpoint->dispatcher, session_id, stream_id);
+    return aeron_data_packet_dispatcher_remove_cool_down(&endpoint->dispatcher, session_id, stream_id);
 }
 
 inline void aeron_receive_channel_endpoint_receiver_release(aeron_receive_channel_endpoint_t *endpoint)

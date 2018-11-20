@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,7 +15,6 @@
  */
 package io.aeron.agent;
 
-import io.aeron.driver.exceptions.ConfigurationException;
 import org.hamcrest.Matchers;
 import org.junit.Test;
 
@@ -26,7 +25,6 @@ import java.util.Set;
 
 import static io.aeron.agent.EventConfiguration.ALL_LOGGER_EVENT_CODES;
 import static io.aeron.agent.EventConfiguration.getEnabledEventCodes;
-import static io.aeron.driver.Configuration.parseSize;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.startsWith;
 import static org.junit.Assert.assertThat;
@@ -49,7 +47,7 @@ public class EventConfigurationTest
         {
             final Set<EventCode> enabledEventCodes = getEnabledEventCodes("list of invalid options");
             assertThat(enabledEventCodes.size(), is(0));
-            assertThat(stderr.toString(), startsWith("Unknown event code: list of invalid options"));
+            assertThat(stderr.toString(), startsWith("unknown event code: list of invalid options"));
         }
         finally
         {
@@ -76,23 +74,5 @@ public class EventConfigurationTest
         final Set<EventCode> eventCodes = EnumSet.of(EventCode.FRAME_OUT, EventCode.FRAME_IN);
         final long bitSet = EventConfiguration.makeTagBitSet(eventCodes);
         assertThat(bitSet, Matchers.is(EventCode.FRAME_OUT.tagBit() | EventCode.FRAME_IN.tagBit()));
-    }
-
-    @Test
-    public void shouldParseSizesWithSuffix()
-    {
-        assertThat(parseSize("", "1"), Matchers.equalTo(1L));
-        assertThat(parseSize("", "1k"), Matchers.equalTo(1024L));
-        assertThat(parseSize("", "1K"), Matchers.equalTo(1024L));
-        assertThat(parseSize("", "1m"), Matchers.equalTo(1024L * 1024));
-        assertThat(parseSize("", "1M"), Matchers.equalTo(1024L * 1024));
-        assertThat(parseSize("", "1g"), Matchers.equalTo(1024L * 1024 * 1024));
-        assertThat(parseSize("", "1G"), Matchers.equalTo(1024L * 1024 * 1024));
-    }
-
-    @Test(expected = ConfigurationException.class)
-    public void shouldThrowWhenParseSizeOverflows()
-    {
-        parseSize("", 8589934592L + "g");
     }
 }

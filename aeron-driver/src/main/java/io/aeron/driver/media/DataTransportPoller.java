@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,6 +15,7 @@
  */
 package io.aeron.driver.media;
 
+import io.aeron.driver.Configuration;
 import io.aeron.protocol.DataHeaderFlyweight;
 import io.aeron.protocol.RttMeasurementFlyweight;
 import io.aeron.protocol.SetupFlyweight;
@@ -37,18 +38,17 @@ import static org.agrona.BitUtil.CACHE_LINE_LENGTH;
  */
 public class DataTransportPoller extends UdpTransportPoller
 {
-    private static final int MAX_UDP_PACKET = 1024 * 64;
-
     private final ByteBuffer byteBuffer;
     private final UnsafeBuffer unsafeBuffer;
     private final DataHeaderFlyweight dataMessage;
     private final SetupFlyweight setupMessage;
     private final RttMeasurementFlyweight rttMeasurement;
-    private ReceiveChannelEndpoint[] transports = new ReceiveChannelEndpoint[0];
+    private ChannelAndTransport[] channelAndTransports = new ChannelAndTransport[0];
 
     public DataTransportPoller()
     {
-        byteBuffer = NetworkUtil.allocateDirectAlignedAndPadded(MAX_UDP_PACKET, CACHE_LINE_LENGTH * 2);
+        byteBuffer = NetworkUtil.allocateDirectAlignedAndPadded(
+            Configuration.MAX_UDP_PAYLOAD_LENGTH, CACHE_LINE_LENGTH * 2);
         unsafeBuffer = new UnsafeBuffer(byteBuffer);
         dataMessage = new DataHeaderFlyweight(unsafeBuffer);
         setupMessage = new SetupFlyweight(unsafeBuffer);
@@ -57,9 +57,10 @@ public class DataTransportPoller extends UdpTransportPoller
 
     public void close()
     {
-        for (final ReceiveChannelEndpoint channelEndpoint : transports)
+        for (final ChannelAndTransport channelEndpoint : channelAndTransports)
         {
-            channelEndpoint.close();
+            channelEndpoint.channelEndpoint.closeMultiRcvDestination();
+            channelEndpoint.channelEndpoint.close();
         }
 
         super.close();
@@ -70,11 +71,11 @@ public class DataTransportPoller extends UdpTransportPoller
         int bytesReceived = 0;
         try
         {
-            if (transports.length <= ITERATION_THRESHOLD)
+            if (channelAndTransports.length <= ITERATION_THRESHOLD)
             {
-                for (final ReceiveChannelEndpoint transport : transports)
+                for (final ChannelAndTransport channelAndTransport : channelAndTransports)
                 {
-                    bytesReceived += poll(transport);
+                    bytesReceived += poll(channelAndTransport);
                 }
             }
             else
@@ -84,7 +85,7 @@ public class DataTransportPoller extends UdpTransportPoller
                 final SelectionKey[] keys = selectedKeySet.keys();
                 for (int i = 0, length = selectedKeySet.size(); i < length; i++)
                 {
-                    bytesReceived += poll((ReceiveChannelEndpoint)keys[i].attachment());
+                    bytesReceived += poll((ChannelAndTransport)keys[i].attachment());
                 }
 
                 selectedKeySet.reset();
@@ -100,16 +101,20 @@ public class DataTransportPoller extends UdpTransportPoller
 
     public SelectionKey registerForRead(final UdpChannelTransport transport)
     {
-        return registerForRead((ReceiveChannelEndpoint)transport);
+        return registerForRead((ReceiveChannelEndpoint)transport, transport, 0);
     }
 
-    public SelectionKey registerForRead(final ReceiveChannelEndpoint transport)
+    public SelectionKey registerForRead(
+        final ReceiveChannelEndpoint channelEndpoint, final UdpChannelTransport transport, final int transportIndex)
     {
         SelectionKey key = null;
         try
         {
-            transports = ArrayUtil.add(transports, transport);
-            key = transport.receiveDatagramChannel().register(selector, SelectionKey.OP_READ, transport);
+            final ChannelAndTransport channelAndTransport =
+                new ChannelAndTransport(channelEndpoint, transport, transportIndex);
+
+            key = transport.receiveDatagramChannel().register(selector, SelectionKey.OP_READ, channelAndTransport);
+            channelAndTransports = ArrayUtil.add(channelAndTransports, channelAndTransport);
         }
         catch (final ClosedChannelException ex)
         {
@@ -121,43 +126,78 @@ public class DataTransportPoller extends UdpTransportPoller
 
     public void cancelRead(final UdpChannelTransport transport)
     {
-        cancelRead((ReceiveChannelEndpoint)transport);
+        cancelRead((ReceiveChannelEndpoint)transport, transport);
     }
 
-    public void cancelRead(final ReceiveChannelEndpoint transport)
+    public void cancelRead(final ReceiveChannelEndpoint channelEndpoint, final UdpChannelTransport transport)
     {
-        transports = ArrayUtil.remove(transports, transport);
+        final ChannelAndTransport[] transports = this.channelAndTransports;
+        int index = ArrayUtil.UNKNOWN_INDEX;
+
+        for (int i = 0, length = transports.length; i < length; i++)
+        {
+            if (channelEndpoint == transports[i].channelEndpoint && transport == transports[i].transport)
+            {
+                index = i;
+                break;
+            }
+        }
+
+        if (index != ArrayUtil.UNKNOWN_INDEX)
+        {
+            this.channelAndTransports = ArrayUtil.remove(transports, index);
+        }
     }
 
-    private int poll(final ReceiveChannelEndpoint channelEndpoint)
+    private int poll(final ChannelAndTransport channelAndTransport)
     {
         int bytesReceived = 0;
-        final InetSocketAddress srcAddress = channelEndpoint.receive(byteBuffer);
+        final InetSocketAddress srcAddress = channelAndTransport.transport.receive(byteBuffer);
 
         if (null != srcAddress)
         {
             final int length = byteBuffer.position();
+            final ReceiveChannelEndpoint channelEndpoint = channelAndTransport.channelEndpoint;
 
             if (channelEndpoint.isValidFrame(unsafeBuffer, length))
             {
-                switch (frameType(unsafeBuffer, 0))
+                channelEndpoint.receiveHook(unsafeBuffer, length, srcAddress);
+                final int transportIndex = channelAndTransport.transportIndex;
+
+                final int frameType = frameType(unsafeBuffer, 0);
+                if (HDR_TYPE_DATA == frameType || HDR_TYPE_PAD == frameType)
                 {
-                    case HDR_TYPE_PAD:
-                    case HDR_TYPE_DATA:
-                        bytesReceived = channelEndpoint.onDataPacket(dataMessage, unsafeBuffer, length, srcAddress);
-                        break;
-
-                    case HDR_TYPE_SETUP:
-                        channelEndpoint.onSetupMessage(setupMessage, unsafeBuffer, length, srcAddress);
-                        break;
-
-                    case HDR_TYPE_RTTM:
-                        channelEndpoint.onRttMeasurement(rttMeasurement, unsafeBuffer, length, srcAddress);
-                        break;
+                    bytesReceived = channelEndpoint.onDataPacket(
+                        dataMessage, unsafeBuffer, length, srcAddress, transportIndex);
+                }
+                else if (HDR_TYPE_SETUP == frameType)
+                {
+                    channelEndpoint.onSetupMessage(
+                        setupMessage, unsafeBuffer, length, srcAddress, transportIndex);
+                }
+                else if (HDR_TYPE_RTTM == frameType)
+                {
+                    channelEndpoint.onRttMeasurement(
+                        rttMeasurement, unsafeBuffer, length, srcAddress, transportIndex);
                 }
             }
         }
 
         return bytesReceived;
+    }
+
+    static class ChannelAndTransport
+    {
+        final ReceiveChannelEndpoint channelEndpoint;
+        final UdpChannelTransport transport;
+        final int transportIndex;
+
+        ChannelAndTransport(
+            final ReceiveChannelEndpoint channelEndpoint, final UdpChannelTransport transport, final int transportIndex)
+        {
+            this.channelEndpoint = channelEndpoint;
+            this.transport = transport;
+            this.transportIndex = transportIndex;
+        }
     }
 }

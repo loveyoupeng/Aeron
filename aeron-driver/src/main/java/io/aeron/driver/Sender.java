@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,7 +17,6 @@ package io.aeron.driver;
 
 import io.aeron.driver.media.ControlTransportPoller;
 import io.aeron.driver.media.SendChannelEndpoint;
-import io.aeron.driver.cmd.SenderCmd;
 import org.agrona.collections.ArrayUtil;
 import org.agrona.concurrent.Agent;
 import org.agrona.concurrent.status.AtomicCounter;
@@ -25,7 +24,6 @@ import org.agrona.concurrent.NanoClock;
 import org.agrona.concurrent.OneToOneConcurrentArrayQueue;
 
 import java.net.InetSocketAddress;
-import java.util.function.Consumer;
 
 import static io.aeron.driver.status.SystemCounterDescriptor.BYTES_SENT;
 
@@ -51,16 +49,17 @@ class SenderRhsPadding extends SenderHotFields
 /**
  * Agent that iterates over {@link NetworkPublication}s for sending them to registered subscribers.
  */
-public class Sender extends SenderRhsPadding implements Agent, Consumer<SenderCmd>
+public class Sender extends SenderRhsPadding implements Agent
 {
     private static final NetworkPublication[] EMPTY_PUBLICATIONS = new NetworkPublication[0];
 
     private final long statusMessageReadTimeoutNs;
     private final int dutyCycleRatio;
     private final ControlTransportPoller controlTransportPoller;
-    private final OneToOneConcurrentArrayQueue<SenderCmd> commandQueue;
+    private final OneToOneConcurrentArrayQueue<Runnable> commandQueue;
     private final AtomicCounter totalBytesSent;
     private final NanoClock nanoClock;
+    private final DriverConductorProxy conductorProxy;
 
     private NetworkPublication[] networkPublications = EMPTY_PUBLICATIONS;
 
@@ -69,9 +68,10 @@ public class Sender extends SenderRhsPadding implements Agent, Consumer<SenderCm
         this.controlTransportPoller = ctx.controlTransportPoller();
         this.commandQueue = ctx.senderCommandQueue();
         this.totalBytesSent = ctx.systemCounters().get(BYTES_SENT);
-        this.nanoClock = ctx.nanoClock();
+        this.nanoClock = ctx.cachedNanoClock();
         this.statusMessageReadTimeoutNs = ctx.statusMessageTimeoutNs() / 2;
         this.dutyCycleRatio = Configuration.sendToStatusMessagePollRatio();
+        this.conductorProxy = ctx.driverConductorProxy();
     }
 
     public void onClose()
@@ -81,14 +81,12 @@ public class Sender extends SenderRhsPadding implements Agent, Consumer<SenderCm
 
     public int doWork()
     {
-        final int workCount = commandQueue.drain(this, Configuration.COMMAND_DRAIN_LIMIT);
-
+        final int workCount = commandQueue.drain(Runnable::run, Configuration.COMMAND_DRAIN_LIMIT);
         final long nowNs = nanoClock.nanoTime();
         final int bytesSent = doSend(nowNs);
 
         int bytesReceived = 0;
-
-        if (0 == bytesSent || ++dutyCycleCounter == dutyCycleRatio || nowNs >= controlPollDeadlineNs)
+        if (0 == bytesSent || ++dutyCycleCounter == dutyCycleRatio || (controlPollDeadlineNs - nowNs < 0))
         {
             bytesReceived = controlTransportPoller.pollTransports();
 
@@ -106,7 +104,7 @@ public class Sender extends SenderRhsPadding implements Agent, Consumer<SenderCm
 
     public void onRegisterSendChannelEndpoint(final SendChannelEndpoint channelEndpoint)
     {
-        channelEndpoint.openChannel();
+        channelEndpoint.openChannel(conductorProxy);
         channelEndpoint.registerForRead(controlTransportPoller);
         channelEndpoint.indicateActive();
     }
@@ -139,11 +137,6 @@ public class Sender extends SenderRhsPadding implements Agent, Consumer<SenderCm
         channelEndpoint.removeDestination(address);
     }
 
-    public void accept(final SenderCmd cmd)
-    {
-        cmd.execute(this);
-    }
-
     private int doSend(final long nowNs)
     {
         int bytesSent = 0;
@@ -166,7 +159,7 @@ public class Sender extends SenderRhsPadding implements Agent, Consumer<SenderCm
             bytesSent += publications[i].send(nowNs);
         }
 
-        totalBytesSent.addOrdered(bytesSent);
+        totalBytesSent.getAndAddOrdered(bytesSent);
 
         return bytesSent;
     }

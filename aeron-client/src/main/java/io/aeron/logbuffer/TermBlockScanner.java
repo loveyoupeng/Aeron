@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,26 +19,34 @@ import org.agrona.concurrent.UnsafeBuffer;
 
 import static io.aeron.logbuffer.FrameDescriptor.FRAME_ALIGNMENT;
 import static io.aeron.logbuffer.FrameDescriptor.frameLengthVolatile;
+import static io.aeron.logbuffer.FrameDescriptor.isPaddingFrame;
 import static org.agrona.BitUtil.align;
 
 /**
- * Scan a term buffer for a block of messages including padding. The block must include complete messages.
+ * Scan a term buffer for a block of message fragments including padding. The block must include complete fragments.
  */
 public class TermBlockScanner
 {
     /**
-     * Scan a term buffer for a block of messages from an offset up to a limit.
+     * Scan a term buffer for a block of message fragments from an offset up to a limitOffset.
+     * <p>
+     * A scan will terminate if a padding frame is encountered. If first frame in a scan is padding then a block
+     * for the padding is notified. If the padding comes after the first frame in a scan then the scan terminates
+     * at the offset the padding frame begins. Padding frames are delivered singularly in a block.
+     * <p>
+     * Padding frames may be for a greater range than the limit offset but only the header needs to be valid so
+     * relevant length of the frame is {@link io.aeron.protocol.DataHeaderFlyweight#HEADER_LENGTH}.
      *
-     * @param termBuffer to scan for messages.
-     * @param termOffset at which the scan should begin.
-     * @param limit      at which the scan should stop.
+     * @param termBuffer  to scan for message fragments.
+     * @param termOffset  at which the scan should begin.
+     * @param limitOffset at which the scan should stop.
      * @return the offset at which the scan terminated.
      */
-    public static int scan(final UnsafeBuffer termBuffer, final int termOffset, final int limit)
+    public static int scan(final UnsafeBuffer termBuffer, final int termOffset, final int limitOffset)
     {
         int offset = termOffset;
 
-        do
+        while (offset < limitOffset)
         {
             final int frameLength = frameLengthVolatile(termBuffer, offset);
             if (frameLength <= 0)
@@ -47,18 +55,24 @@ public class TermBlockScanner
             }
 
             final int alignedFrameLength = align(frameLength, FRAME_ALIGNMENT);
-            offset += alignedFrameLength;
-            if (offset >= limit)
+
+            if (isPaddingFrame(termBuffer, offset))
             {
-                if (offset > limit)
+                if (termOffset == offset)
                 {
-                    offset -= alignedFrameLength;
+                    offset += alignedFrameLength;
                 }
 
                 break;
             }
+
+            if (offset + alignedFrameLength > limitOffset)
+            {
+                break;
+            }
+
+            offset += alignedFrameLength;
         }
-        while (true);
 
         return offset;
     }

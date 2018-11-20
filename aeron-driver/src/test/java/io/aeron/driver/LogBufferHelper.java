@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -67,6 +67,16 @@ public class LogBufferHelper
             public String fileName()
             {
                 return "stream.log";
+            }
+
+            public boolean isInactive()
+            {
+                return false;
+            }
+
+            public boolean free()
+            {
+                return true;
             }
 
             public void close()

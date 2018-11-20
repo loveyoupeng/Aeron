@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -530,19 +530,6 @@ public class LogBufferDescriptor
     }
 
     /**
-     * Compute the current position in absolute number of bytes.
-     *
-     * @param termCount           of terms since the initial term.
-     * @param termOffset          in the term.
-     * @param positionBitsToShift number of times to left shift the term count
-     * @return the absolute position in bytes
-     */
-    public static long computePosition(final int termCount, final int termOffset, final int positionBitsToShift)
-    {
-        return (termCount << positionBitsToShift) + termOffset;
-    }
-
-    /**
      * Compute the current position in absolute number of bytes for the beginning of a term.
      *
      * @param activeTermId        active term id.
@@ -573,25 +560,11 @@ public class LogBufferDescriptor
     }
 
     /**
-     * Compute the term offset from a given position.
-     *
-     * @param position            to calculate from
-     * @param positionBitsToShift number of times to right shift the position
-     * @return the offset within the term that represents the position
-     */
-    public static int computeTermOffsetFromPosition(final long position, final int positionBitsToShift)
-    {
-        final long mask = (1L << positionBitsToShift) - 1L;
-
-        return (int)(position & mask);
-    }
-
-    /**
      * Compute the total length of a log file given the term length.
      *
-     * Assumes TERM_MAX_LENGTH is 1GB and that filePageSize is 1GB or less and a power of 2.
+     * Assumes {@link #TERM_MAX_LENGTH} is 1GB and that filePageSize is 1GB or less and a power of 2.
      *
-     * @param termLength on which to base the calculation.
+     * @param termLength   on which to base the calculation.
      * @param filePageSize to use for log.
      * @return the total length of the log file.
      */
@@ -602,7 +575,7 @@ public class LogBufferDescriptor
             return align((termLength * PARTITION_COUNT) + LOG_META_DATA_LENGTH, filePageSize);
         }
 
-        return (PARTITION_COUNT * termLength) + align(LOG_META_DATA_LENGTH, filePageSize);
+        return (PARTITION_COUNT * (long)termLength) + align(LOG_META_DATA_LENGTH, filePageSize);
     }
 
     /**
@@ -820,5 +793,49 @@ public class LogBufferDescriptor
     {
         final int index = TERM_TAIL_COUNTERS_OFFSET + (SIZE_OF_LONG * partitionIndex);
         return logMetaDataBuffer.compareAndSetLong(index, expectedRawTail, updateRawTail);
+    }
+
+    /**
+     * Get the number of bits to shift when dividing or multiplying by the term buffer length.
+     *
+     * @param termBufferLength to compute the number of bits to shift for.
+     * @return the number of bits to shift to divide or multiply by the term buffer length.
+     */
+    public static int positionBitsToShift(final int termBufferLength)
+    {
+        switch (termBufferLength)
+        {
+            case 64 * 1024: return 16;
+
+            case 128 * 1024: return 17;
+
+            case 256 * 1024: return 18;
+
+            case 512 * 1024: return 19;
+
+            case 1024 * 1024: return 20;
+
+            case 2 * 1024 * 1024: return 21;
+
+            case 4 * 1024 * 1024: return 22;
+
+            case 8 * 1024 * 1024: return 23;
+
+            case 16 * 1024 * 1024: return 24;
+
+            case 32 * 1024 * 1024: return 25;
+
+            case 64 * 1024 * 1024: return 26;
+
+            case 128 * 1024 * 1024: return 27;
+
+            case 256 * 1024 * 1024: return 28;
+
+            case 512 * 1024 * 1024: return 29;
+
+            case 1024 * 1024 * 1024: return 30;
+        }
+
+        throw new IllegalArgumentException("Invalid term buffer length: " + termBufferLength);
     }
 }

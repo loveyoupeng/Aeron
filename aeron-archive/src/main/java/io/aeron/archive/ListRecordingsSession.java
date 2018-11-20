@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -40,18 +40,18 @@ class ListRecordingsSession extends AbstractListRecordingsSession
     protected int sendDescriptors()
     {
         int totalBytesSent = 0;
+        int recordsScanned = 0;
 
-        while (recordingId < limitId && totalBytesSent < controlSession.maxPayloadLength())
+        while (recordingId < limitId && recordsScanned < MAX_SCANS_PER_WORK_CYCLE)
         {
             if (!catalog.wrapDescriptor(recordingId, descriptorBuffer))
             {
                 controlSession.sendRecordingUnknown(correlationId, recordingId, proxy);
-
                 isDone = true;
                 break;
             }
 
-            if (isDescriptorValid(descriptorBuffer))
+            if (Catalog.isValidDescriptor(descriptorBuffer))
             {
                 final int bytesSent = controlSession.sendDescriptor(correlationId, descriptorBuffer, proxy);
                 if (bytesSent == 0)
@@ -63,6 +63,7 @@ class ListRecordingsSession extends AbstractListRecordingsSession
             }
 
             ++recordingId;
+            recordsScanned++;
         }
 
         if (recordingId >= limitId)

@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,13 +21,14 @@ import io.aeron.archive.codecs.ControlResponseDecoder;
 import io.aeron.archive.codecs.MessageHeaderDecoder;
 import io.aeron.archive.codecs.MessageHeaderEncoder;
 import io.aeron.archive.codecs.RecordingDescriptorDecoder;
+import io.aeron.logbuffer.FragmentHandler;
 import io.aeron.logbuffer.Header;
 import org.agrona.DirectBuffer;
 
 /**
  * Encapsulate the polling, decoding, and dispatching of archive control protocol response messages.
  */
-public class ControlResponseAdapter
+public class ControlResponseAdapter implements FragmentHandler
 {
     private final MessageHeaderDecoder messageHeaderDecoder = new MessageHeaderDecoder();
     private final ControlResponseDecoder controlResponseDecoder = new ControlResponseDecoder();
@@ -36,7 +37,7 @@ public class ControlResponseAdapter
     private final int fragmentLimit;
     private final ControlResponseListener listener;
     private final Subscription subscription;
-    private final FragmentAssembler fragmentAssembler = new FragmentAssembler(this::onFragment);
+    private final FragmentAssembler fragmentAssembler = new FragmentAssembler(this);
 
     /**
      * Create an adapter for a given subscription to an archive for control response messages.
@@ -93,7 +94,7 @@ public class ControlResponseAdapter
             decoder.sourceIdentity());
     }
 
-    private void onFragment(
+    public void onFragment(
         final DirectBuffer buffer,
         final int offset,
         @SuppressWarnings("unused") final int length,
@@ -113,7 +114,7 @@ public class ControlResponseAdapter
                 break;
 
             default:
-                throw new IllegalStateException("Unknown templateId: " + templateId);
+                throw new ArchiveException("unknown templateId: " + templateId);
         }
     }
 

@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -62,6 +62,30 @@ public class ControlProtocolEvents
      */
     public static final int REMOVE_DESTINATION = 0x08;
 
+    /**
+     * Add a Counter to the counters manager.
+     */
+    public static final int ADD_COUNTER = 0x09;
+
+    /**
+     * Remove a Counter from the counters manager.
+     */
+    public static final int REMOVE_COUNTER = 0x0A;
+
+    /**
+     * Close indication from Client.
+     */
+    public static final int CLIENT_CLOSE = 0x0B;
+
+    /**
+     * Add Destination for existing Subscription.
+     */
+    public static final int ADD_RCV_DESTINATION = 0x0C;
+
+    /**
+     * Remove Destination for existing Subscription.
+     */
+    public static final int REMOVE_RCV_DESTINATION = 0x0D;
 
     // Media Driver to Clients
 
@@ -94,4 +118,19 @@ public class ControlProtocolEvents
      * New Exclusive Publication buffers are ready notification.
      */
     public static final int ON_EXCLUSIVE_PUBLICATION_READY = 0x0F06;
+
+    /**
+     * New Subscription is ready notification.
+     */
+    public static final int ON_SUBSCRIPTION_READY = 0x0F07;
+
+    /**
+     * New counter is ready notification.
+     */
+    public static final int ON_COUNTER_READY = 0x0F08;
+
+    /**
+     * Inform clients of removal of counter.
+     */
+    public static final int ON_UNAVAILABLE_COUNTER = 0x0F09;
 }

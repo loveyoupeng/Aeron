@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -90,6 +90,16 @@ public class ErrorResponseFlyweight
     public ErrorCode errorCode()
     {
         return ErrorCode.get(buffer.getInt(offset + ERROR_CODE_OFFSET));
+    }
+
+    /**
+     * Error code value for the command.
+     *
+     * @return error code value for the command
+     */
+    public int errorCodeValue()
+    {
+        return buffer.getInt(offset + ERROR_CODE_OFFSET);
     }
 
     /**

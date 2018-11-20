@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,9 +18,9 @@ package io.aeron.driver.buffer;
 import io.aeron.driver.Configuration;
 import io.aeron.driver.media.UdpChannel;
 import io.aeron.logbuffer.LogBufferDescriptor;
+import org.agrona.ErrorHandler;
 import org.agrona.IoUtil;
 import org.agrona.concurrent.UnsafeBuffer;
-import org.agrona.concurrent.errors.DistinctErrorLog;
 import org.junit.*;
 
 import java.io.*;
@@ -50,25 +50,21 @@ public class RawLogFactoryTest
     {
         IoUtil.ensureDirectoryExists(DATA_DIR, "data");
         rawLogFactory = new RawLogFactory(
-            DATA_DIR.getAbsolutePath(),
-            PAGE_SIZE,
-            PRE_ZERO_LOG,
-            PERFORM_STORAGE_CHECKS,
-            mock(DistinctErrorLog.class));
+            DATA_DIR.getAbsolutePath(), PAGE_SIZE, PERFORM_STORAGE_CHECKS, mock(ErrorHandler.class));
     }
 
     @After
-    public void cleanupFiles() throws IOException
+    public void cleanupFiles()
     {
         IoUtil.delete(DATA_DIR, false);
     }
 
     @Test
-    public void shouldCreateCorrectLengthAndZeroedFilesForPublication() throws Exception
+    public void shouldCreateCorrectLengthAndZeroedFilesForPublication()
     {
         final String canonicalForm = udpChannel.canonicalForm();
         final RawLog rawLog = rawLogFactory.newNetworkPublication(
-            canonicalForm, SESSION_ID, STREAM_ID, CREATION_ID, TERM_BUFFER_LENGTH);
+            canonicalForm, SESSION_ID, STREAM_ID, CREATION_ID, TERM_BUFFER_LENGTH, PRE_ZERO_LOG);
 
         assertThat(rawLog.termLength(), is(TERM_BUFFER_LENGTH));
 
@@ -92,12 +88,12 @@ public class RawLogFactoryTest
     }
 
     @Test
-    public void shouldCreateCorrectLengthAndZeroedFilesForImage() throws Exception
+    public void shouldCreateCorrectLengthAndZeroedFilesForImage()
     {
         final String canonicalForm = udpChannel.canonicalForm();
         final int imageTermBufferMaxLength = TERM_BUFFER_LENGTH / 2;
         final RawLog rawLog = rawLogFactory.newNetworkedImage(
-            canonicalForm, SESSION_ID, STREAM_ID, CREATION_ID, imageTermBufferMaxLength);
+            canonicalForm, SESSION_ID, STREAM_ID, CREATION_ID, imageTermBufferMaxLength, PRE_ZERO_LOG);
 
         assertThat(rawLog.termLength(), is(imageTermBufferMaxLength));
 
@@ -124,7 +120,8 @@ public class RawLogFactoryTest
     public void shouldExceptionIfRequestedTermBufferLengthGreaterThanMax()
     {
         final String canonicalForm = udpChannel.canonicalForm();
-        final int imageTermBufferMaxLength = TERM_MAX_LENGTH * 2;
-        rawLogFactory.newNetworkedImage(canonicalForm, SESSION_ID, STREAM_ID, CREATION_ID, imageTermBufferMaxLength);
+        final int imageTermBufferMaxLength = TERM_MAX_LENGTH + 1;
+        rawLogFactory.newNetworkedImage(
+            canonicalForm, SESSION_ID, STREAM_ID, CREATION_ID, imageTermBufferMaxLength, PRE_ZERO_LOG);
     }
 }

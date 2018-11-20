@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,7 +18,8 @@ package io.aeron.command;
 import static org.agrona.BitUtil.SIZE_OF_LONG;
 
 /**
- * Control message for adding or removing a destination for a Publication in multi-destination-cast.
+ * Control message for adding or removing a destination for a Publication in multi-destination-cast or a Subscription
+ * in multi-destination Subscription.
  * <pre>
  *   0                   1                   2                   3
  *   0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1

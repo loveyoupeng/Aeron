@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,47 +15,38 @@
  */
 package io.aeron.archive;
 
+import io.aeron.Counter;
 import io.aeron.ExclusivePublication;
 import io.aeron.Publication;
-import io.aeron.archive.ArchiveConductor.ReplayPublicationSupplier;
-import io.aeron.archive.codecs.ControlResponseCode;
-import io.aeron.archive.codecs.RecordingDescriptorDecoder;
-import io.aeron.archive.codecs.RecordingDescriptorHeaderDecoder;
 import io.aeron.logbuffer.ExclusiveBufferClaim;
-import io.aeron.logbuffer.FrameDescriptor;
-import io.aeron.protocol.DataHeaderFlyweight;
+import io.aeron.protocol.HeaderFlyweight;
 import org.agrona.CloseHelper;
 import org.agrona.LangUtil;
 import org.agrona.concurrent.EpochClock;
 import org.agrona.concurrent.UnsafeBuffer;
-import org.agrona.concurrent.status.AtomicCounter;
 
 import java.io.File;
-
-import static io.aeron.archive.Catalog.NULL_POSITION;
-import static io.aeron.logbuffer.FrameDescriptor.frameFlags;
-import static io.aeron.logbuffer.FrameDescriptor.frameType;
-import static io.aeron.protocol.DataHeaderFlyweight.RESERVED_VALUE_OFFSET;
-import static java.nio.ByteOrder.LITTLE_ENDIAN;
 
 /**
  * A replay session with a client which works through the required request response flow and streaming of recorded data.
  * The {@link ArchiveConductor} will initiate a session on receiving a ReplayRequest
- * (see {@link io.aeron.archive.codecs.ReplayRequestDecoder}). The session will:
+ * (see {@link io.aeron.archive.codecs.ReplayRequestDecoder}).
+ * <p>
+ * The session will:
  * <ul>
- * <li>Validate request parameters and respond with appropriate error if unable to replay </li>
+ * <li>Validate request parameters and respond with appropriate error if unable to replay.</li>
  * <li>Wait for replay subscription to connect to the requested replay publication. If no subscription appears within
  * {@link #CONNECT_TIMEOUT_MS} the session will terminate and respond will error.</li>
- * <li>Once the replay publication is connected send an OK response to control client</li>
- * <li>Stream recorded data into the replayPublication {@link ExclusivePublication}</li>
+ * <li>Once the replay publication is connected send an OK response to control client.</li>
+ * <li>Stream recorded data into the replayPublication {@link ExclusivePublication}.</li>
  * <li>If the replay is aborted part way through, send a ReplayAborted message and terminate.</li>
  * </ul>
  */
-class ReplaySession implements Session, SimplifiedControlledFragmentHandler
+class ReplaySession implements Session, SimpleFragmentHandler, AutoCloseable
 {
     enum State
     {
-        INIT, REPLAY, INACTIVE, CLOSED
+        INIT, REPLAY, INACTIVE
     }
 
     /**
@@ -66,77 +57,44 @@ class ReplaySession implements Session, SimplifiedControlledFragmentHandler
     private static final int REPLAY_FRAGMENT_LIMIT = Archive.Configuration.replayFragmentLimit();
 
     private long connectDeadlineMs;
-    private final long replaySessionId;
     private final long correlationId;
+    private final long sessionId;
     private final ExclusiveBufferClaim bufferClaim = new ExclusiveBufferClaim();
     private final ExclusivePublication replayPublication;
     private final RecordingFragmentReader cursor;
-    private ControlResponseProxy threadLocalControlResponseProxy;
     private final ControlSession controlSession;
     private final EpochClock epochClock;
     private State state = State.INIT;
+    private String errorMessage = null;
+    private volatile boolean isAborted;
 
     @SuppressWarnings("ConstantConditions")
     ReplaySession(
         final long replayPosition,
         final long replayLength,
-        final ReplayPublicationSupplier supplier,
+        final long replaySessionId,
+        final Catalog catalog,
         final ControlSession controlSession,
         final File archiveDir,
-        final ControlResponseProxy threadLocalControlResponseProxy,
-        final long replaySessionId,
+        final ControlResponseProxy controlResponseProxy,
         final long correlationId,
         final EpochClock epochClock,
-        final String replayChannel,
-        final int replayStreamId,
-        final UnsafeBuffer descriptorBuffer,
-        final AtomicCounter recordingPosition)
+        final ExclusivePublication replayPublication,
+        final RecordingSummary recordingSummary,
+        final Counter recordingPosition)
     {
         this.controlSession = controlSession;
-        this.threadLocalControlResponseProxy = threadLocalControlResponseProxy;
-        this.replaySessionId = replaySessionId;
+        this.sessionId = replaySessionId;
         this.correlationId = correlationId;
         this.epochClock = epochClock;
-
-        final RecordingDescriptorDecoder descriptorDecoder = new RecordingDescriptorDecoder();
-        descriptorDecoder.wrap(
-            descriptorBuffer,
-            RecordingDescriptorHeaderDecoder.BLOCK_LENGTH,
-            RecordingDescriptorDecoder.BLOCK_LENGTH,
-            RecordingDescriptorHeaderDecoder.SCHEMA_VERSION);
-
-        final long startPosition = descriptorDecoder.startPosition();
-        final int mtuLength = descriptorDecoder.mtuLength();
-        final int termBufferLength = descriptorDecoder.termBufferLength();
-        final int initialTermId = descriptorDecoder.initialTermId();
-
-        if (replayPosition - startPosition < 0)
-        {
-            final String errorMessage = "requested replay start position(=" + replayPosition +
-                ") is before recording start position(=" + startPosition + ")";
-            closeOnError(new IllegalArgumentException(errorMessage), errorMessage);
-            cursor = null;
-            replayPublication = null;
-            return;
-        }
-
-        final long stopPosition = descriptorDecoder.stopPosition();
-        if (stopPosition != NULL_POSITION && replayPosition >= stopPosition)
-        {
-            final String errorMessage = "requested replay start position(=" + replayPosition +
-                ") must be before current highest recorded position(=" + stopPosition + ")";
-            closeOnError(new IllegalArgumentException(errorMessage), errorMessage);
-            cursor = null;
-            replayPublication = null;
-
-            return;
-        }
+        this.replayPublication = replayPublication;
 
         RecordingFragmentReader cursor = null;
         try
         {
             cursor = new RecordingFragmentReader(
-                descriptorDecoder,
+                catalog,
+                recordingSummary,
                 archiveDir,
                 replayPosition,
                 replayLength,
@@ -144,59 +102,50 @@ class ReplaySession implements Session, SimplifiedControlledFragmentHandler
         }
         catch (final Exception ex)
         {
-            closeOnError(ex, "failed to open cursor on a recording because: " + ex.getMessage());
+            CloseHelper.close(replayPublication);
+            final String msg = "replay recording id " + recordingSummary.recordingId + " - " + ex.getMessage();
+            controlSession.attemptErrorResponse(correlationId, msg, controlResponseProxy);
+            LangUtil.rethrowUnchecked(ex);
         }
 
         this.cursor = cursor;
 
-        ExclusivePublication replayPublication = null;
-        try
-        {
-            replayPublication = supplier.newReplayPublication(
-                replayChannel,
-                replayStreamId,
-                cursor.fromPosition(),
-                mtuLength,
-                initialTermId,
-                termBufferLength);
-        }
-        catch (final Exception ex)
-        {
-            closeOnError(ex, "failed to create replay publication because: " + ex.getMessage());
-        }
-
-        this.replayPublication = replayPublication;
-        controlSession.sendOkResponse(correlationId, threadLocalControlResponseProxy);
-
+        controlSession.sendOkResponse(correlationId, replaySessionId, controlResponseProxy);
         connectDeadlineMs = epochClock.time() + CONNECT_TIMEOUT_MS;
     }
 
     public void close()
     {
-        state = State.CLOSED;
+        CloseHelper.close(replayPublication);
 
-        CloseHelper.quietClose(cursor);
-        CloseHelper.quietClose(replayPublication);
+        if (null != cursor)
+        {
+            cursor.close();
+        }
     }
 
     public long sessionId()
     {
-        return replaySessionId;
+        return sessionId;
     }
 
     public int doWork()
     {
         int workCount = 0;
 
-        switch (state)
+        if (isAborted)
         {
-            case INIT:
-                workCount += init();
-                break;
+            state = State.INACTIVE;
+        }
 
-            case REPLAY:
-                workCount += replay();
-                break;
+        if (State.INIT == state)
+        {
+            workCount += init();
+        }
+
+        if (State.REPLAY == state)
+        {
+            workCount += replay();
         }
 
         return workCount;
@@ -204,7 +153,7 @@ class ReplaySession implements Session, SimplifiedControlledFragmentHandler
 
     public void abort()
     {
-        state = State.INACTIVE;
+        isAborted = true;
     }
 
     public boolean isDone()
@@ -212,30 +161,50 @@ class ReplaySession implements Session, SimplifiedControlledFragmentHandler
         return state == State.INACTIVE;
     }
 
-    public boolean onFragment(final UnsafeBuffer termBuffer, final int offset, final int length)
+    public boolean onFragment(
+        final UnsafeBuffer buffer,
+        final int offset,
+        final int length,
+        final int frameType,
+        final byte flags,
+        final long reservedValue)
     {
-        if (isDone())
+        long result = 0;
+        if (frameType == HeaderFlyweight.HDR_TYPE_DATA)
         {
-            return false;
+            final ExclusiveBufferClaim bufferClaim = this.bufferClaim;
+            result = replayPublication.tryClaim(length, bufferClaim);
+            if (result > 0)
+            {
+                bufferClaim
+                    .flags(flags)
+                    .reservedValue(reservedValue)
+                    .buffer().putBytes(bufferClaim.offset(), buffer, offset, length);
+
+                bufferClaim.commit();
+                return true;
+            }
+        }
+        else if (frameType == HeaderFlyweight.HDR_TYPE_PAD)
+        {
+            result = replayPublication.appendPadding(length);
+            if (result > 0)
+            {
+                return true;
+            }
         }
 
-        final int frameOffset = offset - DataHeaderFlyweight.HEADER_LENGTH;
-        final int frameType = frameType(termBuffer, frameOffset);
-
-        final long result = frameType == FrameDescriptor.PADDING_FRAME_TYPE ?
-            replayPublication.appendPadding(length) :
-            replayFrame(termBuffer, offset, length, frameOffset);
-
-        if (result > 0)
+        if (result == Publication.CLOSED || result == Publication.NOT_CONNECTED)
         {
-            return true;
-        }
-        else if (result == Publication.CLOSED || result == Publication.NOT_CONNECTED)
-        {
-            closeOnError(null, "replay stream has been shutdown mid-replay");
+            onError("stream closed before replay is complete");
         }
 
         return false;
+    }
+
+    long recordingId()
+    {
+        return cursor.recordingId();
     }
 
     State state()
@@ -243,48 +212,12 @@ class ReplaySession implements Session, SimplifiedControlledFragmentHandler
         return state;
     }
 
-    void setThreadLocalControlResponseProxy(final ControlResponseProxy proxy)
+    void sendPendingError(final ControlResponseProxy controlResponseProxy)
     {
-        threadLocalControlResponseProxy = proxy;
-    }
-
-    private int replay()
-    {
-        try
+        if (null != errorMessage && !controlSession.isDone())
         {
-            final int polled = cursor.controlledPoll(this, REPLAY_FRAGMENT_LIMIT);
-            if (cursor.isDone())
-            {
-                state = State.INACTIVE;
-            }
-
-            return polled;
+            controlSession.attemptErrorResponse(correlationId, errorMessage, controlResponseProxy);
         }
-        catch (final Exception ex)
-        {
-            return closeOnError(ex, "cursor read failed");
-        }
-    }
-
-    private long replayFrame(final UnsafeBuffer termBuffer, final int offset, final int length, final int frameOffset)
-    {
-        final long result = replayPublication.tryClaim(length, bufferClaim);
-        if (result > 0)
-        {
-            try
-            {
-                bufferClaim
-                    .flags(frameFlags(termBuffer, frameOffset))
-                    .reservedValue(termBuffer.getLong(frameOffset + RESERVED_VALUE_OFFSET, LITTLE_ENDIAN))
-                    .buffer().putBytes(bufferClaim.offset(), termBuffer, offset, length);
-            }
-            finally
-            {
-                bufferClaim.commit();
-            }
-        }
-
-        return result;
     }
 
     private int init()
@@ -293,7 +226,7 @@ class ReplaySession implements Session, SimplifiedControlledFragmentHandler
         {
             if (epochClock.time() > connectDeadlineMs)
             {
-                return closeOnError(null, "no connection established for replay");
+                onError("no connection established for replay");
             }
 
             return 0;
@@ -304,25 +237,29 @@ class ReplaySession implements Session, SimplifiedControlledFragmentHandler
         return 1;
     }
 
-    private int closeOnError(final Throwable ex, final String errorMessage)
+    private int replay()
     {
-        state = State.INACTIVE;
-        CloseHelper.quietClose(cursor);
-
-        if (!controlSession.isDone())
+        int workDone = 0;
+        try
         {
-            controlSession.sendResponse(
-                correlationId,
-                ControlResponseCode.ERROR,
-                errorMessage,
-                threadLocalControlResponseProxy);
+            workDone = cursor.controlledPoll(this, REPLAY_FRAGMENT_LIMIT);
+            if (cursor.isDone())
+            {
+                state = State.INACTIVE;
+            }
         }
-
-        if (ex != null)
+        catch (final Exception ex)
         {
+            onError("cursor read failed");
             LangUtil.rethrowUnchecked(ex);
         }
 
-        return 0;
+        return workDone;
+    }
+
+    private void onError(final String errorMessage)
+    {
+        state = State.INACTIVE;
+        this.errorMessage = errorMessage;
     }
 }

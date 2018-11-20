@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 - 2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -25,6 +25,12 @@ extern "C"
 
 class Int64ToPtrHashMapTest : public testing::Test
 {
+public:
+    ~Int64ToPtrHashMapTest()
+    {
+        aeron_int64_to_ptr_hash_map_delete(&m_map);
+    }
+
 protected:
     static void for_each(void *clientd, int64_t key, void *value)
     {

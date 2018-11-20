@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,10 +16,10 @@
 package io.aeron.archive.client;
 
 import io.aeron.Publication;
+import io.aeron.Subscription;
 import io.aeron.archive.codecs.*;
-import org.agrona.ExpandableDirectByteBuffer;
-import org.agrona.concurrent.IdleStrategy;
-import org.agrona.concurrent.YieldingIdleStrategy;
+import org.agrona.ExpandableArrayBuffer;
+import org.agrona.concurrent.*;
 
 import static io.aeron.archive.client.AeronArchive.Configuration.MESSAGE_TIMEOUT_DEFAULT_NS;
 
@@ -29,38 +29,56 @@ import static io.aeron.archive.client.AeronArchive.Configuration.MESSAGE_TIMEOUT
 public class ArchiveProxy
 {
     /**
-     * Default maximum number of retry attempts to be made at offering requests.
+     * Default number of retry attempts to be made at offering requests.
      */
-    public static final int DEFAULT_MAX_RETRY_ATTEMPTS = 3;
+    public static final int DEFAULT_RETRY_ATTEMPTS = 3;
 
     private final long connectTimeoutNs;
-    private final int maxRetryAttempts;
+    private final int retryAttempts;
     private final IdleStrategy retryIdleStrategy;
+    private final NanoClock nanoClock;
 
-    private final ExpandableDirectByteBuffer buffer = new ExpandableDirectByteBuffer(1024);
+    private final ExpandableArrayBuffer buffer = new ExpandableArrayBuffer(256);
     private final Publication publication;
     private final MessageHeaderEncoder messageHeaderEncoder = new MessageHeaderEncoder();
     private final ConnectRequestEncoder connectRequestEncoder = new ConnectRequestEncoder();
     private final CloseSessionRequestEncoder closeSessionRequestEncoder = new CloseSessionRequestEncoder();
     private final StartRecordingRequestEncoder startRecordingRequestEncoder = new StartRecordingRequestEncoder();
     private final ReplayRequestEncoder replayRequestEncoder = new ReplayRequestEncoder();
+    private final StopReplayRequestEncoder stopReplayRequestEncoder = new StopReplayRequestEncoder();
     private final StopRecordingRequestEncoder stopRecordingRequestEncoder = new StopRecordingRequestEncoder();
+    private final StopRecordingSubscriptionRequestEncoder stopRecordingSubscriptionRequestEncoder =
+        new StopRecordingSubscriptionRequestEncoder();
     private final ListRecordingsRequestEncoder listRecordingsRequestEncoder = new ListRecordingsRequestEncoder();
     private final ListRecordingsForUriRequestEncoder listRecordingsForUriRequestEncoder =
         new ListRecordingsForUriRequestEncoder();
+    private final ListRecordingRequestEncoder listRecordingRequestEncoder = new ListRecordingRequestEncoder();
+    private final ExtendRecordingRequestEncoder extendRecordingRequestEncoder = new ExtendRecordingRequestEncoder();
+    private final RecordingPositionRequestEncoder recordingPositionRequestEncoder =
+        new RecordingPositionRequestEncoder();
+    private final TruncateRecordingRequestEncoder truncateRecordingRequestEncoder =
+        new TruncateRecordingRequestEncoder();
+    private final StopPositionRequestEncoder stopPositionRequestEncoder = new StopPositionRequestEncoder();
+    private final FindLastMatchingRecordingRequestEncoder findLastMatchingRecordingRequestEncoder =
+        new FindLastMatchingRecordingRequestEncoder();
 
     /**
      * Create a proxy with a {@link Publication} for sending control message requests.
      * <p>
      * This provides a default {@link IdleStrategy} of a {@link YieldingIdleStrategy} when offers are back pressured
      * with a defaults of {@link AeronArchive.Configuration#MESSAGE_TIMEOUT_DEFAULT_NS} and
-     * {@link #DEFAULT_MAX_RETRY_ATTEMPTS}.
+     * {@link #DEFAULT_RETRY_ATTEMPTS}.
      *
      * @param publication publication for sending control messages to an archive.
      */
     public ArchiveProxy(final Publication publication)
     {
-        this(publication, new YieldingIdleStrategy(), MESSAGE_TIMEOUT_DEFAULT_NS, DEFAULT_MAX_RETRY_ATTEMPTS);
+        this(
+            publication,
+            new YieldingIdleStrategy(),
+            new SystemNanoClock(),
+            MESSAGE_TIMEOUT_DEFAULT_NS,
+            DEFAULT_RETRY_ATTEMPTS);
     }
 
     /**
@@ -68,19 +86,22 @@ public class ArchiveProxy
      *
      * @param publication       publication for sending control messages to an archive.
      * @param retryIdleStrategy for what should happen between retry attempts at offering messages.
+     * @param nanoClock         to be used for calculating checking deadlines.
      * @param connectTimeoutNs  for for connection requests.
-     * @param maxRetryAttempts  for offering control messages before giving up.
+     * @param retryAttempts     for offering control messages before giving up.
      */
     public ArchiveProxy(
         final Publication publication,
         final IdleStrategy retryIdleStrategy,
+        final NanoClock nanoClock,
         final long connectTimeoutNs,
-        final int maxRetryAttempts)
+        final int retryAttempts)
     {
         this.publication = publication;
         this.retryIdleStrategy = retryIdleStrategy;
+        this.nanoClock = nanoClock;
         this.connectTimeoutNs = connectTimeoutNs;
-        this.maxRetryAttempts = maxRetryAttempts;
+        this.retryAttempts = retryAttempts;
     }
 
     /**
@@ -109,7 +130,53 @@ public class ArchiveProxy
             .responseStreamId(responseStreamId)
             .responseChannel(responseChannel);
 
-        return offerWithTimeout(connectRequestEncoder.encodedLength());
+        return offerWithTimeout(connectRequestEncoder.encodedLength(), null);
+    }
+
+    /**
+     * Try Connect to an archive on its control interface providing the response stream details. Only one attempt will
+     * be made to offer the request.
+     *
+     * @param responseChannel  for the control message responses.
+     * @param responseStreamId for the control message responses.
+     * @param correlationId    for this request.
+     * @return true if successfully offered otherwise false.
+     */
+    public boolean tryConnect(final String responseChannel, final int responseStreamId, final long correlationId)
+    {
+        connectRequestEncoder
+            .wrapAndApplyHeader(buffer, 0, messageHeaderEncoder)
+            .correlationId(correlationId)
+            .responseStreamId(responseStreamId)
+            .responseChannel(responseChannel);
+
+        final int length = MessageHeaderEncoder.ENCODED_LENGTH + connectRequestEncoder.encodedLength();
+
+        return publication.offer(buffer, 0, length) > 0;
+    }
+
+    /**
+     * Connect to an archive on its control interface providing the response stream details.
+     *
+     * @param responseChannel    for the control message responses.
+     * @param responseStreamId   for the control message responses.
+     * @param correlationId      for this request.
+     * @param aeronClientInvoker for aeron client conductor thread.
+     * @return true if successfully offered otherwise false.
+     */
+    public boolean connect(
+        final String responseChannel,
+        final int responseStreamId,
+        final long correlationId,
+        final AgentInvoker aeronClientInvoker)
+    {
+        connectRequestEncoder
+            .wrapAndApplyHeader(buffer, 0, messageHeaderEncoder)
+            .correlationId(correlationId)
+            .responseStreamId(responseStreamId)
+            .responseChannel(responseChannel);
+
+        return offerWithTimeout(connectRequestEncoder.encodedLength(), aeronClientInvoker);
     }
 
     /**
@@ -181,11 +248,33 @@ public class ArchiveProxy
     }
 
     /**
+     * Stop an active recording by the {@link Subscription#registrationId()} it was registered with.
+     *
+     * @param subscriptionId   that identifies the subscription in the archive doing the recording.
+     * @param correlationId    for this request.
+     * @param controlSessionId for this request.
+     * @return true if successfully offered otherwise false.
+     */
+    public boolean stopRecording(
+        final long subscriptionId,
+        final long correlationId,
+        final long controlSessionId)
+    {
+        stopRecordingSubscriptionRequestEncoder
+            .wrapAndApplyHeader(buffer, 0, messageHeaderEncoder)
+            .controlSessionId(controlSessionId)
+            .correlationId(correlationId)
+            .subscriptionId(subscriptionId);
+
+        return offer(stopRecordingSubscriptionRequestEncoder.encodedLength());
+    }
+
+    /**
      * Replay a recording from a given position.
      *
      * @param recordingId      to be replayed.
      * @param position         from which the replay should be started.
-     * @param length           of the stream to be replayed.
+     * @param length           of the stream to be replayed. Use {@link Long#MAX_VALUE} to follow a live stream.
      * @param replayChannel    to which the replay should be sent.
      * @param replayStreamId   to which the replay should be sent.
      * @param correlationId    for this request.
@@ -210,6 +299,28 @@ public class ArchiveProxy
             .length(length)
             .replayStreamId(replayStreamId)
             .replayChannel(replayChannel);
+
+        return offer(replayRequestEncoder.encodedLength());
+    }
+
+    /**
+     * Stop an existing replay session.
+     *
+     * @param replaySessionId  that should be stopped.
+     * @param correlationId    for this request.
+     * @param controlSessionId for this request.
+     * @return true if successfully offered otherwise false.
+     */
+    public boolean stopReplay(
+        final long replaySessionId,
+        final long correlationId,
+        final long controlSessionId)
+    {
+        stopReplayRequestEncoder
+            .wrapAndApplyHeader(buffer, 0, messageHeaderEncoder)
+            .controlSessionId(controlSessionId)
+            .correlationId(correlationId)
+            .replaySessionId(replaySessionId);
 
         return offer(replayRequestEncoder.encodedLength());
     }
@@ -270,25 +381,180 @@ public class ArchiveProxy
         return offer(listRecordingsForUriRequestEncoder.encodedLength());
     }
 
+    /**
+     * List a recording descriptor for a given recording id.
+     *
+     * @param recordingId      at which to begin listing.
+     * @param correlationId    for this request.
+     * @param controlSessionId for this request.
+     * @return true if successfully offered otherwise false.
+     */
+    public boolean listRecording(final long recordingId, final long correlationId, final long controlSessionId)
+    {
+        listRecordingRequestEncoder
+            .wrapAndApplyHeader(buffer, 0, messageHeaderEncoder)
+            .controlSessionId(controlSessionId)
+            .correlationId(correlationId)
+            .recordingId(recordingId);
+
+        return offer(listRecordingRequestEncoder.encodedLength());
+    }
+
+    /**
+     * Extend a recorded stream for a given channel and stream id pairing.
+     *
+     * @param channel          to be recorded.
+     * @param streamId         to be recorded.
+     * @param sourceLocation   of the publication to be recorded.
+     * @param recordingId      to be extended.
+     * @param correlationId    for this request.
+     * @param controlSessionId for this request.
+     * @return true if successfully offered otherwise false.
+     */
+    public boolean extendRecording(
+        final String channel,
+        final int streamId,
+        final SourceLocation sourceLocation,
+        final long recordingId,
+        final long correlationId,
+        final long controlSessionId)
+    {
+        extendRecordingRequestEncoder
+            .wrapAndApplyHeader(buffer, 0, messageHeaderEncoder)
+            .controlSessionId(controlSessionId)
+            .correlationId(correlationId)
+            .recordingId(recordingId)
+            .streamId(streamId)
+            .sourceLocation(sourceLocation)
+            .channel(channel);
+
+        return offer(extendRecordingRequestEncoder.encodedLength());
+    }
+
+    /**
+     * Get the recorded position of an active recording.
+     *
+     * @param recordingId      of the active recording that the position is being requested for.
+     * @param correlationId    for this request.
+     * @param controlSessionId for this request.
+     * @return true if successfully offered otherwise false.
+     */
+    public boolean getRecordingPosition(final long recordingId, final long correlationId, final long controlSessionId)
+    {
+        recordingPositionRequestEncoder
+            .wrapAndApplyHeader(buffer, 0, messageHeaderEncoder)
+            .controlSessionId(controlSessionId)
+            .correlationId(correlationId)
+            .recordingId(recordingId);
+
+        return offer(recordingPositionRequestEncoder.encodedLength());
+    }
+
+    /**
+     * Truncate a stopped recording to a given position that is less than the stopped position. The provided position
+     * must be on a fragment boundary. Truncating a recording to the start position effectively deletes the recording.
+     *
+     * @param recordingId      of the stopped recording to be truncated.
+     * @param position         to which the recording will be truncated.
+     * @param correlationId    for this request.
+     * @param controlSessionId for this request.
+     * @return true if successfully offered otherwise false.
+     */
+    public boolean truncateRecording(
+        final long recordingId, final long position, final long correlationId, final long controlSessionId)
+    {
+        truncateRecordingRequestEncoder
+            .wrapAndApplyHeader(buffer, 0, messageHeaderEncoder)
+            .controlSessionId(controlSessionId)
+            .correlationId(correlationId)
+            .recordingId(recordingId)
+            .position(position);
+
+        return offer(truncateRecordingRequestEncoder.encodedLength());
+    }
+
+    /**
+     * Get the stop position of a recording.
+     *
+     * @param recordingId      of the recording that the stop position is being requested for.
+     * @param correlationId    for this request.
+     * @param controlSessionId for this request.
+     * @return true if successfully offered otherwise false.
+     */
+    public boolean getStopPosition(final long recordingId, final long correlationId, final long controlSessionId)
+    {
+        stopPositionRequestEncoder
+            .wrapAndApplyHeader(buffer, 0, messageHeaderEncoder)
+            .controlSessionId(controlSessionId)
+            .correlationId(correlationId)
+            .recordingId(recordingId);
+
+        return offer(stopPositionRequestEncoder.encodedLength());
+    }
+
+    /**
+     * Truncate a stopped recording to a given position that is less than the stopped position. The provided position
+     * must be on a fragment boundary. Truncating a recording to the start position effectively deletes the recording.
+     * <p>
+     * Find the last recording that matches the given criteria.
+     *
+     * @param minRecordingId   to search back to.
+     * @param channel          for a contains match on the stripped channel stored with the archive descriptor.
+     * @param streamId         of the recording to match.
+     * @param sessionId        of the recording to match.
+     * @param correlationId    for this request.
+     * @param controlSessionId for this request.
+     * @return true if successfully offered otherwise false.
+     */
+    public boolean findLastMatchingRecording(
+        final long minRecordingId,
+        final String channel,
+        final int streamId,
+        final int sessionId,
+        final long correlationId,
+        final long controlSessionId)
+    {
+        findLastMatchingRecordingRequestEncoder
+            .wrapAndApplyHeader(buffer, 0, messageHeaderEncoder)
+            .controlSessionId(controlSessionId)
+            .correlationId(correlationId)
+            .minRecordingId(minRecordingId)
+            .sessionId(sessionId)
+            .streamId(streamId)
+            .channel(channel);
+
+        return offer(findLastMatchingRecordingRequestEncoder.encodedLength());
+    }
+
     private boolean offer(final int length)
     {
         retryIdleStrategy.reset();
 
-        int attempts = 0;
+        int attempts = retryAttempts;
         while (true)
         {
-            final long result;
-            if ((result = publication.offer(buffer, 0, MessageHeaderEncoder.ENCODED_LENGTH + length)) > 0)
+            final long result = publication.offer(buffer, 0, MessageHeaderEncoder.ENCODED_LENGTH + length);
+            if (result > 0)
             {
                 return true;
             }
 
-            if (result == Publication.MAX_POSITION_EXCEEDED)
+            if (result == Publication.CLOSED)
             {
-                throw new IllegalStateException("Publication failed due to max position being reached");
+                throw new ArchiveException("connection to the archive has been closed");
             }
 
-            if (++attempts > maxRetryAttempts)
+            if (result == Publication.NOT_CONNECTED)
+            {
+                throw new ArchiveException("connection to the archive is no longer available");
+            }
+
+            if (result == Publication.MAX_POSITION_EXCEEDED)
+            {
+                throw new ArchiveException("offer failed due to max position being reached");
+            }
+
+            if (--attempts <= 0)
             {
                 return false;
             }
@@ -297,21 +563,37 @@ public class ArchiveProxy
         }
     }
 
-    private boolean offerWithTimeout(final int length)
+    private boolean offerWithTimeout(final int length, final AgentInvoker aeronClientInvoker)
     {
         retryIdleStrategy.reset();
 
-        final long timeoutNs = System.nanoTime() + connectTimeoutNs;
+        final long deadlineNs = nanoClock.nanoTime() + connectTimeoutNs;
         while (true)
         {
-            if (publication.offer(buffer, 0, MessageHeaderEncoder.ENCODED_LENGTH + length) > 0)
+            final long result = publication.offer(buffer, 0, MessageHeaderEncoder.ENCODED_LENGTH + length);
+            if (result > 0)
             {
                 return true;
             }
 
-            if (System.nanoTime() > timeoutNs)
+            if (result == Publication.CLOSED)
+            {
+                throw new ArchiveException("connection to the archive has been closed");
+            }
+
+            if (result == Publication.MAX_POSITION_EXCEEDED)
+            {
+                throw new ArchiveException("offer failed due to max position being reached");
+            }
+
+            if (deadlineNs - nanoClock.nanoTime() < 0)
             {
                 return false;
+            }
+
+            if (null != aeronClientInvoker)
+            {
+                aeronClientInvoker.invoke();
             }
 
             retryIdleStrategy.idle();

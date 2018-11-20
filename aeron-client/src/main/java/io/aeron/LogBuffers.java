@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -27,10 +27,14 @@ import java.nio.ByteOrder;
 import java.nio.MappedByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.file.Paths;
+import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.FileAttribute;
+import java.util.EnumSet;
 
 import static io.aeron.logbuffer.LogBufferDescriptor.*;
 import static java.nio.channels.FileChannel.MapMode.READ_WRITE;
 import static java.nio.file.StandardOpenOption.READ;
+import static java.nio.file.StandardOpenOption.SPARSE;
 import static java.nio.file.StandardOpenOption.WRITE;
 
 /**
@@ -40,6 +44,9 @@ import static java.nio.file.StandardOpenOption.WRITE;
  */
 public class LogBuffers implements AutoCloseable, ManagedResource
 {
+    private static final EnumSet<StandardOpenOption> FILE_OPTIONS = EnumSet.of(READ, WRITE, SPARSE);
+    private static final FileAttribute<?>[] NO_ATTRIBUTES = new FileAttribute[0];
+
     private long timeOfLastStateChangeNs;
     private int refCount;
     private final int termLength;
@@ -57,13 +64,13 @@ public class LogBuffers implements AutoCloseable, ManagedResource
     {
         try
         {
-            fileChannel = FileChannel.open(Paths.get(logFileName), READ, WRITE);
-
+            fileChannel = FileChannel.open(Paths.get(logFileName), FILE_OPTIONS, NO_ATTRIBUTES);
             final long logLength = fileChannel.size();
 
             if (logLength < Integer.MAX_VALUE)
             {
                 final MappedByteBuffer mappedBuffer = fileChannel.map(READ_WRITE, 0, logLength);
+                mappedBuffer.order(ByteOrder.LITTLE_ENDIAN);
                 mappedByteBuffers = new MappedByteBuffer[]{ mappedBuffer };
 
                 logMetaDataBuffer = new UnsafeBuffer(
@@ -95,8 +102,9 @@ public class LogBuffers implements AutoCloseable, ManagedResource
 
                 final MappedByteBuffer metaDataMappedBuffer = fileChannel.map(
                     READ_WRITE, metaDataSectionOffset, metaDataMappingLength);
+                metaDataMappedBuffer.order(ByteOrder.LITTLE_ENDIAN);
 
-                mappedByteBuffers[mappedByteBuffers.length - 1] = metaDataMappedBuffer;
+                mappedByteBuffers[LOG_META_DATA_SECTION_INDEX] = metaDataMappedBuffer;
 
                 logMetaDataBuffer = new UnsafeBuffer(
                     metaDataMappedBuffer,
@@ -110,7 +118,7 @@ public class LogBuffers implements AutoCloseable, ManagedResource
                 if (metaDataTermLength != assumedTermLength)
                 {
                     throw new IllegalStateException(
-                        "Assumed term length " + assumedTermLength +
+                        "assumed term length " + assumedTermLength +
                         " does not match metadata: termLength=" + metaDataTermLength);
                 }
 
@@ -119,8 +127,10 @@ public class LogBuffers implements AutoCloseable, ManagedResource
                 for (int i = 0; i < PARTITION_COUNT; i++)
                 {
                     final long position = assumedTermLength * (long)i;
-                    mappedByteBuffers[i] = fileChannel.map(READ_WRITE, position, assumedTermLength);
-                    termBuffers[i] = mappedByteBuffers[i];
+                    final MappedByteBuffer mappedBuffer = fileChannel.map(READ_WRITE, position, assumedTermLength);
+                    mappedBuffer.order(ByteOrder.LITTLE_ENDIAN);
+                    mappedByteBuffers[i] = mappedBuffer;
+                    termBuffers[i] = mappedBuffer;
                 }
             }
         }

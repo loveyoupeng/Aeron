@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,7 +18,7 @@ package io.aeron.agent;
 import org.agrona.MutableDirectBuffer;
 
 /**
- * Event types and encoding/decoding
+ * Events and codecs for encoding/decoding events recorded to the {@link EventConfiguration#EVENT_RING_BUFFER}.
  */
 public enum EventCode
 {
@@ -51,14 +51,26 @@ public enum EventCode
     CMD_IN_ADD_EXCLUSIVE_PUBLICATION(32, EventDissector::dissectAsCommand),
     CMD_OUT_EXCLUSIVE_PUBLICATION_READY(33, EventDissector::dissectAsCommand),
 
-    CMD_OUT_ERROR(34, EventDissector::dissectAsCommand);
+    CMD_OUT_ERROR(34, EventDissector::dissectAsCommand),
 
-    private static final EventCode[] EVENT_CODE_BY_ID = new EventCode[35];
+    CMD_IN_ADD_COUNTER(35, EventDissector::dissectAsCommand),
+    CMD_IN_REMOVE_COUNTER(36, EventDissector::dissectAsCommand),
+    CMD_OUT_SUBSCRIPTION_READY(37, EventDissector::dissectAsCommand),
+    CMD_OUT_COUNTER_READY(38, EventDissector::dissectAsCommand),
+    CMD_OUT_ON_UNAVAILABLE_COUNTER(39, EventDissector::dissectAsCommand),
+
+    CMD_IN_CLIENT_CLOSE(40, EventDissector::dissectAsCommand),
+
+    CMD_IN_ADD_RCV_DESTINATION(41, EventDissector::dissectAsCommand),
+    CMD_IN_REMOVE_RCV_DESTINATION(42, EventDissector::dissectAsCommand);
+
+    private static final int MAX_ID = 63;
+    private static final EventCode[] EVENT_CODE_BY_ID = new EventCode[MAX_ID];
 
     @FunctionalInterface
-    private interface DissectFunction
+    interface DissectFunction
     {
-        String dissect(EventCode code, MutableDirectBuffer buffer, int offset);
+        void dissect(EventCode code, MutableDirectBuffer buffer, int offset, StringBuilder builder);
     }
 
     private final long tagBit;
@@ -69,7 +81,13 @@ public enum EventCode
     {
         for (final EventCode code : EventCode.values())
         {
-            EVENT_CODE_BY_ID[code.id()] = code;
+            final int id = code.id();
+            if (null != EVENT_CODE_BY_ID[id])
+            {
+                throw new IllegalArgumentException("id already in use: " + id);
+            }
+
+            EVENT_CODE_BY_ID[id] = code;
         }
     }
 
@@ -98,16 +116,16 @@ public enum EventCode
 
     public static EventCode get(final int id)
     {
-        if (id < 0 || id >= EVENT_CODE_BY_ID.length)
+        if (id < 0 || id > MAX_ID)
         {
-            throw new IllegalArgumentException("No EventCode for ID: " + id);
+            throw new IllegalArgumentException("no EventCode for id: " + id);
         }
 
         final EventCode code = EVENT_CODE_BY_ID[id];
 
         if (null == code)
         {
-            throw new IllegalArgumentException("No EventCode for ID: " + id);
+            throw new IllegalArgumentException("no EventCode for id: " + id);
         }
 
         return code;
@@ -118,8 +136,8 @@ public enum EventCode
         return ((mask & code.tagBit()) == code.tagBit());
     }
 
-    public String decode(final MutableDirectBuffer buffer, final int offset)
+    public void decode(final MutableDirectBuffer buffer, final int offset, final StringBuilder builder)
     {
-        return dissector.dissect(this, buffer, offset);
+        dissector.dissect(this, buffer, offset, builder);
     }
 }

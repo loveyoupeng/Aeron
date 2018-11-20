@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,9 +15,14 @@
  */
 package io.aeron;
 
+import io.aeron.logbuffer.LogBufferDescriptor;
+import org.agrona.AsciiEncoding;
+import org.agrona.collections.ArrayUtil;
+import org.agrona.collections.Object2ObjectHashMap;
+
 import java.util.*;
 
-import static io.aeron.CommonContext.SPY_PREFIX;
+import static io.aeron.CommonContext.*;
 
 /**
  * Parser for Aeron channel URIs. The format is:
@@ -45,15 +50,21 @@ public class ChannelUri
     public static final String AERON_SCHEME = "aeron";
 
     /**
-     * Qualifier for spy subscriptions.
+     * Qualifier for spy subscriptions which spy on outgoing network destined traffic efficiently.
      */
     public static final String SPY_QUALIFIER = "aeron-spy";
 
+    public static final long INVALID_TAG = Aeron.NULL_VALUE;
+
+    private static final int CHANNEL_TAG_INDEX = 0;
+    private static final int ENTITY_TAG_INDEX = 1;
+
     private static final String AERON_PREFIX = AERON_SCHEME + ":";
 
-    private final String prefix;
-    private final String media;
+    private String prefix;
+    private String media;
     private final Map<String, String> params;
+    private String[] tags;
 
     /**
      * Construct with the components provided to avoid parsing.
@@ -67,6 +78,8 @@ public class ChannelUri
         this.prefix = prefix;
         this.media = media;
         this.params = params;
+
+        this.tags = splitTags(params.get(TAGS_PARAM_NAME));
     }
 
     /**
@@ -91,6 +104,18 @@ public class ChannelUri
     }
 
     /**
+     * Change the prefix from what has been parsed.
+     *
+     * @param prefix to replace the existing prefix.
+     * @return this for a fluent API.
+     */
+    public ChannelUri prefix(final String prefix)
+    {
+        this.prefix = prefix;
+        return this;
+    }
+
+    /**
      * The media over which the channel operates.
      *
      * @return the media over which the channel operates.
@@ -98,6 +123,18 @@ public class ChannelUri
     public String media()
     {
         return media;
+    }
+
+    /**
+     * Set the media over which the channel operates.
+     *
+     * @param media to replace the parsed value.
+     * @return this for a fluent API.
+     */
+    public ChannelUri media(final String media)
+    {
+        this.media = media;
+        return this;
     }
 
     /**
@@ -152,6 +189,17 @@ public class ChannelUri
     }
 
     /**
+     * Remove a key pair in the map of params.
+     *
+     * @param key of the param to be removed.
+     * @return the previous value of the param or null.
+     */
+    public String remove(final String key)
+    {
+        return params.remove(key);
+    }
+
+    /**
      * Does the URI contain a value for the given key.
      *
      * @param key to be lookup.
@@ -160,6 +208,26 @@ public class ChannelUri
     public boolean containsKey(final String key)
     {
         return params.containsKey(key);
+    }
+
+    /**
+     * Get the channel tag.
+     *
+     * @return channel tag.
+     */
+    public String channelTag()
+    {
+        return (tags.length > CHANNEL_TAG_INDEX) ? tags[CHANNEL_TAG_INDEX] : null;
+    }
+
+    /**
+     * Get the entity tag.
+     *
+     * @return entity tag.
+     */
+    public String entityTag()
+    {
+        return (tags.length > ENTITY_TAG_INDEX) ? tags[ENTITY_TAG_INDEX] : null;
     }
 
     /**
@@ -178,7 +246,11 @@ public class ChannelUri
         else
         {
             sb = new StringBuilder((params.size() * 20) + 20);
-            sb.append(SPY_PREFIX);
+            sb.append(prefix);
+            if (!prefix.endsWith(":"))
+            {
+                sb.append(':');
+            }
         }
 
         sb.append(AERON_PREFIX).append(media);
@@ -196,6 +268,25 @@ public class ChannelUri
         }
 
         return sb.toString();
+    }
+
+    /**
+     * Initialise a channel for restarting a publication at a given position.
+     *
+     * @param position      at which the publication should be started.
+     * @param initialTermId what which the stream would start.
+     * @param termLength    for the stream.
+     */
+    public void initialPosition(final long position, final int initialTermId, final int termLength)
+    {
+        final int bitsToShift = LogBufferDescriptor.positionBitsToShift(termLength);
+        final int termId = LogBufferDescriptor.computeTermIdFromPosition(position, bitsToShift, initialTermId);
+        final int termOffset = (int)(position & (termLength - 1));
+
+        put(INITIAL_TERM_ID_PARAM_NAME, Integer.toString(initialTermId));
+        put(TERM_ID_PARAM_NAME, Integer.toString(termId));
+        put(TERM_OFFSET_PARAM_NAME, Integer.toString(termOffset));
+        put(TERM_LENGTH_PARAM_NAME, Integer.toString(termLength));
     }
 
     /**
@@ -228,7 +319,7 @@ public class ChannelUri
         }
 
         final StringBuilder builder = new StringBuilder();
-        final Map<String, String> params = new HashMap<>();
+        final Map<String, String> params = new Object2ObjectHashMap<>();
         String media = null;
         String key = null;
 
@@ -249,7 +340,7 @@ public class ChannelUri
                             break;
 
                         case ':':
-                            throw new IllegalArgumentException("Encountered ':' within media definition");
+                            throw new IllegalArgumentException("encountered ':' within media definition");
 
                         default:
                             builder.append(c);
@@ -285,7 +376,7 @@ public class ChannelUri
                     break;
 
                 default:
-                    throw new IllegalStateException("Que? state=" + state);
+                    throw new IllegalStateException("unexpected state=" + state);
             }
         }
 
@@ -300,10 +391,48 @@ public class ChannelUri
                 break;
 
             default:
-                throw new IllegalArgumentException("No more input found, but was in state: " + state);
+                throw new IllegalArgumentException("no more input found, state=" + state);
         }
 
         return new ChannelUri(prefix, media, params);
+    }
+
+    /**
+     * Add a sessionId to a given channel.
+     *
+     * @param channel   to add sessionId to.
+     * @param sessionId to add to channel.
+     * @return new string that represents channel with sessionId added.
+     */
+    public static String addSessionId(final String channel, final int sessionId)
+    {
+        final ChannelUri channelUri = ChannelUri.parse(channel);
+        channelUri.put(CommonContext.SESSION_ID_PARAM_NAME, Integer.toString(sessionId));
+
+        return channelUri.toString();
+    }
+
+    /**
+     * Is the param tagged? (starts with the "tag:" prefix)
+     *
+     * @param paramValue to check if tagged.
+     * @return true if tagged or false if not.
+     */
+    public static boolean isTagged(final String paramValue)
+    {
+        return startsWith(paramValue, "tag:");
+    }
+
+    /**
+     * Get the value of the tag from a given parameter.
+     *
+     * @param paramValue to extract the tag value from.
+     * @return the value of the tag or {@link #INVALID_TAG} if not tagged.
+     */
+    public static long getTag(final String paramValue)
+    {
+        return isTagged(paramValue) ?
+            AsciiEncoding.parseLongAscii(paramValue, 4, paramValue.length() - 4) : INVALID_TAG;
     }
 
     private static boolean startsWith(final CharSequence input, final int position, final CharSequence prefix)
@@ -327,5 +456,44 @@ public class ChannelUri
     private static boolean startsWith(final CharSequence input, final CharSequence prefix)
     {
         return startsWith(input, 0, prefix);
+    }
+
+    private static String[] splitTags(final CharSequence tags)
+    {
+        String[] stringArray = ArrayUtil.EMPTY_STRING_ARRAY;
+
+        if (null != tags)
+        {
+            int currentStartIndex = 0;
+            int tagIndex = 0;
+            stringArray = new String[2];
+            final int length = tags.length();
+
+            for (int i = 0; i < length; i++)
+            {
+                if (tags.charAt(i) == ',')
+                {
+                    String tag = null;
+
+                    if ((i - currentStartIndex) > 0)
+                    {
+                        tag = tags.subSequence(currentStartIndex, i).toString();
+                        currentStartIndex = i + 1;
+                    }
+
+                    stringArray = ArrayUtil.ensureCapacity(stringArray, tagIndex + 1);
+                    stringArray[tagIndex] = tag;
+                    tagIndex++;
+                }
+            }
+
+            if ((length - currentStartIndex) > 0)
+            {
+                stringArray = ArrayUtil.ensureCapacity(stringArray, tagIndex + 1);
+                stringArray[tagIndex] = tags.subSequence(currentStartIndex, length).toString();
+            }
+        }
+
+        return stringArray;
     }
 }

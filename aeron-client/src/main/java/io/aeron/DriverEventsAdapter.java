@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,6 +20,7 @@ import org.agrona.MutableDirectBuffer;
 import org.agrona.concurrent.MessageHandler;
 import org.agrona.concurrent.broadcast.CopyBroadcastReceiver;
 
+import static io.aeron.ErrorCode.CHANNEL_ENDPOINT_ERROR;
 import static io.aeron.command.ControlProtocolEvents.*;
 
 /**
@@ -31,13 +32,15 @@ class DriverEventsAdapter implements MessageHandler
 
     private final ErrorResponseFlyweight errorResponse = new ErrorResponseFlyweight();
     private final PublicationBuffersReadyFlyweight publicationReady = new PublicationBuffersReadyFlyweight();
+    private final SubscriptionReadyFlyweight subscriptionReady = new SubscriptionReadyFlyweight();
     private final ImageBuffersReadyFlyweight imageReady = new ImageBuffersReadyFlyweight();
-    private final CorrelatedMessageFlyweight correlatedMessage = new CorrelatedMessageFlyweight();
+    private final OperationSucceededFlyweight operationSucceeded = new OperationSucceededFlyweight();
     private final ImageMessageFlyweight imageMessage = new ImageMessageFlyweight();
+    private final CounterUpdateFlyweight counterUpdate = new CounterUpdateFlyweight();
     private final DriverEventsListener listener;
 
     private long activeCorrelationId;
-    private long lastReceivedCorrelationId;
+    private long receivedCorrelationId;
 
     DriverEventsAdapter(final CopyBroadcastReceiver broadcastReceiver, final DriverEventsListener listener)
     {
@@ -48,14 +51,14 @@ class DriverEventsAdapter implements MessageHandler
     public int receive(final long activeCorrelationId)
     {
         this.activeCorrelationId = activeCorrelationId;
-        this.lastReceivedCorrelationId = -1;
+        this.receivedCorrelationId = Aeron.NULL_VALUE;
 
         return broadcastReceiver.receive(this);
     }
 
-    public long lastReceivedCorrelationId()
+    public long receivedCorrelationId()
     {
-        return lastReceivedCorrelationId;
+        return receivedCorrelationId;
     }
 
     @SuppressWarnings("MethodLength")
@@ -67,12 +70,19 @@ class DriverEventsAdapter implements MessageHandler
             {
                 errorResponse.wrap(buffer, index);
 
-                final long correlationId = errorResponse.offendingCommandCorrelationId();
-                if (correlationId == activeCorrelationId)
-                {
-                    listener.onError(correlationId, errorResponse.errorCode(), errorResponse.errorMessage());
+                final int correlationId = (int)errorResponse.offendingCommandCorrelationId();
+                final int errorCodeValue = errorResponse.errorCodeValue();
+                final ErrorCode errorCode = ErrorCode.get(errorCodeValue);
+                final String message = errorResponse.errorMessage();
 
-                    lastReceivedCorrelationId = correlationId;
+                if (CHANNEL_ENDPOINT_ERROR == errorCode)
+                {
+                    listener.onChannelEndpointError(correlationId, message);
+                }
+                else if (correlationId == activeCorrelationId)
+                {
+                    receivedCorrelationId = correlationId;
+                    listener.onError(correlationId, errorCodeValue, errorCode, message);
                 }
                 break;
             }
@@ -85,7 +95,7 @@ class DriverEventsAdapter implements MessageHandler
                     imageReady.correlationId(),
                     imageReady.streamId(),
                     imageReady.sessionId(),
-                    imageReady.subscriberRegistrationId(),
+                    imageReady.subscriptionRegistrationId(),
                     imageReady.subscriberPositionId(),
                     imageReady.logFileName(),
                     imageReady.sourceIdentity());
@@ -99,27 +109,40 @@ class DriverEventsAdapter implements MessageHandler
                 final long correlationId = publicationReady.correlationId();
                 if (correlationId == activeCorrelationId)
                 {
+                    receivedCorrelationId = correlationId;
                     listener.onNewPublication(
                         correlationId,
                         publicationReady.registrationId(),
                         publicationReady.streamId(),
                         publicationReady.sessionId(),
                         publicationReady.publicationLimitCounterId(),
+                        publicationReady.channelStatusCounterId(),
                         publicationReady.logFileName());
+                }
+                break;
+            }
 
-                    lastReceivedCorrelationId = correlationId;
+            case ON_SUBSCRIPTION_READY:
+            {
+                subscriptionReady.wrap(buffer, index);
+
+                final long correlationId = subscriptionReady.correlationId();
+                if (correlationId == activeCorrelationId)
+                {
+                    receivedCorrelationId = correlationId;
+                    listener.onNewSubscription(correlationId, subscriptionReady.channelStatusCounterId());
                 }
                 break;
             }
 
             case ON_OPERATION_SUCCESS:
             {
-                correlatedMessage.wrap(buffer, index);
+                operationSucceeded.wrap(buffer, index);
 
-                final long correlationId = correlatedMessage.correlationId();
+                final long correlationId = operationSucceeded.correlationId();
                 if (correlationId == activeCorrelationId)
                 {
-                    lastReceivedCorrelationId = correlationId;
+                    receivedCorrelationId = correlationId;
                 }
                 break;
             }
@@ -128,7 +151,8 @@ class DriverEventsAdapter implements MessageHandler
             {
                 imageMessage.wrap(buffer, index);
 
-                listener.onUnavailableImage(imageMessage.correlationId(), imageMessage.streamId());
+                listener.onUnavailableImage(
+                    imageMessage.correlationId(), imageMessage.subscriptionRegistrationId(), imageMessage.streamId());
                 break;
             }
 
@@ -139,16 +163,42 @@ class DriverEventsAdapter implements MessageHandler
                 final long correlationId = publicationReady.correlationId();
                 if (correlationId == activeCorrelationId)
                 {
+                    receivedCorrelationId = correlationId;
                     listener.onNewExclusivePublication(
                         correlationId,
                         publicationReady.registrationId(),
                         publicationReady.streamId(),
                         publicationReady.sessionId(),
                         publicationReady.publicationLimitCounterId(),
+                        publicationReady.channelStatusCounterId(),
                         publicationReady.logFileName());
-
-                    lastReceivedCorrelationId = correlationId;
                 }
+                break;
+            }
+
+            case ON_COUNTER_READY:
+            {
+                counterUpdate.wrap(buffer, index);
+
+                final int counterId = counterUpdate.counterId();
+                final long correlationId = counterUpdate.correlationId();
+                if (correlationId == activeCorrelationId)
+                {
+                    receivedCorrelationId = correlationId;
+                    listener.onNewCounter(correlationId, counterId);
+                }
+                else
+                {
+                    listener.onAvailableCounter(correlationId, counterId);
+                }
+                break;
+            }
+
+            case ON_UNAVAILABLE_COUNTER:
+            {
+                counterUpdate.wrap(buffer, index);
+
+                listener.onUnavailableCounter(counterUpdate.correlationId(), counterUpdate.counterId());
                 break;
             }
         }

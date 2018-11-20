@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 - 2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -35,7 +35,7 @@ typedef struct aeron_data_packet_dispatcher_stct
     {
         int pending_setup_frame;
         int init_in_progress;
-        int on_cooldown;
+        int on_cool_down;
     }
     tokens;
 
@@ -89,13 +89,13 @@ int aeron_data_packet_dispatcher_elicit_setup_from_source(
     int32_t stream_id,
     int32_t session_id);
 
-inline bool aeron_data_packet_dispatcher_is_not_already_in_progress_or_on_cooldown(
+inline bool aeron_data_packet_dispatcher_is_not_already_in_progress_or_on_cool_down(
     aeron_data_packet_dispatcher_t *dispatcher, int32_t stream_id, int32_t session_id)
 {
     void *status = aeron_int64_to_ptr_hash_map_get(&dispatcher->ignored_sessions_map,
         aeron_int64_to_ptr_hash_map_compound_key(session_id, stream_id));
 
-    return (&dispatcher->tokens.init_in_progress != status && &dispatcher->tokens.on_cooldown != status);
+    return (&dispatcher->tokens.init_in_progress != status && &dispatcher->tokens.on_cool_down != status);
 }
 
 inline int aeron_data_packet_dispatcher_remove_pending_setup(
@@ -113,13 +113,13 @@ inline int aeron_data_packet_dispatcher_remove_pending_setup(
     return 0;
 }
 
-inline int aeron_data_packet_dispatcher_remove_cooldown(
+inline int aeron_data_packet_dispatcher_remove_cool_down(
     aeron_data_packet_dispatcher_t *dispatcher, int32_t session_id, int32_t stream_id)
 {
     const void *status = aeron_int64_to_ptr_hash_map_get(&dispatcher->ignored_sessions_map,
         aeron_int64_to_ptr_hash_map_compound_key(session_id, stream_id));
 
-    if (status == &dispatcher->tokens.on_cooldown)
+    if (status == &dispatcher->tokens.on_cool_down)
     {
         aeron_int64_to_ptr_hash_map_remove(&dispatcher->ignored_sessions_map,
             aeron_int64_to_ptr_hash_map_compound_key(session_id, stream_id));
@@ -130,7 +130,7 @@ inline int aeron_data_packet_dispatcher_remove_cooldown(
 
 inline bool aeron_data_packet_dispatcher_should_elicit_setup_message(aeron_data_packet_dispatcher_t *dispatcher)
 {
-    return (0 == dispatcher->session_by_stream_id_map.size);
+    return (0 != dispatcher->session_by_stream_id_map.size);
 }
 
 #endif //AERON_AERON_DATA_PACKET_DISPATCHER_H

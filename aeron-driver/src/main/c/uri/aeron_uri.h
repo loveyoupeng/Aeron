@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 - 2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -41,6 +41,7 @@ aeron_uri_params_t;
 
 #define AERON_UDP_CHANNEL_CONTROL_MODE_KEY "control-mode"
 #define AERON_UDP_CHANNEL_CONTROL_MODE_MANUAL_VALUE "manual"
+#define AERON_UDP_CHANNEL_CONTROL_MODE_DYNAMIC_VALUE "dynamic"
 
 #define AERON_URI_INITIAL_TERM_ID_KEY "init-term-id"
 #define AERON_URI_TERM_ID_KEY "term-id"
@@ -85,7 +86,7 @@ aeron_ipc_channel_params_t;
 
 typedef enum aeron_uri_type_enum
 {
-    AERON_URI_UDP, AERON_URI_IPC
+    AERON_URI_UDP, AERON_URI_IPC, AERON_URI_UNKNOWN
 }
 aeron_uri_type_t;
 
@@ -112,6 +113,8 @@ int aeron_ipc_uri_parse(char *uri, aeron_ipc_channel_params_t *params);
 
 int aeron_uri_parse(const char *uri, aeron_uri_t *params);
 
+void aeron_uri_close(aeron_uri_t *params);
+
 uint8_t aeron_uri_multicast_ttl(aeron_uri_t *uri);
 
 const char *aeron_uri_find_param_value(aeron_uri_params_t *uri_params, const char *key);
@@ -123,6 +126,7 @@ int aeron_uri_publication_params(
     aeron_uri_publication_params_t *params,
     aeron_driver_context_t *context,
     bool is_exclusive);
+
 int aeron_udp_channel_subscription_params(
     aeron_uri_t *uri,
     aeron_udp_channel_subscription_params_t *params,

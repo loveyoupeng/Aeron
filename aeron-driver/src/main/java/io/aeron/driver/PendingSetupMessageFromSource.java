@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,25 +19,28 @@ import io.aeron.driver.media.ReceiveChannelEndpoint;
 
 import java.net.InetSocketAddress;
 
-public class PendingSetupMessageFromSource
+class PendingSetupMessageFromSource
 {
     private final int sessionId;
     private final int streamId;
-    private final ReceiveChannelEndpoint channelEndpoint;
+    private final int transportIndex;
     private final boolean periodic;
+    private final ReceiveChannelEndpoint channelEndpoint;
     private final InetSocketAddress controlAddress;
 
     private long timeOfStatusMessageNs;
 
-    public PendingSetupMessageFromSource(
+    PendingSetupMessageFromSource(
         final int sessionId,
         final int streamId,
+        final int transportIndex,
         final ReceiveChannelEndpoint channelEndpoint,
         final boolean periodic,
         final InetSocketAddress controlAddress)
     {
         this.sessionId = sessionId;
         this.streamId = streamId;
+        this.transportIndex = transportIndex;
         this.channelEndpoint = channelEndpoint;
         this.periodic = periodic;
         this.controlAddress = controlAddress;
@@ -51,6 +54,11 @@ public class PendingSetupMessageFromSource
     public int streamId()
     {
         return streamId;
+    }
+
+    public int transportIndex()
+    {
+        return transportIndex;
     }
 
     public ReceiveChannelEndpoint channelEndpoint()

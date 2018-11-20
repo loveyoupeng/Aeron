@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,6 +23,7 @@ import java.util.ArrayList;
 import java.util.concurrent.TimeUnit;
 
 import static io.aeron.logbuffer.LogBufferDescriptor.computePosition;
+import static org.agrona.SystemUtil.getDurationInNanos;
 
 /**
  * Minimum multicast sender flow control strategy.
@@ -44,7 +45,8 @@ public class MinMulticastFlowControl implements FlowControl
      */
     private static final long RECEIVER_TIMEOUT_DEFAULT = TimeUnit.SECONDS.toNanos(2);
 
-    private static final long RECEIVER_TIMEOUT = Long.getLong(RECEIVER_TIMEOUT_PROP_NAME, RECEIVER_TIMEOUT_DEFAULT);
+    private static final long RECEIVER_TIMEOUT = getDurationInNanos(
+        RECEIVER_TIMEOUT_PROP_NAME, RECEIVER_TIMEOUT_DEFAULT);
 
     private final ArrayList<Receiver> receiverList = new ArrayList<>();
 
@@ -118,10 +120,9 @@ public class MinMulticastFlowControl implements FlowControl
         for (int lastIndex = receiverList.size() - 1, i = lastIndex; i >= 0; i--)
         {
             final Receiver receiver = receiverList.get(i);
-            if (timeNs > (receiver.timeOfLastStatusMessageNs + RECEIVER_TIMEOUT))
+            if ((receiver.timeOfLastStatusMessageNs + RECEIVER_TIMEOUT) - timeNs < 0)
             {
-                ArrayListUtil.fastUnorderedRemove(receiverList, i, lastIndex);
-                lastIndex--;
+                ArrayListUtil.fastUnorderedRemove(receiverList, i, lastIndex--);
             }
             else
             {

@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,10 +20,21 @@ import io.aeron.driver.status.StatusUtil;
 import org.agrona.concurrent.status.CountersReader;
 import org.agrona.concurrent.status.StatusIndicator;
 
+/**
+ * Allows a {@link org.agrona.concurrent.ControllableIdleStrategy} to be set via the command line.
+ * The first command line arg should be an integer value representing one of constants in
+ * {@link org.agrona.concurrent.ControllableIdleStrategy}.
+ */
 public class SetControllableIdleStrategy
 {
-    public static void main(final String[] args) throws Exception
+    public static void main(final String[] args)
     {
+        if (args.length != 1)
+        {
+            System.out.format("Usage: SetControllableIdleStrategy <n>");
+            System.exit(0);
+        }
+
         try (Aeron aeron = Aeron.connect())
         {
             final CountersReader countersReader = aeron.countersReader();
@@ -32,9 +43,7 @@ public class SetControllableIdleStrategy
             if (null != statusIndicator)
             {
                 final int status = Integer.parseInt(args[0]);
-
                 statusIndicator.setOrdered(status);
-
                 System.out.println("Set ControllableIdleStrategy status to " + status);
             }
             else

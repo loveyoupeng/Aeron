@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -40,13 +40,15 @@ public enum SystemCounterDescriptor
     INVALID_PACKETS(14, "Invalid packets"),
     ERRORS(15, "Errors"),
     SHORT_SENDS(16, "Short sends"),
-    CLIENT_KEEP_ALIVES(17, "Client keep-alives"),
+    FREE_FAILS(17, "Failed attempts to free log buffers"),
     SENDER_FLOW_CONTROL_LIMITS(18, "Sender flow control limits applied"),
     UNBLOCKED_PUBLICATIONS(19, "Unblocked Publications"),
     UNBLOCKED_COMMANDS(20, "Unblocked Control Commands"),
     POSSIBLE_TTL_ASYMMETRY(21, "Possible TTL Asymmetry"),
     CONTROLLABLE_IDLE_STRATEGY(22, "ControllableIdleStrategy status"),
-    LOSS_GAP_FILLS(23, "Loss gap fills");
+    LOSS_GAP_FILLS(23, "Loss gap fills"),
+    CLIENT_TIMEOUTS(24, "Client liveness timeouts");
+
     /**
      * All system counters have the same type id, i.e. system counters are the same type. Other types can exist.
      */

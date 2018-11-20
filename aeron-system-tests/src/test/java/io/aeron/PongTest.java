@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,8 +16,11 @@
 package io.aeron;
 
 import io.aeron.driver.MediaDriver;
+import org.agrona.CloseHelper;
+import org.agrona.collections.MutableInteger;
 import org.junit.After;
 import org.junit.Before;
+import org.junit.Ignore;
 import org.junit.Test;
 import io.aeron.driver.ThreadingMode;
 import io.aeron.logbuffer.FragmentHandler;
@@ -28,11 +31,11 @@ import org.agrona.DirectBuffer;
 import org.agrona.concurrent.UnsafeBuffer;
 
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
 public class PongTest
@@ -55,25 +58,29 @@ public class PongTest
     private FragmentHandler pongHandler = mock(FragmentHandler.class);
 
     @Before
-    public void setUp() throws Exception
+    public void before()
     {
-        driver = MediaDriver.launch(new MediaDriver.Context().threadingMode(ThreadingMode.SHARED));
+        driver = MediaDriver.launch(
+            new MediaDriver.Context()
+                .errorHandler(Throwable::printStackTrace)
+                .threadingMode(ThreadingMode.SHARED));
+
         pingClient = Aeron.connect();
         pongClient = Aeron.connect();
 
-        pingPublication = pingClient.addPublication(PING_URI, PING_STREAM_ID);
         pingSubscription = pongClient.addSubscription(PING_URI, PING_STREAM_ID);
+        pingPublication = pingClient.addPublication(PING_URI, PING_STREAM_ID);
 
-        pongPublication = pongClient.addPublication(PONG_URI, PONG_STREAM_ID);
         pongSubscription = pingClient.addSubscription(PONG_URI, PONG_STREAM_ID);
+        pongPublication = pongClient.addPublication(PONG_URI, PONG_STREAM_ID);
     }
 
     @After
-    public void closeEverything() throws Exception
+    public void after()
     {
-        pongClient.close();
-        pingClient.close();
-        driver.close();
+        CloseHelper.close(pongClient);
+        CloseHelper.close(pingClient);
+        CloseHelper.close(driver);
 
         driver.context().deleteAeronDirectory();
     }
@@ -85,16 +92,17 @@ public class PongTest
 
         while (pingPublication.offer(buffer, 0, BitUtil.SIZE_OF_INT) < 0L)
         {
+            SystemTest.checkInterruptedStatus();
             Thread.yield();
         }
 
-        final AtomicInteger fragmentsRead = new AtomicInteger();
+        final MutableInteger fragmentsRead = new MutableInteger();
 
-        SystemTestHelper.executeUntil(
+        SystemTest.executeUntil(
             () -> fragmentsRead.get() > 0,
             (i) ->
             {
-                fragmentsRead.addAndGet(pingSubscription.poll(this::pingHandler, 10));
+                fragmentsRead.value += pingSubscription.poll(this::echoPingHandler, 10);
                 Thread.yield();
             },
             Integer.MAX_VALUE,
@@ -102,11 +110,11 @@ public class PongTest
 
         fragmentsRead.set(0);
 
-        SystemTestHelper.executeUntil(
+        SystemTest.executeUntil(
             () -> fragmentsRead.get() > 0,
             (i) ->
             {
-                fragmentsRead.addAndGet(pongSubscription.poll(pongHandler, 10));
+                fragmentsRead.value += pongSubscription.poll(pongHandler, 10);
                 Thread.yield();
             },
             Integer.MAX_VALUE,
@@ -119,12 +127,100 @@ public class PongTest
             any(Header.class));
     }
 
-    public void pingHandler(
+    @Ignore
+    @Test
+    public void playPingPongWithRestart() throws Exception
+    {
+        buffer.putInt(0, 1);
+
+        while (pingPublication.offer(buffer, 0, BitUtil.SIZE_OF_INT) < 0L)
+        {
+            SystemTest.checkInterruptedStatus();
+            Thread.yield();
+        }
+
+        final MutableInteger fragmentsRead = new MutableInteger();
+
+        SystemTest.executeUntil(
+            () -> fragmentsRead.get() > 0,
+            (i) ->
+            {
+                fragmentsRead.value += pingSubscription.poll(this::echoPingHandler, 1);
+                Thread.yield();
+            },
+            Integer.MAX_VALUE,
+            TimeUnit.MILLISECONDS.toNanos(5900));
+
+        fragmentsRead.set(0);
+
+        SystemTest.executeUntil(
+            () -> fragmentsRead.get() > 0,
+            (i) ->
+            {
+                fragmentsRead.value += pongSubscription.poll(pongHandler, 1);
+                Thread.yield();
+            },
+            Integer.MAX_VALUE,
+            TimeUnit.MILLISECONDS.toNanos(5900));
+
+        // close Pong side
+        pongPublication.close();
+        pingSubscription.close();
+
+        // wait for disconnect to ensure we stay in lock step
+        while (pingPublication.isConnected())
+        {
+            SystemTest.checkInterruptedStatus();
+            Thread.sleep(100);
+        }
+
+        // restart Pong side
+        pingSubscription = pingClient.addSubscription(PING_URI, PING_STREAM_ID);
+        pongPublication = pongClient.addPublication(PONG_URI, PONG_STREAM_ID);
+
+        fragmentsRead.set(0);
+
+        while (pingPublication.offer(buffer, 0, BitUtil.SIZE_OF_INT) < 0L)
+        {
+            SystemTest.checkInterruptedStatus();
+            Thread.yield();
+        }
+
+        SystemTest.executeUntil(
+            () -> fragmentsRead.get() > 0,
+            (i) ->
+            {
+                fragmentsRead.value += pingSubscription.poll(this::echoPingHandler, 10);
+                Thread.yield();
+            },
+            Integer.MAX_VALUE,
+            TimeUnit.MILLISECONDS.toNanos(5900));
+
+        fragmentsRead.set(0);
+
+        SystemTest.executeUntil(
+            () -> fragmentsRead.get() > 0,
+            (i) ->
+            {
+                fragmentsRead.value += pongSubscription.poll(pongHandler, 10);
+                Thread.yield();
+            },
+            Integer.MAX_VALUE,
+            TimeUnit.MILLISECONDS.toNanos(5900));
+
+        verify(pongHandler, times(2)).onFragment(
+            any(DirectBuffer.class),
+            eq(DataHeaderFlyweight.HEADER_LENGTH),
+            eq(BitUtil.SIZE_OF_INT),
+            any(Header.class));
+    }
+
+    public void echoPingHandler(
         final DirectBuffer buffer, final int offset, final int length, @SuppressWarnings("unused") final Header header)
     {
-        // echoes back the ping
         while (pongPublication.offer(buffer, offset, length) < 0L)
         {
+            SystemTest.checkInterruptedStatus();
             Thread.yield();
         }
     }

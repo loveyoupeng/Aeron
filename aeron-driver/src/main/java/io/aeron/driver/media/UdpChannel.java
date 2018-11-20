@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,43 +15,40 @@
  */
 package io.aeron.driver.media;
 
+import io.aeron.ChannelUri;
 import io.aeron.CommonContext;
 import io.aeron.ErrorCode;
 import io.aeron.driver.Configuration;
 import io.aeron.driver.exceptions.InvalidChannelException;
-import io.aeron.ChannelUri;
 import org.agrona.BitUtil;
 
 import java.net.*;
+import java.util.concurrent.atomic.AtomicInteger;
 
-import static io.aeron.driver.media.NetworkUtil.filterBySubnet;
-import static io.aeron.driver.media.NetworkUtil.findAddressOnInterface;
-import static io.aeron.driver.media.NetworkUtil.getProtocolFamily;
+import static io.aeron.driver.media.NetworkUtil.*;
 import static java.lang.System.lineSeparator;
 import static java.net.InetAddress.getByAddress;
 
 /**
- * Encapsulation of UDP Channels.
- * <p>
- * Format of URI as in {@link ChannelUri}.
+ * The media configuration for Aeron UDP channels as an instantiation of the socket addresses for a {@link ChannelUri}.
  *
  * @see ChannelUri
  * @see io.aeron.ChannelUriStringBuilder
  */
 public final class UdpChannel
 {
-    /**
-     * Media type id for UDP channels.
-     */
-    public static final String MEDIA_ID = "udp";
-
-    private static final byte[] HEX_DIGIT_TABLE =
+    private static final byte[] HEX_TABLE =
     {
         '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'
     };
 
+    private static final AtomicInteger UNIQUE_CANONICAL_FORM_VALUE = new AtomicInteger();
+
     private final boolean hasExplicitControl;
     private final boolean isMulticast;
+    private final boolean hasTag;
+    private final boolean hasNoDistinguishingCharacteristic;
+    private final long tag;
     private final int multicastTtl;
     private final InetSocketAddress remoteData;
     private final InetSocketAddress localData;
@@ -67,6 +64,9 @@ public final class UdpChannel
     {
         hasExplicitControl = context.hasExplicitControl;
         isMulticast = context.isMulticast;
+        hasTag = context.hasTagId;
+        hasNoDistinguishingCharacteristic = context.hasNoDistinguishingCharacteristic;
+        tag = context.tagId;
         multicastTtl = context.multicastTtl;
         remoteData = context.remoteData;
         localData = context.localData;
@@ -86,6 +86,7 @@ public final class UdpChannel
      * @return a new {@link UdpChannel}
      * @throws InvalidChannelException if an error occurs.
      */
+    @SuppressWarnings("MethodLength")
     public static UdpChannel parse(final String channelUriString)
     {
         try
@@ -96,10 +97,15 @@ public final class UdpChannel
             InetSocketAddress endpointAddress = getEndpointAddress(channelUri);
             final InetSocketAddress explicitControlAddress = getExplicitControlAddress(channelUri);
 
-            if (null == endpointAddress && null == explicitControlAddress)
+            final String tagIdStr = channelUri.channelTag();
+            final String controlMode = channelUri.get(CommonContext.MDC_CONTROL_MODE_PARAM_NAME);
+            final boolean hasNoDistinguishingCharacteristic =
+                null == endpointAddress && null == explicitControlAddress && null == tagIdStr;
+
+            if (hasNoDistinguishingCharacteristic && null == controlMode)
             {
                 throw new IllegalArgumentException(
-                    "Aeron URIs for UDP must specify an endpoint address and/or a control address");
+                    "Aeron URIs for UDP must specify an endpoint address, control address, tag-id, or control-mode");
             }
 
             if (null != endpointAddress && endpointAddress.isUnresolved())
@@ -112,13 +118,20 @@ public final class UdpChannel
                 throw new UnknownHostException("could not resolve control address: " + explicitControlAddress);
             }
 
-            if (null == endpointAddress)
+            final Context context = new Context()
+                .uriStr(channelUriString)
+                .channelUri(channelUri)
+                .hasNoDistinguishingCharacteristic(hasNoDistinguishingCharacteristic);
+
+            if (null != tagIdStr)
             {
-                // just control specified, a multi-destination-cast Publication, so wildcard the endpoint
-                endpointAddress = new InetSocketAddress("0.0.0.0", 0);
+                context.hasTagId(true).tagId(Long.parseLong(tagIdStr));
             }
 
-            final Context context = new Context().uriStr(channelUriString).channelUri(channelUri);
+            if (null == endpointAddress)
+            {
+                endpointAddress = new InetSocketAddress("0.0.0.0", 0);
+            }
 
             if (endpointAddress.getAddress().isMulticastAddress())
             {
@@ -157,13 +170,16 @@ public final class UdpChannel
                     searchAddress.getAddress() :
                     resolveToAddressOfInterface(findInterface(searchAddress), searchAddress);
 
+                final String uniqueCanonicalFormSuffix = hasNoDistinguishingCharacteristic ?
+                    ("-" + Integer.toString(UNIQUE_CANONICAL_FORM_VALUE.getAndAdd(1))) : "";
+
                 context
                     .remoteControlAddress(endpointAddress)
                     .remoteDataAddress(endpointAddress)
                     .localControlAddress(localAddress)
                     .localDataAddress(localAddress)
                     .protocolFamily(getProtocolFamily(endpointAddress.getAddress()))
-                    .canonicalForm(canonicalise(localAddress, endpointAddress));
+                    .canonicalForm(canonicalise(localAddress, endpointAddress) + uniqueCanonicalFormSuffix);
             }
 
             return new UdpChannel(context);
@@ -189,9 +205,11 @@ public final class UdpChannel
      * name and also as a method of hashing, etc.
      * <p>
      * A canonical form:
-     * - begins with the string "UDP-"
-     * - has all addresses converted to hexadecimal
-     * - uses "-" as all field separators
+     * <ul>
+     *     <li>begins with the string "UDP-"</li>
+     *     <li>has all addresses converted to hexadecimal</li>
+     *     <li>uses "-" as all field separators</li>
+     * </ul>
      * <p>
      * The general format is:
      * UDP-interface-localPort-remoteAddress-remotePort
@@ -206,13 +224,13 @@ public final class UdpChannel
 
         builder.append("UDP-");
 
-        toHexString(builder, localData.getAddress().getAddress())
+        toHex(builder, localData.getAddress().getAddress())
             .append('-')
             .append(localData.getPort());
 
         builder.append('-');
 
-        toHexString(builder, remoteData.getAddress().getAddress())
+        toHex(builder, remoteData.getAddress().getAddress())
             .append('-')
             .append(remoteData.getPort());
 
@@ -332,9 +350,8 @@ public final class UdpChannel
      * Local interface to be used by the channel.
      *
      * @return {@link NetworkInterface} for the local interface used by the channel
-     * @throws SocketException if an error occurs
      */
-    public NetworkInterface localInterface() throws SocketException
+    public NetworkInterface localInterface()
     {
         return localInterface;
     }
@@ -359,6 +376,11 @@ public final class UdpChannel
         return protocolFamily;
     }
 
+    public long tag()
+    {
+        return tag;
+    }
+
     /**
      * Does the channel have an explicit control address as used with multi-destination-cast or not?
      *
@@ -367,6 +389,29 @@ public final class UdpChannel
     public boolean hasExplicitControl()
     {
         return hasExplicitControl;
+    }
+
+    public boolean hasTag()
+    {
+        return hasTag;
+    }
+
+    public boolean doesTagMatch(final UdpChannel udpChannel)
+    {
+        if (!hasTag || !udpChannel.hasTag() || tag != udpChannel.tag())
+        {
+            return false;
+        }
+
+        if (udpChannel.remoteData().getAddress().isAnyLocalAddress() &&
+            udpChannel.remoteData().getPort() == 0 &&
+            udpChannel.localData().getAddress().isAnyLocalAddress() &&
+            udpChannel.localData().getPort() == 0)
+        {
+            return true;
+        }
+
+        throw new IllegalArgumentException("matching tag has set endpoint or control address");
     }
 
     /**
@@ -423,7 +468,7 @@ public final class UdpChannel
         return InterfaceSearchAddress.wildcard();
     }
 
-    private static InetSocketAddress getEndpointAddress(final ChannelUri uri) throws UnknownHostException
+    private static InetSocketAddress getEndpointAddress(final ChannelUri uri)
     {
         final String endpointValue = uri.get(CommonContext.ENDPOINT_PARAM_NAME);
         if (null != endpointValue)
@@ -445,7 +490,7 @@ public final class UdpChannel
         return Configuration.SOCKET_MULTICAST_TTL;
     }
 
-    private static InetSocketAddress getExplicitControlAddress(final ChannelUri uri) throws UnknownHostException
+    private static InetSocketAddress getExplicitControlAddress(final ChannelUri uri)
     {
         final String controlValue = uri.get(CommonContext.MDC_CONTROL_PARAM_NAME);
         if (null != controlValue)
@@ -471,7 +516,7 @@ public final class UdpChannel
 
     private static void validateMedia(final ChannelUri uri)
     {
-        if (!MEDIA_ID.equals(uri.media()))
+        if (!CommonContext.UDP_MEDIA.equals(uri.media()))
         {
             throw new IllegalArgumentException("UdpChannel only supports UDP media: " + uri);
         }
@@ -492,7 +537,7 @@ public final class UdpChannel
     }
 
     private static NetworkInterface findInterface(final InterfaceSearchAddress searchAddress)
-        throws SocketException, UnknownHostException
+        throws SocketException
     {
         final NetworkInterface[] filteredInterfaces = filterBySubnet(
             searchAddress.getInetAddress(), searchAddress.getSubnetPrefix());
@@ -538,14 +583,12 @@ public final class UdpChannel
         return builder.toString();
     }
 
-    private static StringBuilder toHexString(final StringBuilder builder, final byte[] bytes)
+    private static StringBuilder toHex(final StringBuilder builder, final byte[] bytes)
     {
-        for (int i = 0, length = bytes.length; i < length; i++)
+        for (final byte b : bytes)
         {
-            final byte b = bytes[i];
-
-            builder.append((char)(HEX_DIGIT_TABLE[(b >> 4) & 0x0F]));
-            builder.append((char)(HEX_DIGIT_TABLE[b & 0x0F]));
+            builder.append((char)(HEX_TABLE[(b >> 4) & 0x0F]));
+            builder.append((char)(HEX_TABLE[b & 0x0F]));
         }
 
         return builder;
@@ -553,6 +596,7 @@ public final class UdpChannel
 
     static class Context
     {
+        long tagId;
         int multicastTtl;
         InetSocketAddress remoteData;
         InetSocketAddress localData;
@@ -565,6 +609,8 @@ public final class UdpChannel
         ChannelUri channelUri;
         boolean hasExplicitControl = false;
         boolean isMulticast = false;
+        boolean hasTagId = false;
+        boolean hasNoDistinguishingCharacteristic = false;
 
         Context uriStr(final String uri)
         {
@@ -620,6 +666,12 @@ public final class UdpChannel
             return this;
         }
 
+        Context tagId(final long tagId)
+        {
+            this.tagId = tagId;
+            return this;
+        }
+
         Context channelUri(final ChannelUri channelUri)
         {
             this.channelUri = channelUri;
@@ -635,6 +687,18 @@ public final class UdpChannel
         Context isMulticast(final boolean isMulticast)
         {
             this.isMulticast = isMulticast;
+            return this;
+        }
+
+        Context hasTagId(final boolean hasTagId)
+        {
+            this.hasTagId = hasTagId;
+            return this;
+        }
+
+        Context hasNoDistinguishingCharacteristic(final boolean hasNoDistinguishingCharacteristic)
+        {
+            this.hasNoDistinguishingCharacteristic = hasNoDistinguishingCharacteristic;
             return this;
         }
     }

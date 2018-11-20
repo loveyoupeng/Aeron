@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -25,30 +25,30 @@ import static io.aeron.agent.EventLogger.LOGGER;
 /**
  * Intercepts calls in the driver to log the clean up of major resources.
  */
-public class CleanupInterceptor
+class CleanupInterceptor
 {
-    public static class CleanupImage
+    static class CleanupImage
     {
         @Advice.OnMethodEnter
-        public static void cleanupImageInterceptor(final PublicationImage image)
+        static void cleanupImageInterceptor(final PublicationImage image)
         {
             LOGGER.logImageRemoval(image.channel(), image.sessionId(), image.streamId(), image.correlationId());
         }
     }
 
-    public static class CleanupPublication
+    static class CleanupPublication
     {
         @Advice.OnMethodEnter
-        public static void cleanupPublication(final NetworkPublication publication)
+        static void cleanupPublication(final NetworkPublication publication)
         {
             LOGGER.logPublicationRemoval(publication.channel(), publication.sessionId(), publication.streamId());
         }
     }
 
-    public static class CleanupSubscriptionLink
+    static class CleanupSubscriptionLink
     {
         @Advice.OnMethodEnter
-        public static void cleanupSubscriptionLink(final SubscriptionLink link)
+        static void cleanupSubscriptionLink(final SubscriptionLink link)
         {
             LOGGER.logSubscriptionRemoval(link.channel(), link.streamId(), link.registrationId());
         }

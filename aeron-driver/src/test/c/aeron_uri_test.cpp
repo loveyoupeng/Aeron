@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 - 2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -42,6 +42,7 @@ public:
 
     virtual ~UriTest()
     {
+        aeron_uri_close(&m_uri);
         aeron_driver_context_close(m_context);
     }
 
@@ -65,33 +66,45 @@ TEST_F(UriTest, shouldNotParseUnknownUriTransport)
     EXPECT_EQ(aeron_uri_parse("aeron:udp", &m_uri), -1);
 }
 
-TEST_F(UriTest, shouldParseKnownUriTransportWithoutParams)
+TEST_F(UriTest, shouldParseKnownUriTransportWithoutParamsIpcNoSeparator)
 {
     EXPECT_EQ(aeron_uri_parse("aeron:ipc", &m_uri), 0);
     ASSERT_EQ(m_uri.type, AERON_URI_IPC);
     EXPECT_EQ(m_uri.params.ipc.additional_params.length, 0u);
+}
 
+TEST_F(UriTest, shouldParseKnownUriTransportWithoutParamsUdpWithSeparator)
+{
     EXPECT_EQ(aeron_uri_parse("aeron:udp?", &m_uri), 0);
     EXPECT_EQ(m_uri.type, AERON_URI_UDP);
+}
 
+TEST_F(UriTest, shouldParseKnownUriTransportWithoutParamsIpcWithSeparator)
+{
     EXPECT_EQ(aeron_uri_parse("aeron:ipc?", &m_uri), 0);
     EXPECT_EQ(m_uri.type, AERON_URI_IPC);
     EXPECT_EQ(m_uri.params.ipc.additional_params.length, 0u);
 }
 
-TEST_F(UriTest, shouldParseWithSingleParam)
+TEST_F(UriTest, shouldParseWithSingleParamUdpEndpoint)
 {
     EXPECT_EQ(aeron_uri_parse("aeron:udp?endpoint=224.10.9.8", &m_uri), 0);
     ASSERT_EQ(m_uri.type, AERON_URI_UDP);
     EXPECT_EQ(std::string(m_uri.params.udp.endpoint_key), "224.10.9.8");
     EXPECT_EQ(m_uri.params.udp.additional_params.length, 0u);
+}
 
+TEST_F(UriTest, shouldParseWithSingleParamUdpVariableWithEmbeddedPipe)
+{
     EXPECT_EQ(aeron_uri_parse("aeron:udp?add|ress=224.10.9.8", &m_uri), 0);
     ASSERT_EQ(m_uri.type, AERON_URI_UDP);
     ASSERT_EQ(m_uri.params.udp.additional_params.length, 1u);
     EXPECT_EQ(std::string(m_uri.params.udp.additional_params.array[0].key), "add|ress");
     EXPECT_EQ(std::string(m_uri.params.udp.additional_params.array[0].value), "224.10.9.8");
+}
 
+TEST_F(UriTest, shouldParseWithSingleParamUdpValueWithEmbeddedEquals)
+{
     EXPECT_EQ(aeron_uri_parse("aeron:udp?endpoint=224.1=0.9.8", &m_uri), 0);
     ASSERT_EQ(m_uri.type, AERON_URI_UDP);
     EXPECT_EQ(std::string(m_uri.params.udp.endpoint_key), "224.1=0.9.8");
@@ -121,51 +134,91 @@ TEST_F(UriTest, shouldParseNoPublicationParams)
     EXPECT_EQ(aeron_uri_publication_params(&m_uri, &params, m_context, false), 0);
 }
 
-TEST_F(UriTest, shouldParsePublicationParamTermLength)
+TEST_F(UriTest, shouldParsePublicationParamUdpTermLength)
 {
     aeron_uri_publication_params_t params;
 
     EXPECT_EQ(aeron_uri_parse("aeron:udp?endpoint=224.10.9.8|term-length=131072", &m_uri), 0);
     EXPECT_EQ(aeron_uri_publication_params(&m_uri, &params, m_context, false), 0);
     EXPECT_EQ(params.term_length, 131072u);
+}
+
+TEST_F(UriTest, shouldParsePublicationParamIpcTermLength)
+{
+    aeron_uri_publication_params_t params;
 
     EXPECT_EQ(aeron_uri_parse("aeron:ipc?term-length=262144", &m_uri), 0);
     EXPECT_EQ(aeron_uri_publication_params(&m_uri, &params, m_context, false), 0);
     EXPECT_EQ(params.term_length, 262144u);
+}
+
+TEST_F(UriTest, shouldParsePublicationParamIpcTermLengthOddValue)
+{
+    aeron_uri_publication_params_t params;
 
     EXPECT_EQ(aeron_uri_parse("aeron:ipc?term-length=262143", &m_uri), 0);
     EXPECT_EQ(aeron_uri_publication_params(&m_uri, &params, m_context, false), -1);
+}
+
+TEST_F(UriTest, shouldParsePublicationParamIpcTermLength32K)
+{
+    aeron_uri_publication_params_t params;
 
     EXPECT_EQ(aeron_uri_parse("aeron:ipc?term-length=32768", &m_uri), 0);
     EXPECT_EQ(aeron_uri_publication_params(&m_uri, &params, m_context, false), -1);
+}
+
+TEST_F(UriTest, shouldParsePublicationParamIpcTermLength2T)
+{
+    aeron_uri_publication_params_t params;
 
     EXPECT_EQ(aeron_uri_parse("aeron:ipc?term-length=2147483648", &m_uri), 0);
     EXPECT_EQ(aeron_uri_publication_params(&m_uri, &params, m_context, false), -1);
 }
 
-TEST_F(UriTest, shouldParsePublicationParamMtuLength)
+TEST_F(UriTest, shouldParsePublicationParamUdpEndpointAndMtuLength)
 {
     aeron_uri_publication_params_t params;
 
     EXPECT_EQ(aeron_uri_parse("aeron:udp?endpoint=224.10.9.8|mtu=18432", &m_uri), 0);
     EXPECT_EQ(aeron_uri_publication_params(&m_uri, &params, m_context, false), 0);
     EXPECT_EQ(params.mtu_length, 18432u);
+}
+
+TEST_F(UriTest, shouldParsePublicationParamIpcMtuLength32K)
+{
+    aeron_uri_publication_params_t params;
 
     EXPECT_EQ(aeron_uri_parse("aeron:ipc?mtu=32768", &m_uri), 0);
     EXPECT_EQ(aeron_uri_publication_params(&m_uri, &params, m_context, false), 0);
     EXPECT_EQ(params.mtu_length, 32768u);
+}
+
+TEST_F(UriTest, shouldParsePublicationParamIpcMtuLengthNonPowerOf2)
+{
+    aeron_uri_publication_params_t params;
 
     EXPECT_EQ(aeron_uri_parse("aeron:ipc?mtu=66560", &m_uri), 0);
     EXPECT_EQ(aeron_uri_publication_params(&m_uri, &params, m_context, false), -1);
+}
+
+TEST_F(UriTest, shouldParsePublicationParamIpcMtuLengthLessThanHeaderLength)
+{
+    aeron_uri_publication_params_t params;
 
     EXPECT_EQ(aeron_uri_parse("aeron:ipc?mtu=10", &m_uri), 0);
     EXPECT_EQ(aeron_uri_publication_params(&m_uri, &params, m_context, false), -1);
+}
+
+TEST_F(UriTest, shouldParsePublicationParamIpcMtuLengthNotMultipleOfFrameAlignment)
+{
+    aeron_uri_publication_params_t params;
 
     EXPECT_EQ(aeron_uri_parse("aeron:ipc?mtu=255", &m_uri), 0);
     EXPECT_EQ(aeron_uri_publication_params(&m_uri, &params, m_context, false), -1);
 }
 
-TEST_F(UriTest, shouldParsePublicationParamsForReplay)
+TEST_F(UriTest, shouldParsePublicationParamsForReplayUdp)
 {
     aeron_uri_publication_params_t params;
 
@@ -175,6 +228,11 @@ TEST_F(UriTest, shouldParsePublicationParamsForReplay)
     EXPECT_EQ(params.initial_term_id, 120l);
     EXPECT_EQ(params.term_id, 127l);
     EXPECT_EQ(params.term_offset, 64u);
+}
+
+TEST_F(UriTest, shouldParsePublicationParamsForReplayIpc)
+{
+    aeron_uri_publication_params_t params;
 
     EXPECT_EQ(aeron_uri_parse("aeron:ipc?init-term-id=250|term-id=257|term-offset=128", &m_uri), 0);
     EXPECT_EQ(aeron_uri_publication_params(&m_uri, &params, m_context, true), 0) << aeron_errmsg();
@@ -182,27 +240,47 @@ TEST_F(UriTest, shouldParsePublicationParamsForReplay)
     EXPECT_EQ(params.initial_term_id, 250l);
     EXPECT_EQ(params.term_id, 257l);
     EXPECT_EQ(params.term_offset, 128u);
+}
+
+TEST_F(UriTest, shouldParsePublicationParamsForReplayIpcNegativeTermIds)
+{
+    aeron_uri_publication_params_t params;
 
     EXPECT_EQ(aeron_uri_parse("aeron:ipc?init-term-id=-257|term-id=-250|term-offset=128", &m_uri), 0);
     EXPECT_EQ(aeron_uri_publication_params(&m_uri, &params, m_context, true), 0) << aeron_errmsg();
     EXPECT_EQ(params.initial_term_id, -257l);
     EXPECT_EQ(params.term_id, -250l);
+}
+
+TEST_F(UriTest, shouldParsePublicationParamsForReplayIpcOddTermOffset)
+{
+    aeron_uri_publication_params_t params;
 
     EXPECT_EQ(aeron_uri_parse("aeron:ipc?init-term-id=-257|term-id=-250|term-offset=127", &m_uri), 0);
     EXPECT_EQ(aeron_uri_publication_params(&m_uri, &params, m_context, true), -1);
+}
+
+TEST_F(UriTest, shouldParsePublicationParamsForReplayIpcTermOffsetBeyondTermLength)
+{
+    aeron_uri_publication_params_t params;
 
     EXPECT_EQ(aeron_uri_parse(
         "aeron:ipc?term-length=65536|init-term-id=-257|term-id=-250|term-offset=65537", &m_uri), 0);
     EXPECT_EQ(aeron_uri_publication_params(&m_uri, &params, m_context, true), -1);
 }
 
-TEST_F(UriTest, shouldParseSubscriptionParamRealible)
+TEST_F(UriTest, shouldParseSubscriptionParamReliable)
 {
     aeron_udp_channel_subscription_params_t params;
 
     EXPECT_EQ(aeron_uri_parse("aeron:udp?endpoint=224.10.9.8|reliable=false", &m_uri), 0);
     EXPECT_EQ(aeron_udp_channel_subscription_params(&m_uri, &params, m_context), 0);
     EXPECT_EQ(params.reliable, false);
+}
+
+TEST_F(UriTest, shouldParseSubscriptionParamReliableDefault)
+{
+    aeron_udp_channel_subscription_params_t params;
 
     EXPECT_EQ(aeron_uri_parse("aeron:udp?endpoint=224.10.9.8", &m_uri), 0);
     EXPECT_EQ(aeron_udp_channel_subscription_params(&m_uri, &params, m_context), 0);

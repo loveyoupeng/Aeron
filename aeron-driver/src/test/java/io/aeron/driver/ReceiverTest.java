@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,7 +16,6 @@
 package io.aeron.driver;
 
 import io.aeron.driver.buffer.*;
-import io.aeron.driver.cmd.*;
 import io.aeron.driver.media.*;
 import io.aeron.driver.reports.LossReport;
 import io.aeron.driver.status.SystemCounters;
@@ -32,8 +31,6 @@ import java.nio.ByteBuffer;
 import java.nio.channels.DatagramChannel;
 
 import static io.aeron.logbuffer.LogBufferDescriptor.*;
-import static java.lang.Integer.numberOfTrailingZeros;
-import static junit.framework.TestCase.assertTrue;
 import static org.agrona.BitUtil.align;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.core.Is.is;
@@ -43,6 +40,7 @@ import static org.mockito.Mockito.*;
 public class ReceiverTest
 {
     private static final int TERM_BUFFER_LENGTH = TERM_MIN_LENGTH;
+    private static final int POSITION_BITS_TO_SHIFT = LogBufferDescriptor.positionBitsToShift(TERM_BUFFER_LENGTH);
     private static final String URI = "aeron:udp?endpoint=localhost:45678";
     private static final UdpChannel UDP_CHANNEL = UdpChannel.parse(URI);
     private static final long CORRELATION_ID = 20;
@@ -94,7 +92,8 @@ public class ReceiverTest
     private InetSocketAddress senderAddress = new InetSocketAddress("localhost", 40123);
     private Receiver receiver;
     private ReceiverProxy receiverProxy;
-    private OneToOneConcurrentArrayQueue<DriverConductorCmd> toConductorQueue;
+    private final ManyToOneConcurrentArrayQueue<Runnable> toConductorQueue =
+        new ManyToOneConcurrentArrayQueue<>(Configuration.CMD_QUEUE_CAPACITY);
 
     private ReceiveChannelEndpoint receiveChannelEndpoint;
     private CongestionControl congestionControl = mock(CongestionControl.class);
@@ -105,14 +104,15 @@ public class ReceiverTest
     public void setUp() throws Exception
     {
         when(POSITION.getVolatile())
-            .thenReturn(computePosition(ACTIVE_TERM_ID, 0, numberOfTrailingZeros(TERM_BUFFER_LENGTH), ACTIVE_TERM_ID));
+            .thenReturn(computePosition(ACTIVE_TERM_ID, 0, POSITION_BITS_TO_SHIFT, ACTIVE_TERM_ID));
         when(mockSystemCounters.get(any())).thenReturn(mock(AtomicCounter.class));
         when(congestionControl.onTrackRebuild(
             anyLong(), anyLong(), anyLong(), anyLong(), anyLong(), anyLong(), anyBoolean()))
             .thenReturn(CongestionControlUtil.packOutcome(INITIAL_WINDOW_LENGTH, false));
         when(congestionControl.initialWindowLength()).thenReturn(INITIAL_WINDOW_LENGTH);
 
-        toConductorQueue = new OneToOneConcurrentArrayQueue<>(Configuration.CMD_QUEUE_CAPACITY);
+        final CachedNanoClock mockCachedNanoClock = mock(CachedNanoClock.class);
+        when(mockCachedNanoClock.nanoTime()).thenAnswer((invocation) -> currentTime);
 
         final DriverConductorProxy driverConductorProxy =
             new DriverConductorProxy(ThreadingMode.DEDICATED, toConductorQueue, mock(AtomicCounter.class));
@@ -125,6 +125,7 @@ public class ReceiverTest
             .systemCounters(mockSystemCounters)
             .receiverCommandQueue(new OneToOneConcurrentArrayQueue<>(Configuration.CMD_QUEUE_CAPACITY))
             .nanoClock(() -> currentTime)
+            .cachedNanoClock(mockCachedNanoClock)
             .driverConductorProxy(driverConductorProxy);
 
         receiverProxy = new ReceiverProxy(
@@ -133,6 +134,7 @@ public class ReceiverTest
         ctx.receiveChannelEndpointThreadLocals(new ReceiveChannelEndpointThreadLocals(ctx));
 
         receiver = new Receiver(ctx);
+        receiverProxy.receiver(receiver);
 
         senderChannel = DatagramChannel.open();
         senderChannel.bind(senderAddress);
@@ -169,12 +171,13 @@ public class ReceiverTest
         receiver.doWork();
 
         fillSetupFrame(setupHeader);
-        receiveChannelEndpoint.onSetupMessage(setupHeader, setupBuffer, SetupFlyweight.HEADER_LENGTH, senderAddress);
+        receiveChannelEndpoint.onSetupMessage(setupHeader, setupBuffer, SetupFlyweight.HEADER_LENGTH, senderAddress, 0);
 
         final PublicationImage image = new PublicationImage(
             CORRELATION_ID,
             Configuration.IMAGE_LIVENESS_TIMEOUT_NS,
             receiveChannelEndpoint,
+            0,
             senderAddress,
             SESSION_ID,
             STREAM_ID,
@@ -187,6 +190,7 @@ public class ReceiverTest
             mockHighestReceivedPosition,
             mockRebuildPosition,
             nanoClock,
+            nanoClock,
             epochClock,
             mockSystemCounters,
             SOURCE_ADDRESS,
@@ -194,19 +198,11 @@ public class ReceiverTest
             lossReport,
             true);
 
-        final int messagesRead = toConductorQueue.drain(
-            (e) ->
-            {
-                final CreatePublicationImageCmd cmd = (CreatePublicationImageCmd)e;
-
-                assertThat(cmd.channelEndpoint().udpChannel(), is(UDP_CHANNEL));
-                assertThat(cmd.streamId(), is(STREAM_ID));
-                assertThat(cmd.sessionId(), is(SESSION_ID));
-                assertThat(cmd.termId(), is(ACTIVE_TERM_ID));
-
-                // pass in new term buffer from conductor, which should trigger SM
-                receiverProxy.newPublicationImage(receiveChannelEndpoint, image);
-            });
+        final int messagesRead = toConductorQueue.drain((e) ->
+        {
+            // pass in new term buffer from conductor, which should trigger SM
+            receiverProxy.newPublicationImage(receiveChannelEndpoint, image);
+        });
 
         assertThat(messagesRead, is(1));
 
@@ -236,7 +232,7 @@ public class ReceiverTest
     }
 
     @Test
-    public void shouldInsertDataIntoLogAfterInitialExchange() throws Exception
+    public void shouldInsertDataIntoLogAfterInitialExchange()
     {
         receiverProxy.registerReceiveChannelEndpoint(receiveChannelEndpoint);
         receiverProxy.addSubscription(receiveChannelEndpoint, STREAM_ID);
@@ -244,45 +240,45 @@ public class ReceiverTest
         receiver.doWork();
 
         fillSetupFrame(setupHeader);
-        receiveChannelEndpoint.onSetupMessage(setupHeader, setupBuffer, SetupFlyweight.HEADER_LENGTH, senderAddress);
+        receiveChannelEndpoint.onSetupMessage(setupHeader, setupBuffer, SetupFlyweight.HEADER_LENGTH, senderAddress, 0);
 
-        final int commandsRead = toConductorQueue.drain(
-            (e) ->
-            {
-                assertTrue(e instanceof CreatePublicationImageCmd);
-                // pass in new term buffer from conductor, which should trigger SM
-                receiverProxy.newPublicationImage(
-                    receiveChannelEndpoint,
-                    new PublicationImage(
-                        CORRELATION_ID,
-                        Configuration.IMAGE_LIVENESS_TIMEOUT_NS,
-                        receiveChannelEndpoint,
-                        senderAddress,
-                        SESSION_ID,
-                        STREAM_ID,
-                        INITIAL_TERM_ID,
-                        ACTIVE_TERM_ID,
-                        INITIAL_TERM_OFFSET,
-                        rawLog,
-                        mockFeedbackDelayGenerator,
-                        POSITIONS,
-                        mockHighestReceivedPosition,
-                        mockRebuildPosition,
-                        nanoClock,
-                        epochClock,
-                        mockSystemCounters,
-                        SOURCE_ADDRESS,
-                        congestionControl,
-                        lossReport,
-                        true));
-            });
+        final int commandsRead = toConductorQueue.drain((e) ->
+        {
+            // pass in new term buffer from conductor, which should trigger SM
+            final PublicationImage image = new PublicationImage(
+                CORRELATION_ID,
+                Configuration.IMAGE_LIVENESS_TIMEOUT_NS,
+                receiveChannelEndpoint,
+                0,
+                senderAddress,
+                SESSION_ID,
+                STREAM_ID,
+                INITIAL_TERM_ID,
+                ACTIVE_TERM_ID,
+                INITIAL_TERM_OFFSET,
+                rawLog,
+                mockFeedbackDelayGenerator,
+                POSITIONS,
+                mockHighestReceivedPosition,
+                mockRebuildPosition,
+                nanoClock,
+                nanoClock,
+                epochClock,
+                mockSystemCounters,
+                SOURCE_ADDRESS,
+                congestionControl,
+                lossReport,
+                true);
+
+            receiverProxy.newPublicationImage(receiveChannelEndpoint, image);
+        });
 
         assertThat(commandsRead, is(1));
 
         receiver.doWork();
 
         fillDataFrame(dataHeader, 0, FAKE_PAYLOAD);
-        receiveChannelEndpoint.onDataPacket(dataHeader, dataBuffer, dataHeader.frameLength(), senderAddress);
+        receiveChannelEndpoint.onDataPacket(dataHeader, dataBuffer, dataHeader.frameLength(), senderAddress, 0);
 
         final int readOutcome = TermReader.read(
             termBuffers[ACTIVE_INDEX],
@@ -306,7 +302,7 @@ public class ReceiverTest
     }
 
     @Test
-    public void shouldNotOverwriteDataFrameWithHeartbeat() throws Exception
+    public void shouldNotOverwriteDataFrameWithHeartbeat()
     {
         receiverProxy.registerReceiveChannelEndpoint(receiveChannelEndpoint);
         receiverProxy.addSubscription(receiveChannelEndpoint, STREAM_ID);
@@ -314,48 +310,48 @@ public class ReceiverTest
         receiver.doWork();
 
         fillSetupFrame(setupHeader);
-        receiveChannelEndpoint.onSetupMessage(setupHeader, setupBuffer, SetupFlyweight.HEADER_LENGTH, senderAddress);
+        receiveChannelEndpoint.onSetupMessage(setupHeader, setupBuffer, SetupFlyweight.HEADER_LENGTH, senderAddress, 0);
 
-        final int commandsRead = toConductorQueue.drain(
-            (e) ->
-            {
-                assertTrue(e instanceof CreatePublicationImageCmd);
-                // pass in new term buffer from conductor, which should trigger SM
-                receiverProxy.newPublicationImage(
-                    receiveChannelEndpoint,
-                    new PublicationImage(
-                        CORRELATION_ID,
-                        Configuration.IMAGE_LIVENESS_TIMEOUT_NS,
-                        receiveChannelEndpoint,
-                        senderAddress,
-                        SESSION_ID,
-                        STREAM_ID,
-                        INITIAL_TERM_ID,
-                        ACTIVE_TERM_ID,
-                        INITIAL_TERM_OFFSET,
-                        rawLog,
-                        mockFeedbackDelayGenerator,
-                        POSITIONS,
-                        mockHighestReceivedPosition,
-                        mockRebuildPosition,
-                        nanoClock,
-                        epochClock,
-                        mockSystemCounters,
-                        SOURCE_ADDRESS,
-                        congestionControl,
-                        lossReport,
-                        true));
-            });
+        final int commandsRead = toConductorQueue.drain((e) ->
+        {
+            // pass in new term buffer from conductor, which should trigger SM
+            final PublicationImage image = new PublicationImage(
+                CORRELATION_ID,
+                Configuration.IMAGE_LIVENESS_TIMEOUT_NS,
+                receiveChannelEndpoint,
+                0,
+                senderAddress,
+                SESSION_ID,
+                STREAM_ID,
+                INITIAL_TERM_ID,
+                ACTIVE_TERM_ID,
+                INITIAL_TERM_OFFSET,
+                rawLog,
+                mockFeedbackDelayGenerator,
+                POSITIONS,
+                mockHighestReceivedPosition,
+                mockRebuildPosition,
+                nanoClock,
+                nanoClock,
+                epochClock,
+                mockSystemCounters,
+                SOURCE_ADDRESS,
+                congestionControl,
+                lossReport,
+                true);
+
+            receiverProxy.newPublicationImage(receiveChannelEndpoint, image);
+        });
 
         assertThat(commandsRead, is(1));
 
         receiver.doWork();
 
         fillDataFrame(dataHeader, 0, FAKE_PAYLOAD);  // initial data frame
-        receiveChannelEndpoint.onDataPacket(dataHeader, dataBuffer, dataHeader.frameLength(), senderAddress);
+        receiveChannelEndpoint.onDataPacket(dataHeader, dataBuffer, dataHeader.frameLength(), senderAddress, 0);
 
         fillDataFrame(dataHeader, 0, FAKE_PAYLOAD);  // heartbeat with same term offset
-        receiveChannelEndpoint.onDataPacket(dataHeader, dataBuffer, dataHeader.frameLength(), senderAddress);
+        receiveChannelEndpoint.onDataPacket(dataHeader, dataBuffer, dataHeader.frameLength(), senderAddress, 0);
 
         final int readOutcome = TermReader.read(
             termBuffers[ACTIVE_INDEX],
@@ -379,7 +375,7 @@ public class ReceiverTest
     }
 
     @Test
-    public void shouldOverwriteHeartbeatWithDataFrame() throws Exception
+    public void shouldOverwriteHeartbeatWithDataFrame()
     {
         receiverProxy.registerReceiveChannelEndpoint(receiveChannelEndpoint);
         receiverProxy.addSubscription(receiveChannelEndpoint, STREAM_ID);
@@ -387,48 +383,48 @@ public class ReceiverTest
         receiver.doWork();
 
         fillSetupFrame(setupHeader);
-        receiveChannelEndpoint.onSetupMessage(setupHeader, setupBuffer, SetupFlyweight.HEADER_LENGTH, senderAddress);
+        receiveChannelEndpoint.onSetupMessage(setupHeader, setupBuffer, SetupFlyweight.HEADER_LENGTH, senderAddress, 0);
 
-        final int commandsRead = toConductorQueue.drain(
-            (e) ->
-            {
-                assertTrue(e instanceof CreatePublicationImageCmd);
-                // pass in new term buffer from conductor, which should trigger SM
-                receiverProxy.newPublicationImage(
-                    receiveChannelEndpoint,
-                    new PublicationImage(
-                        CORRELATION_ID,
-                        Configuration.IMAGE_LIVENESS_TIMEOUT_NS,
-                        receiveChannelEndpoint,
-                        senderAddress,
-                        SESSION_ID,
-                        STREAM_ID,
-                        INITIAL_TERM_ID,
-                        ACTIVE_TERM_ID,
-                        INITIAL_TERM_OFFSET,
-                        rawLog,
-                        mockFeedbackDelayGenerator,
-                        POSITIONS,
-                        mockHighestReceivedPosition,
-                        mockRebuildPosition,
-                        nanoClock,
-                        epochClock,
-                        mockSystemCounters,
-                        SOURCE_ADDRESS,
-                        congestionControl,
-                        lossReport,
-                        true));
-            });
+        final int commandsRead = toConductorQueue.drain((e) ->
+        {
+            // pass in new term buffer from conductor, which should trigger SM
+            final PublicationImage image = new PublicationImage(
+                CORRELATION_ID,
+                Configuration.IMAGE_LIVENESS_TIMEOUT_NS,
+                receiveChannelEndpoint,
+                0,
+                senderAddress,
+                SESSION_ID,
+                STREAM_ID,
+                INITIAL_TERM_ID,
+                ACTIVE_TERM_ID,
+                INITIAL_TERM_OFFSET,
+                rawLog,
+                mockFeedbackDelayGenerator,
+                POSITIONS,
+                mockHighestReceivedPosition,
+                mockRebuildPosition,
+                nanoClock,
+                nanoClock,
+                epochClock,
+                mockSystemCounters,
+                SOURCE_ADDRESS,
+                congestionControl,
+                lossReport,
+                true);
+
+            receiverProxy.newPublicationImage(receiveChannelEndpoint, image);
+        });
 
         assertThat(commandsRead, is(1));
 
         receiver.doWork();
 
         fillDataFrame(dataHeader, 0, FAKE_PAYLOAD);  // heartbeat with same term offset
-        receiveChannelEndpoint.onDataPacket(dataHeader, dataBuffer, dataHeader.frameLength(), senderAddress);
+        receiveChannelEndpoint.onDataPacket(dataHeader, dataBuffer, dataHeader.frameLength(), senderAddress, 0);
 
         fillDataFrame(dataHeader, 0, FAKE_PAYLOAD);  // initial data frame
-        receiveChannelEndpoint.onDataPacket(dataHeader, dataBuffer, dataHeader.frameLength(), senderAddress);
+        receiveChannelEndpoint.onDataPacket(dataHeader, dataBuffer, dataHeader.frameLength(), senderAddress, 0);
 
         final int readOutcome = TermReader.read(
             termBuffers[ACTIVE_INDEX],
@@ -452,7 +448,7 @@ public class ReceiverTest
     }
 
     @Test
-    public void shouldHandleNonZeroTermOffsetCorrectly() throws Exception
+    public void shouldHandleNonZeroTermOffsetCorrectly()
     {
         final int initialTermOffset = align(TERM_BUFFER_LENGTH / 16, FrameDescriptor.FRAME_ALIGNMENT);
         final int alignedDataFrameLength =
@@ -464,38 +460,38 @@ public class ReceiverTest
         receiver.doWork();
 
         fillSetupFrame(setupHeader, initialTermOffset);
-        receiveChannelEndpoint.onSetupMessage(setupHeader, setupBuffer, SetupFlyweight.HEADER_LENGTH, senderAddress);
+        receiveChannelEndpoint.onSetupMessage(setupHeader, setupBuffer, SetupFlyweight.HEADER_LENGTH, senderAddress, 0);
 
-        final int commandsRead = toConductorQueue.drain(
-            (e) ->
-            {
-                assertTrue(e instanceof CreatePublicationImageCmd);
-                // pass in new term buffer from conductor, which should trigger SM
-                receiverProxy.newPublicationImage(
-                    receiveChannelEndpoint,
-                    new PublicationImage(
-                        CORRELATION_ID,
-                        Configuration.IMAGE_LIVENESS_TIMEOUT_NS,
-                        receiveChannelEndpoint,
-                        senderAddress,
-                        SESSION_ID,
-                        STREAM_ID,
-                        INITIAL_TERM_ID,
-                        ACTIVE_TERM_ID,
-                        initialTermOffset,
-                        rawLog,
-                        mockFeedbackDelayGenerator,
-                        POSITIONS,
-                        mockHighestReceivedPosition,
-                        mockRebuildPosition,
-                        nanoClock,
-                        epochClock,
-                        mockSystemCounters,
-                        SOURCE_ADDRESS,
-                        congestionControl,
-                        lossReport,
-                        true));
-            });
+        final int commandsRead = toConductorQueue.drain((e) ->
+        {
+            // pass in new term buffer from conductor, which should trigger SM
+            final PublicationImage image = new PublicationImage(
+                CORRELATION_ID,
+                Configuration.IMAGE_LIVENESS_TIMEOUT_NS,
+                receiveChannelEndpoint,
+                0,
+                senderAddress,
+                SESSION_ID,
+                STREAM_ID,
+                INITIAL_TERM_ID,
+                ACTIVE_TERM_ID,
+                initialTermOffset,
+                rawLog,
+                mockFeedbackDelayGenerator,
+                POSITIONS,
+                mockHighestReceivedPosition,
+                mockRebuildPosition,
+                nanoClock,
+                nanoClock,
+                epochClock,
+                mockSystemCounters,
+                SOURCE_ADDRESS,
+                congestionControl,
+                lossReport,
+                true);
+
+            receiverProxy.newPublicationImage(receiveChannelEndpoint, image);
+        });
 
         assertThat(commandsRead, is(1));
 
@@ -504,7 +500,7 @@ public class ReceiverTest
         receiver.doWork();
 
         fillDataFrame(dataHeader, initialTermOffset, FAKE_PAYLOAD);  // initial data frame
-        receiveChannelEndpoint.onDataPacket(dataHeader, dataBuffer, alignedDataFrameLength, senderAddress);
+        receiveChannelEndpoint.onDataPacket(dataHeader, dataBuffer, alignedDataFrameLength, senderAddress, 0);
 
         verify(mockHighestReceivedPosition).setOrdered(initialTermOffset + alignedDataFrameLength);
 
@@ -530,7 +526,7 @@ public class ReceiverTest
     }
 
     @Test
-    public void shouldRemoveImageFromDispatcherWithNoActivity() throws Exception
+    public void shouldRemoveImageFromDispatcherWithNoActivity()
     {
         receiverProxy.registerReceiveChannelEndpoint(receiveChannelEndpoint);
         receiverProxy.addSubscription(receiveChannelEndpoint, STREAM_ID);
@@ -538,12 +534,12 @@ public class ReceiverTest
         receiver.doWork();
 
         fillSetupFrame(setupHeader);
-        receiveChannelEndpoint.onSetupMessage(setupHeader, setupBuffer, SetupFlyweight.HEADER_LENGTH, senderAddress);
+        receiveChannelEndpoint.onSetupMessage(setupHeader, setupBuffer, SetupFlyweight.HEADER_LENGTH, senderAddress, 0);
 
         final PublicationImage mockImage = mock(PublicationImage.class);
         when(mockImage.sessionId()).thenReturn(SESSION_ID);
         when(mockImage.streamId()).thenReturn(STREAM_ID);
-        when(mockImage.checkForActivity(anyLong())).thenReturn(false);
+        when(mockImage.hasActivityAndNotEndOfStream(anyLong())).thenReturn(false);
 
         receiver.onNewPublicationImage(receiveChannelEndpoint, mockImage);
         receiver.doWork();
@@ -552,7 +548,7 @@ public class ReceiverTest
     }
 
     @Test
-    public void shouldNotRemoveImageFromDispatcherOnRemoveSubscription() throws Exception
+    public void shouldNotRemoveImageFromDispatcherOnRemoveSubscription()
     {
         receiverProxy.registerReceiveChannelEndpoint(receiveChannelEndpoint);
         receiverProxy.addSubscription(receiveChannelEndpoint, STREAM_ID);
@@ -560,12 +556,12 @@ public class ReceiverTest
         receiver.doWork();
 
         fillSetupFrame(setupHeader);
-        receiveChannelEndpoint.onSetupMessage(setupHeader, setupBuffer, SetupFlyweight.HEADER_LENGTH, senderAddress);
+        receiveChannelEndpoint.onSetupMessage(setupHeader, setupBuffer, SetupFlyweight.HEADER_LENGTH, senderAddress, 0);
 
         final PublicationImage mockImage = mock(PublicationImage.class);
         when(mockImage.sessionId()).thenReturn(SESSION_ID);
         when(mockImage.streamId()).thenReturn(STREAM_ID);
-        when(mockImage.checkForActivity(anyLong())).thenReturn(true);
+        when(mockImage.hasActivityAndNotEndOfStream(anyLong())).thenReturn(true);
 
         receiver.onNewPublicationImage(receiveChannelEndpoint, mockImage);
         receiver.onRemoveSubscription(receiveChannelEndpoint, STREAM_ID);

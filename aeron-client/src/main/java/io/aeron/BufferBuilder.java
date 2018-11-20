@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,6 +20,7 @@ import org.agrona.MutableDirectBuffer;
 import org.agrona.concurrent.UnsafeBuffer;
 
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.util.Arrays;
 
 /**
@@ -32,16 +33,6 @@ import java.util.Arrays;
  */
 public class BufferBuilder
 {
-    /**
-     * Maximum capacity to which the buffer can grow.
-     */
-    public static final int MAX_CAPACITY = Integer.MAX_VALUE - 8;
-
-    /**
-     * Initial minimum capacity for the internal buffer when used, zero if not used.
-     */
-    public static final int MIN_ALLOCATED_CAPACITY = 4096;
-
     private final boolean isDirect;
     private int limit = 0;
     private final UnsafeBuffer buffer;
@@ -75,7 +66,9 @@ public class BufferBuilder
         this.isDirect = isDirect;
         if (isDirect)
         {
-            buffer = new UnsafeBuffer(ByteBuffer.allocateDirect(initialCapacity));
+            final ByteBuffer byteBuffer = ByteBuffer.allocateDirect(initialCapacity);
+            byteBuffer.order(ByteOrder.LITTLE_ENDIAN);
+            this.buffer = new UnsafeBuffer(byteBuffer);
         }
         else
         {
@@ -113,7 +106,7 @@ public class BufferBuilder
         if (limit < 0 || limit >= buffer.capacity())
         {
             throw new IllegalArgumentException(
-                "Limit outside range: capacity=" + buffer.capacity() + " limit=" + limit);
+                "limit outside range: capacity=" + buffer.capacity() + " limit=" + limit);
         }
 
         this.limit = limit;
@@ -147,7 +140,7 @@ public class BufferBuilder
      */
     public BufferBuilder compact()
     {
-        resize(Math.max(MIN_ALLOCATED_CAPACITY, limit));
+        resize(Math.max(BufferBuilderUtil.MIN_ALLOCATED_CAPACITY, limit));
 
         return this;
     }
@@ -174,16 +167,16 @@ public class BufferBuilder
     {
         final long requiredCapacity = (long)limit + additionalCapacity;
 
-        if (requiredCapacity > MAX_CAPACITY)
+        if (requiredCapacity > BufferBuilderUtil.MAX_CAPACITY)
         {
             throw new IllegalStateException(
-                "Max capacity exceeded: limit=" + limit + " required=" + requiredCapacity);
+                "max capacity exceeded: limit=" + limit + " required=" + requiredCapacity);
         }
 
         final int capacity = buffer.capacity();
         if (requiredCapacity > capacity)
         {
-            resize(findSuitableCapacity(capacity, (int)requiredCapacity));
+            resize(BufferBuilderUtil.findSuitableCapacity(capacity, (int)requiredCapacity));
         }
     }
 
@@ -192,6 +185,7 @@ public class BufferBuilder
         if (isDirect)
         {
             final ByteBuffer byteBuffer = ByteBuffer.allocateDirect(newCapacity);
+            byteBuffer.order(ByteOrder.LITTLE_ENDIAN);
             buffer.getBytes(0, byteBuffer, 0, limit);
             buffer.wrap(byteBuffer);
         }
@@ -201,30 +195,4 @@ public class BufferBuilder
         }
     }
 
-    private static int findSuitableCapacity(final int currentCapacity, final int requiredCapacity)
-    {
-        int capacity = currentCapacity;
-
-        do
-        {
-            final int newCapacity = Math.max(capacity + (capacity >> 1), MIN_ALLOCATED_CAPACITY);
-
-            if (newCapacity < 0 || newCapacity > MAX_CAPACITY)
-            {
-                if (capacity == MAX_CAPACITY)
-                {
-                    throw new IllegalStateException("Max capacity reached: " + MAX_CAPACITY);
-                }
-
-                capacity = MAX_CAPACITY;
-            }
-            else
-            {
-                capacity = newCapacity;
-            }
-        }
-        while (capacity < requiredCapacity);
-
-        return capacity;
-    }
 }

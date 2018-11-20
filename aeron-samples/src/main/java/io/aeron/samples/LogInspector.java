@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -55,14 +55,14 @@ public class LogInspector
     public static final String AERON_LOG_SCAN_OVER_ZEROES_PROP_NAME = "aeron.log.inspector.scanOverZeroes";
     public static final boolean AERON_LOG_SCAN_OVER_ZEROES = Boolean.getBoolean(AERON_LOG_SCAN_OVER_ZEROES_PROP_NAME);
 
-    private static final char[] HEX_ARRAY = "0123456789ABCDEF".toCharArray();
+    public static final char[] HEX_ARRAY = "0123456789ABCDEF".toCharArray();
 
-    public static void main(final String[] args) throws Exception
+    public static void main(final String[] args)
     {
         final PrintStream out = System.out;
         if (args.length < 1)
         {
-            out.println("Usage: LogInspector <logFileName> [message dump limit]");
+            out.println("Usage: LogInspector <logFileName> [dump limit in bytes per message]");
             return;
         }
 
@@ -99,18 +99,18 @@ public class LogInspector
 
             for (int i = 0; i < PARTITION_COUNT; i++)
             {
-                final long rawTail = rawTailVolatile(metaDataBuffer, 0);
+                final long rawTail = rawTailVolatile(metaDataBuffer, i);
                 final long termOffset = rawTail & 0xFFFF_FFFFL;
                 final int termId = termId(rawTail);
                 final int offset = (int)Math.min(termOffset, termLength);
-                final int bitsToShift = Integer.numberOfTrailingZeros(termLength);
+                final int positionBitsToShift = LogBufferDescriptor.positionBitsToShift(termLength);
                 out.format(
                     "Index %d Term Meta Data termOffset=%d termId=%d rawTail=%d position=%d%n",
                     i,
                     termOffset,
                     termId,
                     rawTail,
-                    LogBufferDescriptor.computePosition(termId, offset, bitsToShift, initialTermId));
+                    LogBufferDescriptor.computePosition(termId, offset, positionBitsToShift, initialTermId));
             }
 
             for (int i = 0; i < PARTITION_COUNT; i++)

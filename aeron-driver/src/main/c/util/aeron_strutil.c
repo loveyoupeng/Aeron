@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 - 2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -56,6 +56,7 @@ void aeron_format_to_hex(char *str, size_t str_length, uint8_t *data, size_t dat
         str[j++] = c_high;
         str[j++] = c_low;
     }
+
     str[j] = '\0';
 }
 

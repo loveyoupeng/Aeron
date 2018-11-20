@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,7 +15,6 @@
  */
 package io.aeron.driver;
 
-import io.aeron.driver.cmd.*;
 import io.aeron.driver.media.SendChannelEndpoint;
 import org.agrona.concurrent.status.AtomicCounter;
 
@@ -31,12 +30,12 @@ import static io.aeron.driver.ThreadingMode.SHARED;
 public class SenderProxy
 {
     private final ThreadingMode threadingMode;
-    private final Queue<SenderCmd> commandQueue;
+    private final Queue<Runnable> commandQueue;
     private final AtomicCounter failCount;
     private Sender sender;
 
     public SenderProxy(
-        final ThreadingMode threadingMode, final Queue<SenderCmd> commandQueue, final AtomicCounter failCount)
+        final ThreadingMode threadingMode, final Queue<Runnable> commandQueue, final AtomicCounter failCount)
     {
         this.threadingMode = threadingMode;
         this.commandQueue = commandQueue;
@@ -56,7 +55,7 @@ public class SenderProxy
         }
         else
         {
-            offer(new RegisterSendChannelEndpointCmd(channelEndpoint));
+            offer(() -> sender.onRegisterSendChannelEndpoint(channelEndpoint));
         }
     }
 
@@ -68,7 +67,7 @@ public class SenderProxy
         }
         else
         {
-            offer(new CloseSendChannelEndpointCmd(channelEndpoint));
+            offer(() -> sender.onCloseSendChannelEndpoint(channelEndpoint));
         }
     }
 
@@ -80,7 +79,7 @@ public class SenderProxy
         }
         else
         {
-            offer(new RemovePublicationCmd(publication));
+            offer(() -> sender.onRemoveNetworkPublication(publication));
         }
     }
 
@@ -92,7 +91,7 @@ public class SenderProxy
         }
         else
         {
-            offer(new NewPublicationCmd(publication));
+            offer(() -> sender.onNewNetworkPublication(publication));
         }
     }
 
@@ -104,7 +103,7 @@ public class SenderProxy
         }
         else
         {
-            offer(new AddDestinationCmd(channelEndpoint, address));
+            offer(() -> sender.onAddDestination(channelEndpoint, address));
         }
     }
 
@@ -116,7 +115,7 @@ public class SenderProxy
         }
         else
         {
-            offer(new RemoveDestinationCmd(channelEndpoint, address));
+            offer(() -> sender.onRemoveDestination(channelEndpoint, address));
         }
     }
 
@@ -125,11 +124,11 @@ public class SenderProxy
         return threadingMode == SHARED || threadingMode == INVOKER;
     }
 
-    private void offer(final SenderCmd cmd)
+    private void offer(final Runnable cmd)
     {
         while (!commandQueue.offer(cmd))
         {
-            failCount.orderedIncrement();
+            failCount.incrementOrdered();
             Thread.yield();
         }
     }

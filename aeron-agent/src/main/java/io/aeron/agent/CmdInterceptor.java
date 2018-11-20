@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -25,10 +25,10 @@ import static io.aeron.command.ControlProtocolEvents.*;
 /**
  * Intercepts calls for the command protocol from clients to the driver for logging.
  */
-public class CmdInterceptor
+class CmdInterceptor
 {
     @Advice.OnMethodEnter
-    public static void logCmd(final int msgTypeId, final DirectBuffer buffer, final int index, final int length)
+    static void logCmd(final int msgTypeId, final DirectBuffer buffer, final int index, final int length)
     {
         switch (msgTypeId)
         {
@@ -86,6 +86,38 @@ public class CmdInterceptor
 
             case ON_EXCLUSIVE_PUBLICATION_READY:
                 LOGGER.log(CMD_OUT_EXCLUSIVE_PUBLICATION_READY, buffer, index, length);
+                break;
+
+            case ON_SUBSCRIPTION_READY:
+                LOGGER.log(CMD_OUT_SUBSCRIPTION_READY, buffer, index, length);
+                break;
+
+            case ON_COUNTER_READY:
+                LOGGER.log(CMD_OUT_COUNTER_READY, buffer, index, length);
+                break;
+
+            case ON_UNAVAILABLE_COUNTER:
+                LOGGER.log(CMD_OUT_ON_UNAVAILABLE_COUNTER, buffer, index, length);
+                break;
+
+            case ADD_COUNTER:
+                LOGGER.log(CMD_IN_ADD_COUNTER, buffer, index, length);
+                break;
+
+            case REMOVE_COUNTER:
+                LOGGER.log(CMD_IN_REMOVE_COUNTER, buffer, index, length);
+                break;
+
+            case CLIENT_CLOSE:
+                LOGGER.log(CMD_IN_CLIENT_CLOSE, buffer, index, length);
+                break;
+
+            case ADD_RCV_DESTINATION:
+                LOGGER.log(CMD_IN_ADD_RCV_DESTINATION, buffer, index, length);
+                break;
+
+            case REMOVE_RCV_DESTINATION:
+                LOGGER.log(CMD_IN_REMOVE_RCV_DESTINATION, buffer, index, length);
                 break;
         }
     }

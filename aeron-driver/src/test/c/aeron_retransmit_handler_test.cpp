@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 - 2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -45,6 +45,11 @@ public:
     {
     }
 
+    ~RetransmitHandlerTest()
+    {
+        aeron_retransmit_handler_close(&m_handler);
+    }
+
     static int on_resend(void *clientd, int32_t term_id, int32_t term_offset, size_t length)
     {
         RetransmitHandlerTest *t = (RetransmitHandlerTest *)clientd;
@@ -79,6 +84,7 @@ TEST_F(RetransmitHandlerTest, shouldImmediateRetransmitOnNak)
     EXPECT_EQ(aeron_retransmit_handler_on_nak(
         &m_handler, TERM_ID, nak_offset, nak_length, TERM_LENGTH, m_time, RetransmitHandlerTest::on_resend, this), 0);
     EXPECT_EQ(called, 1u);
+
 }
 
 TEST_F(RetransmitHandlerTest, shouldNotRetransmitOnNakWhileInLinger)

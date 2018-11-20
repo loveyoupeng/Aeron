@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -28,7 +28,7 @@ namespace aeron { namespace concurrent { namespace mock {
 class MockAtomicBuffer : public AtomicBuffer
 {
 public:
-    MockAtomicBuffer(std::uint8_t *buffer, util::index_t length);
+    MockAtomicBuffer(std::uint8_t *buffer, size_t length);
     virtual ~MockAtomicBuffer();
 
     MOCK_METHOD2(putUInt8, void(util::index_t offset, std::uint8_t v));
@@ -43,12 +43,14 @@ public:
     MOCK_METHOD4(putBytes, void(util::index_t index, const concurrent::AtomicBuffer& srcBuffer, util::index_t srcIndex, util::index_t length));
     MOCK_METHOD3(putBytes, void(util::index_t index, const std::uint8_t *srcBuffer, util::index_t length));
     MOCK_METHOD2(putInt32Ordered, void(util::index_t offset, std::int32_t v));
-    MOCK_METHOD1(getUInt16, std::uint16_t(util::index_t offset));
-    MOCK_METHOD1(getInt16, std::int16_t(util::index_t offset));
+    MOCK_CONST_METHOD1(getUInt16, std::uint16_t(util::index_t offset));
+    MOCK_CONST_METHOD1(getInt16, std::int16_t(util::index_t offset));
     MOCK_CONST_METHOD1(getInt64, std::int64_t(util::index_t offset));
     MOCK_METHOD2(putInt64Ordered, void(util::index_t, std::int64_t v));
     MOCK_CONST_METHOD1(getInt64Volatile, std::int64_t(util::index_t));
-    MOCK_METHOD2(putStringUtf8WithoutLength, std::int32_t(util::index_t, const std::string&));
+
+    MOCK_METHOD2(putStringWithoutLength, std::int32_t(util::index_t,
+        const std::string&));
 
     void useAsSpy()
     {
@@ -60,8 +62,8 @@ public:
             .WillByDefault(testing::Invoke(&m_realBuffer, &AtomicBuffer::getAndAddInt32));
         ON_CALL(*this, putInt64Ordered(testing::_, testing::_))
             .WillByDefault(testing::Invoke(&m_realBuffer, &AtomicBuffer::putInt64Ordered));
-        ON_CALL(*this, putStringUtf8WithoutLength(testing::_, testing::_))
-            .WillByDefault(testing::Invoke(&m_realBuffer, &AtomicBuffer::putStringUtf8WithoutLength));
+        ON_CALL(*this, putStringWithoutLength(testing::_, testing::_))
+            .WillByDefault(testing::Invoke(&m_realBuffer, &AtomicBuffer::putStringWithoutLength));
     }
 
 private:

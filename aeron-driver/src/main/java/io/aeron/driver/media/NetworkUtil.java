@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -75,7 +75,7 @@ public class NetworkUtil
         sort(filterResults);
 
         final int size = filterResults.size();
-        final NetworkInterface[] results = new  NetworkInterface[size];
+        final NetworkInterface[] results = new NetworkInterface[size];
         for (int i = 0; i < size; i++)
         {
             results[i] = filterResults.get(i).networkInterface;
@@ -198,7 +198,6 @@ public class NetworkUtil
             final InterfaceAddress interfaceAddress,
             final NetworkInterface networkInterface,
             final boolean isLoopback)
-            throws SocketException
         {
             this.interfaceAddress = interfaceAddress;
             this.networkInterface = networkInterface;

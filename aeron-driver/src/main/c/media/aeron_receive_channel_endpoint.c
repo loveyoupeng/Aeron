@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 - 2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -503,7 +503,7 @@ int aeron_receiver_channel_endpoint_validate_sender_mtu_length(
 
 extern int aeron_receive_channel_endpoint_on_remove_pending_setup(
     aeron_receive_channel_endpoint_t *endpoint, int32_t session_id, int32_t stream_id);
-extern int aeron_receive_channel_endpoint_on_remove_cooldown(
+extern int aeron_receive_channel_endpoint_on_remove_cool_down(
     aeron_receive_channel_endpoint_t *endpoint, int32_t session_id, int32_t stream_id);
 extern size_t aeron_receive_channel_endpoint_stream_count(aeron_receive_channel_endpoint_t *endpoint);
 extern void aeron_receive_channel_endpoint_receiver_release(aeron_receive_channel_endpoint_t *endpoint);

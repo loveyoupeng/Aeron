@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 - 2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -62,7 +62,6 @@ void aeron_driver_conductor_proxy_on_create_publication_image_cmd(
     struct sockaddr_storage *src_address,
     void *endpoint);
 
-void aeron_driver_conductor_proxy_on_linger_buffer(
-    aeron_driver_conductor_proxy_t *conductor_proxy, uint8_t *buffer);
+void aeron_driver_conductor_proxy_on_linger_buffer(aeron_driver_conductor_proxy_t *conductor_proxy, uint8_t *buffer);
 
 #endif //AERON_AERON_DRIVER_CONDUCTOR_PROXY_H

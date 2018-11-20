@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -41,31 +41,57 @@ public class SocketAddressUtilTest
     }
 
     @Test(expected = IllegalArgumentException.class)
-    public void shouldRejectOnInvalidPort() throws Exception
+    public void shouldRejectOnInvalidPort()
     {
         SocketAddressUtil.parse("192.168.1.20:aa");
     }
 
     @Test(expected = IllegalArgumentException.class)
-    public void shouldRejectOnMissingPort() throws Exception
+    public void shouldRejectOnInvalidPort2()
+    {
+        SocketAddressUtil.parse("192.168.1.20::123");
+    }
+
+    @Test(expected = IllegalArgumentException.class)
+    public void shouldRejectOnMissingPort()
     {
         SocketAddressUtil.parse("192.168.1.20");
     }
 
     @Test(expected = IllegalArgumentException.class)
-    public void shouldRejectOnEmptyPort() throws Exception
+    public void shouldRejectOnEmptyPort()
     {
         SocketAddressUtil.parse("192.168.1.20:");
+    }
+
+    @Test(expected = IllegalArgumentException.class)
+    public void shouldRejectOnEmptyIpV6Port()
+    {
+        SocketAddressUtil.parse("[::1]:");
+    }
+
+    @Test(expected = IllegalArgumentException.class)
+    public void shouldRejectOnInvalidIpV6()
+    {
+        SocketAddressUtil.parse("[FG07::789:1:0:0:3]:111");
+    }
+
+    @Test(expected = IllegalArgumentException.class)
+    public void shouldRejectOnInvalidIpV6Scope()
+    {
+        SocketAddressUtil.parse("[FC07::789:1:0:0:3%^]:111");
     }
 
     @Test
     public void shouldParseIpV6() throws Exception
     {
         assertCorrectParseIpV6("::1", 54321);
+        assertCorrectParseIpV6("FC07::789:1:0:0:3", 54321);
+        assertCorrectParseIpV6("fc07::789:1:0:0:3", 54321);
     }
 
     @Test
-    public void shouldParseWithScope() throws Exception
+    public void shouldParseWithScope()
     {
         final InetSocketAddress address = SocketAddressUtil.parse("[::1%12~_.-34]:1234");
         assertThat(address.getAddress(), instanceOf(Inet6Address.class));

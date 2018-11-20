@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,31 +15,37 @@
  */
 package io.aeron.driver.media;
 
-import io.aeron.driver.*;
-import io.aeron.driver.exceptions.ConfigurationException;
-import io.aeron.driver.status.ChannelEndpointStatus;
+import io.aeron.CommonContext;
+import io.aeron.driver.DataPacketDispatcher;
+import io.aeron.driver.DriverConductorProxy;
+import io.aeron.driver.MediaDriver;
+import io.aeron.driver.PublicationImage;
+import io.aeron.exceptions.AeronException;
 import io.aeron.protocol.*;
-import org.agrona.LangUtil;
+import io.aeron.status.ChannelEndpointStatus;
+import org.agrona.collections.Hashing;
 import org.agrona.collections.Int2IntCounterMap;
-import org.agrona.concurrent.status.AtomicCounter;
+import org.agrona.collections.Long2LongCounterMap;
 import org.agrona.concurrent.UnsafeBuffer;
+import org.agrona.concurrent.status.AtomicCounter;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
-import java.net.StandardSocketOptions;
 import java.nio.ByteBuffer;
+import java.util.concurrent.TimeUnit;
 
-import static io.aeron.driver.status.ChannelEndpointStatus.status;
 import static io.aeron.driver.status.SystemCounterDescriptor.*;
 import static io.aeron.protocol.StatusMessageFlyweight.SEND_SETUP_FLAG;
+import static io.aeron.status.ChannelEndpointStatus.status;
 
 /**
  * Aggregator of multiple subscriptions onto a single transport channel for receiving of data and setup frames
  * plus sending status and NAK frames.
  */
-@EventLog
 public class ReceiveChannelEndpoint extends UdpChannelTransport
 {
+    private static final long DESTINATION_ADDRESS_TIMEOUT = TimeUnit.SECONDS.toNanos(5);
+
     private final DataPacketDispatcher dispatcher;
     private final ByteBuffer smBuffer;
     private final StatusMessageFlyweight statusMessageFlyweight;
@@ -51,10 +57,10 @@ public class ReceiveChannelEndpoint extends UdpChannelTransport
     private final AtomicCounter possibleTtlAsymmetry;
     private final AtomicCounter statusIndicator;
     private final Int2IntCounterMap refCountByStreamIdMap = new Int2IntCounterMap(0);
+    private final Long2LongCounterMap refCountByStreamIdAndSessionIdMap = new Long2LongCounterMap(0);
+    private final MultiRcvDestination multiRcvDestination;
 
     private final long receiverId;
-    private int soRcvBufLength;
-    private boolean isClosed = false;
 
     public ReceiveChannelEndpoint(
         final UdpChannel udpChannel,
@@ -84,25 +90,43 @@ public class ReceiveChannelEndpoint extends UdpChannelTransport
         rttMeasurementBuffer = threadLocals.rttMeasurementBuffer();
         rttMeasurementFlyweight = threadLocals.rttMeasurementFlyweight();
         receiverId = threadLocals.receiverId();
+
+        final String mode = udpChannel.channelUri().get(CommonContext.MDC_CONTROL_MODE_PARAM_NAME);
+        if (CommonContext.MDC_CONTROL_MODE_MANUAL.equals(mode))
+        {
+            this.multiRcvDestination = new MultiRcvDestination(context.nanoClock(), DESTINATION_ADDRESS_TIMEOUT);
+        }
+        else
+        {
+            this.multiRcvDestination = null;
+        }
     }
 
     /**
-     * Send contents of {@link java.nio.ByteBuffer} to remote address
+     * Send contents of {@link java.nio.ByteBuffer} to the remote address.
      *
-     * @param buffer        to send
-     * @param remoteAddress to send to
-     * @return number of bytes sent
+     * @param buffer        to send containing the payload.
+     * @param remoteAddress to send to send the payload to.
+     * @return number of bytes sent.
      */
     public int sendTo(final ByteBuffer buffer, final InetSocketAddress remoteAddress)
     {
+        final int remaining = buffer.remaining();
         int bytesSent = 0;
         try
         {
-            bytesSent = sendDatagramChannel.send(buffer, remoteAddress);
+            if (null != sendDatagramChannel)
+            {
+                sendHook(buffer, remoteAddress);
+                if (sendDatagramChannel.isOpen())
+                {
+                    bytesSent = sendDatagramChannel.send(buffer, remoteAddress);
+                }
+            }
         }
         catch (final IOException ex)
         {
-            LangUtil.rethrowUnchecked(ex);
+            sendError(remaining, ex, remoteAddress);
         }
 
         return bytesSent;
@@ -113,13 +137,18 @@ public class ReceiveChannelEndpoint extends UdpChannelTransport
         return udpChannel().originalUriString();
     }
 
+    public int statusIndicatorCounterId()
+    {
+        return statusIndicator.id();
+    }
+
     public void indicateActive()
     {
         final long currentStatus = statusIndicator.get();
         if (currentStatus != ChannelEndpointStatus.INITIALIZING)
         {
-            throw new IllegalStateException(
-                "Channel cannot be registered unless INITIALISING: status=" + status(currentStatus));
+            throw new AeronException(
+                "channel cannot be registered unless INITIALISING: status=" + status(currentStatus));
         }
 
         statusIndicator.setOrdered(ChannelEndpointStatus.ACTIVE);
@@ -134,22 +163,40 @@ public class ReceiveChannelEndpoint extends UdpChannelTransport
         }
     }
 
-    public void close()
+    public void closeMultiRcvDestination()
     {
-        super.close();
-        isClosed = true;
+        if (null != multiRcvDestination)
+        {
+            multiRcvDestination.close();
+        }
     }
 
-    public void openChannel()
+    public void openChannel(final DriverConductorProxy conductorProxy)
     {
-        openDatagramChannel(statusIndicator);
-
-        soRcvBufLength = getOption(StandardSocketOptions.SO_RCVBUF);
+        if (null == multiRcvDestination)
+        {
+            if (conductorProxy.notConcurrent())
+            {
+                openDatagramChannel(statusIndicator);
+            }
+            else
+            {
+                try
+                {
+                    openDatagramChannel(statusIndicator);
+                }
+                catch (final Exception ex)
+                {
+                    conductorProxy.channelEndpointError(statusIndicator.id(), ex);
+                    throw ex;
+                }
+            }
+        }
     }
 
     public void possibleTtlAsymmetryEncountered()
     {
-        possibleTtlAsymmetry.orderedIncrement();
+        possibleTtlAsymmetry.incrementOrdered();
     }
 
     public int incRefToStream(final int streamId)
@@ -164,7 +211,27 @@ public class ReceiveChannelEndpoint extends UdpChannelTransport
         if (-1 == count)
         {
             refCountByStreamIdMap.remove(streamId);
-            throw new IllegalStateException("Could not find stream Id to decrement: " + streamId);
+            throw new IllegalStateException("could not find stream Id to decrement: " + streamId);
+        }
+
+        return count;
+    }
+
+    public long incRefToStreamAndSession(final int streamId, final int sessionId)
+    {
+        return refCountByStreamIdAndSessionIdMap.incrementAndGet(Hashing.compoundKey(streamId, sessionId));
+    }
+
+    public long decRefToStreamAndSession(final int streamId, final int sessionId)
+    {
+        final long key = Hashing.compoundKey(streamId, sessionId);
+        final long count = refCountByStreamIdAndSessionIdMap.decrementAndGet(key);
+
+        if (-1 == count)
+        {
+            refCountByStreamIdAndSessionIdMap.remove(key);
+            throw new IllegalStateException(
+                "could not find stream Id + session Id to decrement: " + streamId + " " + sessionId);
         }
 
         return count;
@@ -172,12 +239,14 @@ public class ReceiveChannelEndpoint extends UdpChannelTransport
 
     public int streamCount()
     {
-        return refCountByStreamIdMap.size();
+        return refCountByStreamIdMap.size() + refCountByStreamIdAndSessionIdMap.size();
     }
 
     public boolean shouldBeClosed()
     {
-        return refCountByStreamIdMap.isEmpty() && !statusIndicator.isClosed();
+        return refCountByStreamIdMap.isEmpty() &&
+            refCountByStreamIdAndSessionIdMap.isEmpty() &&
+            !statusIndicator.isClosed();
     }
 
     public boolean hasExplicitControl()
@@ -190,66 +259,179 @@ public class ReceiveChannelEndpoint extends UdpChannelTransport
         return udpChannel.hasExplicitControl() ? udpChannel.localControl() : null;
     }
 
+    public boolean hasDestinationControl()
+    {
+        return (null != multiRcvDestination);
+    }
+
+    public void validateAllowsDestinationControl()
+    {
+        if (null == multiRcvDestination)
+        {
+            throw new AeronException("channel does not allow manual control");
+        }
+    }
+
+    public boolean isMulticast()
+    {
+        return isMulticast(0);
+    }
+
+    public boolean isMulticast(final int transportIndex)
+    {
+        if (null != multiRcvDestination)
+        {
+            return multiRcvDestination.transport(transportIndex).isMulticast();
+        }
+        else if (0 == transportIndex)
+        {
+            return super.isMulticast();
+        }
+        else
+        {
+            throw new IllegalStateException("isMulticast for unknown index " + transportIndex);
+        }
+    }
+
+    public UdpChannel udpChannel()
+    {
+        return udpChannel(0);
+    }
+
+    public UdpChannel udpChannel(final int transportIndex)
+    {
+        if (null != multiRcvDestination && multiRcvDestination.hasDestination(transportIndex))
+        {
+            return multiRcvDestination.transport(transportIndex).udpChannel();
+        }
+        else if (0 == transportIndex)
+        {
+            return super.udpChannel();
+        }
+        else
+        {
+            throw new IllegalStateException("udpChannel for unknown index " + transportIndex);
+        }
+    }
+
+    public int multicastTtl()
+    {
+        return multicastTtl(0);
+    }
+
+    public int multicastTtl(final int transportIndex)
+    {
+        if (null != multiRcvDestination)
+        {
+            return multiRcvDestination.transport(transportIndex).multicastTtl();
+        }
+        else if (0 == transportIndex)
+        {
+            return super.multicastTtl();
+        }
+        else
+        {
+            throw new IllegalStateException("multicastTtl for unknown index " + transportIndex);
+        }
+    }
+
+    public int addDestination(final ReceiveDestinationUdpTransport transport)
+    {
+        return multiRcvDestination.addDestination(transport);
+    }
+
+    public void removeDestination(final int transportIndex)
+    {
+        multiRcvDestination.removeDestination(transportIndex);
+    }
+
+    public int destination(final UdpChannel udpChannel)
+    {
+        return multiRcvDestination.transport(udpChannel);
+    }
+
+    public ReceiveDestinationUdpTransport destination(final int transportIndex)
+    {
+        return multiRcvDestination.transport(transportIndex);
+    }
+
     public int onDataPacket(
         final DataHeaderFlyweight header,
         final UnsafeBuffer buffer,
         final int length,
-        final InetSocketAddress srcAddress)
+        final InetSocketAddress srcAddress,
+        final int transportIndex)
     {
-        return dispatcher.onDataPacket(this, header, buffer, length, srcAddress);
+        return dispatcher.onDataPacket(this, header, buffer, length, srcAddress, transportIndex);
     }
 
     public void onSetupMessage(
         final SetupFlyweight header,
         final UnsafeBuffer buffer,
         final int length,
-        final InetSocketAddress srcAddress)
+        final InetSocketAddress srcAddress,
+        final int transportIndex)
     {
-        dispatcher.onSetupMessage(this, header, buffer, srcAddress);
+        dispatcher.onSetupMessage(this, header, srcAddress, transportIndex);
     }
 
     public void onRttMeasurement(
         final RttMeasurementFlyweight header,
         final UnsafeBuffer buffer,
         final int length,
-        final InetSocketAddress srcAddress)
+        final InetSocketAddress srcAddress,
+        final int transportIndex)
     {
-        if (header.receiverId() == receiverId || header.receiverId() == 0)
+        final long requestedReceiverId = header.receiverId();
+        if (requestedReceiverId == receiverId || requestedReceiverId == 0)
         {
-            dispatcher.onRttMeasurement(this, header, srcAddress);
+            dispatcher.onRttMeasurement(this, header, srcAddress, transportIndex);
         }
     }
 
     public void sendSetupElicitingStatusMessage(
-        final InetSocketAddress controlAddress, final int sessionId, final int streamId)
+        final int transportIndex, final InetSocketAddress controlAddress, final int sessionId, final int streamId)
     {
-        sendStatusMessage(controlAddress, sessionId, streamId, 0, 0, 0, SEND_SETUP_FLAG);
+        if (!isClosed)
+        {
+            smBuffer.clear();
+            statusMessageFlyweight
+                .sessionId(sessionId)
+                .streamId(streamId)
+                .consumptionTermId(0)
+                .consumptionTermOffset(0)
+                .receiverWindowLength(0)
+                .flags(SEND_SETUP_FLAG);
+
+            send(smBuffer, StatusMessageFlyweight.HEADER_LENGTH, transportIndex, controlAddress);
+        }
     }
 
-    public void validateSenderMtuLength(final int senderMtuLength, final int windowMaxLength)
+    public void sendRttMeasurement(
+        final int transportIndex,
+        final InetSocketAddress controlAddress,
+        final int sessionId,
+        final int streamId,
+        final long echoTimestampNs,
+        final long receptionDelta,
+        final boolean isReply)
     {
-        Configuration.validateMtuLength(senderMtuLength);
-        Configuration.validateInitialWindowLength(windowMaxLength, senderMtuLength);
-
-        if (windowMaxLength > soRcvBufLength)
+        if (!isClosed)
         {
-            throw new ConfigurationException("Max Window length greater than socket SO_RCVBUF, increase '" +
-                Configuration.INITIAL_WINDOW_LENGTH_PROP_NAME +
-                "' to match window: windowMaxLength=" + windowMaxLength +
-                ", SO_RCVBUF=" + soRcvBufLength);
-        }
+            rttMeasurementFlyweight
+                .sessionId(sessionId)
+                .streamId(streamId)
+                .receiverId(receiverId)
+                .echoTimestampNs(echoTimestampNs)
+                .receptionDelta(receptionDelta)
+                .flags(isReply ? RttMeasurementFlyweight.REPLY_FLAG : 0);
 
-        if (senderMtuLength > soRcvBufLength)
-        {
-            throw new ConfigurationException("Sender MTU greater than socket SO_RCVBUF, increase '" +
-                Configuration.SOCKET_RCVBUF_LENGTH_PROP_NAME +
-                "' to match MTU: senderMtuLength=" + senderMtuLength +
-                ", SO_RCVBUF=" + soRcvBufLength);
+            send(rttMeasurementBuffer, RttMeasurementFlyweight.HEADER_LENGTH, transportIndex, controlAddress);
         }
     }
 
     public void sendStatusMessage(
-        final InetSocketAddress controlAddress,
+        final DestinationImageControlAddress[] controlAddresses,
         final int sessionId,
         final int streamId,
         final int termId,
@@ -268,16 +450,12 @@ public class ReceiveChannelEndpoint extends UdpChannelTransport
                 .receiverWindowLength(window)
                 .flags(flags);
 
-            final int bytesSent = sendTo(smBuffer, controlAddress);
-            if (StatusMessageFlyweight.HEADER_LENGTH != bytesSent)
-            {
-                shortSends.increment();
-            }
+            send(smBuffer, StatusMessageFlyweight.HEADER_LENGTH, controlAddresses);
         }
     }
 
     public void sendNakMessage(
-        final InetSocketAddress controlAddress,
+        final DestinationImageControlAddress[] controlAddresses,
         final int sessionId,
         final int streamId,
         final int termId,
@@ -294,16 +472,12 @@ public class ReceiveChannelEndpoint extends UdpChannelTransport
                 .termOffset(termOffset)
                 .length(length);
 
-            final int bytesSent = sendTo(nakBuffer, controlAddress);
-            if (NakFlyweight.HEADER_LENGTH != bytesSent)
-            {
-                shortSends.increment();
-            }
+            send(nakBuffer, NakFlyweight.HEADER_LENGTH, controlAddresses);
         }
     }
 
     public void sendRttMeasurement(
-        final InetSocketAddress controlAddress,
+        final DestinationImageControlAddress[] controlAddresses,
         final int sessionId,
         final int streamId,
         final long echoTimestampNs,
@@ -320,11 +494,7 @@ public class ReceiveChannelEndpoint extends UdpChannelTransport
                 .receptionDelta(receptionDelta)
                 .flags(isReply ? RttMeasurementFlyweight.REPLY_FLAG : 0);
 
-            final int bytesSent = sendTo(rttMeasurementBuffer, controlAddress);
-            if (RttMeasurementFlyweight.HEADER_LENGTH != bytesSent)
-            {
-                shortSends.increment();
-            }
+            send(rttMeasurementBuffer, RttMeasurementFlyweight.HEADER_LENGTH, controlAddresses);
         }
     }
 
@@ -343,9 +513,19 @@ public class ReceiveChannelEndpoint extends UdpChannelTransport
         dispatcher.addSubscription(streamId);
     }
 
+    public void addSubscription(final int streamId, final int sessionId)
+    {
+        dispatcher.addSubscription(streamId, sessionId);
+    }
+
     public void removeSubscription(final int streamId)
     {
         dispatcher.removeSubscription(streamId);
+    }
+
+    public void removeSubscription(final int streamId, final int sessionId)
+    {
+        dispatcher.removeSubscription(streamId, sessionId);
     }
 
     public void addPublicationImage(final PublicationImage image)
@@ -361,5 +541,49 @@ public class ReceiveChannelEndpoint extends UdpChannelTransport
     public boolean shouldElicitSetupMessage()
     {
         return dispatcher.shouldElicitSetupMessage();
+    }
+
+    protected void send(
+        final ByteBuffer buffer, final int bytesToSend, final DestinationImageControlAddress[] controlAddresses)
+    {
+        final int bytesSent;
+
+        if (null == multiRcvDestination)
+        {
+            bytesSent = sendTo(buffer, controlAddresses[0].address);
+        }
+        else
+        {
+            bytesSent = multiRcvDestination.sendToAll(controlAddresses, buffer, 0, bytesToSend);
+        }
+
+        if (bytesToSend != bytesSent)
+        {
+            shortSends.increment();
+        }
+    }
+
+    protected void send(
+        final ByteBuffer buffer,
+        final int bytesToSend,
+        final int transportIndex,
+        final InetSocketAddress remoteAddress)
+    {
+        final int bytesSent;
+
+        if (null == multiRcvDestination)
+        {
+            bytesSent = sendTo(buffer, remoteAddress);
+        }
+        else
+        {
+            bytesSent = MultiRcvDestination.sendTo(
+                multiRcvDestination.transport(transportIndex), buffer, remoteAddress);
+        }
+
+        if (bytesToSend != bytesSent)
+        {
+            shortSends.increment();
+        }
     }
 }

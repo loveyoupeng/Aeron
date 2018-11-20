@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 - 2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -54,6 +54,9 @@ int aeron_driver_receiver_init(
             AERON_DRIVER_RECEIVER_MAX_UDP_PACKET_LENGTH,
             AERON_CACHE_LINE_LENGTH * 2) < 0)
         {
+            int errcode = errno;
+
+            aeron_set_err(errcode, "%s:%d: %s", __FILE__, __LINE__, strerror(errcode));
             return -1;
         }
 
@@ -84,6 +87,7 @@ int aeron_driver_receiver_init(
         aeron_system_counter_addr(system_counters, AERON_SYSTEM_COUNTER_INVALID_PACKETS);
     receiver->total_bytes_received_counter =
         aeron_system_counter_addr(system_counters, AERON_SYSTEM_COUNTER_BYTES_RECEIVED);
+
     return 0;
 }
 
@@ -245,6 +249,19 @@ void aeron_driver_receiver_on_add_endpoint(void *clientd, void *command)
         {
             AERON_DRIVER_RECEIVER_ERROR(receiver, "receiver on_add_endpoint: %s", aeron_errmsg());
         }
+
+        if (aeron_receive_channel_endpoint_send_sm(
+            endpoint,
+            &udp_channel->local_control,
+            0,
+            0,
+            0,
+            0,
+            0,
+            AERON_STATUS_MESSAGE_HEADER_SEND_SETUP_FLAG) < 0)
+        {
+            AERON_DRIVER_RECEIVER_ERROR(receiver, "receiver on_add_endpoint send SM: %s", aeron_errmsg());
+        }
     }
 
     aeron_driver_conductor_proxy_on_delete_cmd(receiver->context->conductor_proxy, command);
@@ -352,15 +369,15 @@ void aeron_driver_receiver_on_remove_publication_image(void *clientd, void *item
     aeron_driver_conductor_proxy_on_delete_cmd(receiver->context->conductor_proxy, item);
 }
 
-void aeron_driver_receiver_on_remove_cooldown(void *clientd, void *item)
+void aeron_driver_receiver_on_remove_cool_down(void *clientd, void *item)
 {
     aeron_driver_receiver_t *receiver = (aeron_driver_receiver_t *)clientd;
-    aeron_command_remove_cooldown_t *cmd = (aeron_command_remove_cooldown_t *)item;
+    aeron_command_remove_cool_down_t *cmd = (aeron_command_remove_cool_down_t *)item;
     aeron_receive_channel_endpoint_t *endpoint = (aeron_receive_channel_endpoint_t *)cmd->endpoint;
 
-    if (aeron_receive_channel_endpoint_on_remove_cooldown(endpoint, cmd->session_id, cmd->stream_id) < 0)
+    if (aeron_receive_channel_endpoint_on_remove_cool_down(endpoint, cmd->session_id, cmd->stream_id) < 0)
     {
-        AERON_DRIVER_RECEIVER_ERROR(receiver, "receiver on_remove_cooldown: %s", aeron_errmsg());
+        AERON_DRIVER_RECEIVER_ERROR(receiver, "receiver on_remove_cool_down: %s", aeron_errmsg());
     }
 
     aeron_driver_conductor_proxy_on_delete_cmd(receiver->context->conductor_proxy, item);

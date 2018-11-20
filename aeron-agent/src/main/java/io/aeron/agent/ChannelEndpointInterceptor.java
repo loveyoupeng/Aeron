@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,7 +17,6 @@ package io.aeron.agent;
 
 import io.aeron.driver.media.ReceiveChannelEndpoint;
 import io.aeron.driver.media.SendChannelEndpoint;
-import io.aeron.protocol.*;
 import net.bytebuddy.asm.Advice;
 import org.agrona.concurrent.UnsafeBuffer;
 
@@ -30,7 +29,7 @@ import static io.aeron.agent.EventLogger.LOGGER;
 /**
  * Intercepts calls on channel endpoints for logging.
  */
-public class ChannelEndpointInterceptor
+class ChannelEndpointInterceptor
 {
     public static class SenderProxyInterceptor
     {
@@ -74,104 +73,23 @@ public class ChannelEndpointInterceptor
         }
     }
 
-    public static class SendChannelEndpointInterceptor
+    public static class UdpChannelTransportInterceptor
     {
-        public static class Presend
+        public static class SendHook
         {
             @Advice.OnMethodEnter
-            public static void presend(final ByteBuffer buffer, final InetSocketAddress address)
+            public static void sendHook(final ByteBuffer buffer, final InetSocketAddress address)
             {
                 LOGGER.logFrameOut(buffer, address);
             }
         }
 
-        public static class OnStatusMessage
+        public static class ReceiveHook
         {
             @Advice.OnMethodEnter
-            public static void onStatusMessage(
-                final StatusMessageFlyweight msg,
-                final UnsafeBuffer buffer,
-                final int length,
-                final InetSocketAddress srcAddress)
+            public static void receiveHook(final UnsafeBuffer buffer, final int length, final InetSocketAddress address)
             {
-                LOGGER.logFrameIn(buffer, 0, length, srcAddress);
-            }
-        }
-
-        public static class OnNakMessage
-        {
-            @Advice.OnMethodEnter
-            public static void onNakMessage(
-                final NakFlyweight msg,
-                final UnsafeBuffer buffer,
-                final int length,
-                final InetSocketAddress srcAddress)
-            {
-                LOGGER.logFrameIn(buffer, 0, length, srcAddress);
-            }
-        }
-
-        public static class OnRttMeasurement
-        {
-            @Advice.OnMethodEnter
-            public static void onRttMeasurement(
-                final RttMeasurementFlyweight msg,
-                final UnsafeBuffer buffer,
-                final int length,
-                final InetSocketAddress srcAddress)
-            {
-                LOGGER.logFrameIn(buffer, 0, length, srcAddress);
-            }
-        }
-    }
-
-    public static class ReceiveChannelEndpointInterceptor
-    {
-        public static class SendTo
-        {
-            @Advice.OnMethodEnter
-            public static void sendTo(final ByteBuffer buffer, final InetSocketAddress address)
-            {
-                LOGGER.logFrameOut(buffer, address);
-            }
-        }
-
-        public static class OnDataPacket
-        {
-            @Advice.OnMethodEnter
-            public static void onDataPacket(
-                final DataHeaderFlyweight header,
-                final UnsafeBuffer buffer,
-                final int length,
-                final InetSocketAddress srcAddress)
-            {
-                LOGGER.logFrameIn(buffer, 0, length, srcAddress);
-            }
-        }
-
-        public static class OnSetupMessage
-        {
-            @Advice.OnMethodEnter
-            public static void onStatusMessage(
-                final SetupFlyweight header,
-                final UnsafeBuffer buffer,
-                final int length,
-                final InetSocketAddress srcAddress)
-            {
-                LOGGER.logFrameIn(buffer, 0, length, srcAddress);
-            }
-        }
-
-        public static class OnRttMeasurement
-        {
-            @Advice.OnMethodEnter
-            public static void onRttMeasurement(
-                final RttMeasurementFlyweight msg,
-                final UnsafeBuffer buffer,
-                final int length,
-                final InetSocketAddress srcAddress)
-            {
-                LOGGER.logFrameIn(buffer, 0, length, srcAddress);
+                LOGGER.logFrameIn(buffer, 0, length, address);
             }
         }
     }

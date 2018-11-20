@@ -1,5 +1,5 @@
 ::
-:: Copyright 2014-2017 Real Logic Ltd.
+:: Copyright 2014-2018 Real Logic Ltd.
 ::
 :: Licensed under the Apache License, Version 2.0 (the "License");
 :: you may not use this file except in compliance with the License.
@@ -17,6 +17,7 @@
 @echo off
 "%JAVA_HOME%\bin\java" ^
     -cp ..\build\libs\samples.jar ^
+    -XX:BiasedLockingStartupDelay=0 ^
     -Dagrona.disable.bounds.checks=true ^
     -Daeron.sample.messageLength=32 ^
     %JVM_OPTS% io.aeron.samples.EmbeddedExclusiveIpcThroughput %*

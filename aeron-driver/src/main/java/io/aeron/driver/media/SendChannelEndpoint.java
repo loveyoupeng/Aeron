@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,11 +17,10 @@ package io.aeron.driver.media;
 
 import io.aeron.CommonContext;
 import io.aeron.driver.*;
-import io.aeron.driver.status.ChannelEndpointStatus;
+import io.aeron.status.ChannelEndpointStatus;
 import io.aeron.protocol.NakFlyweight;
 import io.aeron.protocol.RttMeasurementFlyweight;
 import io.aeron.protocol.StatusMessageFlyweight;
-import org.agrona.LangUtil;
 import org.agrona.collections.BiInt2ObjectMap;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.agrona.concurrent.status.AtomicCounter;
@@ -30,10 +29,9 @@ import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.PortUnreachableException;
 import java.nio.ByteBuffer;
-import java.nio.channels.ClosedChannelException;
 import java.util.concurrent.TimeUnit;
 
-import static io.aeron.driver.status.ChannelEndpointStatus.status;
+import static io.aeron.status.ChannelEndpointStatus.status;
 import static io.aeron.driver.status.SystemCounterDescriptor.*;
 import static io.aeron.protocol.StatusMessageFlyweight.SEND_SETUP_FLAG;
 
@@ -41,14 +39,13 @@ import static io.aeron.protocol.StatusMessageFlyweight.SEND_SETUP_FLAG;
  * Aggregator of multiple {@link NetworkPublication}s onto a single transport channel for
  * sending data and setup frames plus the receiving of status and NAK frames.
  */
-@EventLog
 public class SendChannelEndpoint extends UdpChannelTransport
 {
     private static final long DESTINATION_TIMEOUT = TimeUnit.SECONDS.toNanos(5);
 
     private int refCount = 0;
     private final BiInt2ObjectMap<NetworkPublication> publicationBySessionAndStreamId = new BiInt2ObjectMap<>();
-    private final UdpDestinationTracker multiDestinationTracker;
+    private final MultiDestination multiDestination;
     private final AtomicCounter statusMessagesReceived;
     private final AtomicCounter nakMessagesReceived;
     private final AtomicCounter statusIndicator;
@@ -68,41 +65,61 @@ public class SendChannelEndpoint extends UdpChannelTransport
         statusMessagesReceived = context.systemCounters().get(STATUS_MESSAGES_RECEIVED);
         this.statusIndicator = statusIndicator;
 
-        UdpDestinationTracker destinationTracker = null;
+        MultiDestination multiDestination = null;
         if (udpChannel.hasExplicitControl())
         {
             final String mode = udpChannel.channelUri().get(CommonContext.MDC_CONTROL_MODE_PARAM_NAME);
             if (CommonContext.MDC_CONTROL_MODE_MANUAL.equals(mode))
             {
-                destinationTracker = new UdpDestinationTracker(this::presend);
+                multiDestination = new ManualMultiDestination();
             }
-            else
+            else if (null == mode || CommonContext.MDC_CONTROL_MODE_DYNAMIC.equals(mode))
             {
-                destinationTracker = new UdpDestinationTracker(context.nanoClock(), this::presend, DESTINATION_TIMEOUT);
+                multiDestination = new DynamicMultiDestination(context.cachedNanoClock(), DESTINATION_TIMEOUT);
             }
         }
 
-        multiDestinationTracker = destinationTracker;
+        this.multiDestination = multiDestination;
     }
 
-    public int decRef()
+    public void decRef()
     {
-        return --refCount;
+        --refCount;
     }
 
-    public int incRef()
+    public void incRef()
     {
-        return ++refCount;
+        ++refCount;
     }
 
-    public void openChannel()
+    public void openChannel(final DriverConductorProxy conductorProxy)
     {
-        openDatagramChannel(statusIndicator);
+        if (conductorProxy.notConcurrent())
+        {
+            openDatagramChannel(statusIndicator);
+        }
+        else
+        {
+            try
+            {
+                openDatagramChannel(statusIndicator);
+            }
+            catch (final Exception ex)
+            {
+                conductorProxy.channelEndpointError(statusIndicator.id(), ex);
+                throw ex;
+            }
+        }
     }
 
     public String originalUriString()
     {
         return udpChannel().originalUriString();
+    }
+
+    public int statusIndicatorCounterId()
+    {
+        return statusIndicator.id();
     }
 
     public void indicateActive()
@@ -111,7 +128,7 @@ public class SendChannelEndpoint extends UdpChannelTransport
         if (currentStatus != ChannelEndpointStatus.INITIALIZING)
         {
             throw new IllegalStateException(
-                "Channel cannot be registered unless INITALIZING: status=" + status(currentStatus));
+                "channel cannot be registered unless INITALIZING: status=" + status(currentStatus));
         }
 
         statusIndicator.setOrdered(ChannelEndpointStatus.ACTIVE);
@@ -158,44 +175,44 @@ public class SendChannelEndpoint extends UdpChannelTransport
 
     /**
      * Send contents of a {@link ByteBuffer} to connected address.
-     * This is used on the send size for performance over sentTo().
+     * This is used on the sender side for performance over send(ByteBuffer, SocketAddress).
      *
      * @param buffer to send
      * @return number of bytes sent
      */
     public int send(final ByteBuffer buffer)
     {
-        int byteSent = 0;
+        int bytesSent = 0;
 
-        if (null == multiDestinationTracker)
+        if (null != sendDatagramChannel)
         {
-            try
+            final int bytesToSend = buffer.remaining();
+
+            if (null == multiDestination)
             {
-                presend(buffer, connectAddress);
-                byteSent = sendDatagramChannel.write(buffer);
+                try
+                {
+                    sendHook(buffer, connectAddress);
+                    if (sendDatagramChannel.isConnected())
+                    {
+                        bytesSent = sendDatagramChannel.write(buffer);
+                    }
+                }
+                catch (final PortUnreachableException ignore)
+                {
+                }
+                catch (final IOException ex)
+                {
+                    sendError(bytesToSend, ex, connectAddress);
+                }
             }
-            catch (final PortUnreachableException | ClosedChannelException ignore)
+            else
             {
-            }
-            catch (final IOException ex)
-            {
-                LangUtil.rethrowUnchecked(ex);
+                bytesSent = multiDestination.send(sendDatagramChannel, buffer, this, bytesToSend);
             }
         }
-        else
-        {
-            byteSent = multiDestinationTracker.sendToDestinations(sendDatagramChannel, buffer);
-        }
 
-        return byteSent;
-    }
-
-    /*
-     * Method used as a hook for logging.
-     */
-    @SuppressWarnings("unused")
-    protected void presend(final ByteBuffer buffer, final InetSocketAddress address)
-    {
+        return bytesSent;
     }
 
     public void onStatusMessage(
@@ -204,16 +221,18 @@ public class SendChannelEndpoint extends UdpChannelTransport
         final int length,
         final InetSocketAddress srcAddress)
     {
-        final NetworkPublication publication = publicationBySessionAndStreamId.get(msg.sessionId(), msg.streamId());
+        final int sessionId = msg.sessionId();
+        final int streamId = msg.streamId();
+        final NetworkPublication publication = publicationBySessionAndStreamId.get(sessionId, streamId);
 
-        if (null != multiDestinationTracker)
+        if (null != multiDestination)
         {
-            multiDestinationTracker.destinationActivity(msg, srcAddress);
+            multiDestination.onStatusMessage(msg, srcAddress);
 
-            if (0 == msg.sessionId() && 0 == msg.streamId() && SEND_SETUP_FLAG == (msg.flags() & SEND_SETUP_FLAG))
+            if (0 == sessionId && 0 == streamId && SEND_SETUP_FLAG == (msg.flags() & SEND_SETUP_FLAG))
             {
                 publicationBySessionAndStreamId.forEach(NetworkPublication::triggerSendSetupFrame);
-                statusMessagesReceived.orderedIncrement();
+                statusMessagesReceived.incrementOrdered();
             }
         }
 
@@ -228,7 +247,7 @@ public class SendChannelEndpoint extends UdpChannelTransport
                 publication.onStatusMessage(msg, srcAddress);
             }
 
-            statusMessagesReceived.orderedIncrement();
+            statusMessagesReceived.incrementOrdered();
         }
     }
 
@@ -238,13 +257,12 @@ public class SendChannelEndpoint extends UdpChannelTransport
         final int length,
         final InetSocketAddress srcAddress)
     {
-        final NetworkPublication publication = publicationBySessionAndStreamId.get(
-            msg.sessionId(), msg.streamId());
+        final NetworkPublication publication = publicationBySessionAndStreamId.get(msg.sessionId(), msg.streamId());
 
         if (null != publication)
         {
             publication.onNak(msg.termId(), msg.termOffset(), msg.length());
-            nakMessagesReceived.orderedIncrement();
+            nakMessagesReceived.incrementOrdered();
         }
     }
 
@@ -254,8 +272,7 @@ public class SendChannelEndpoint extends UdpChannelTransport
         final int length,
         final InetSocketAddress srcAddress)
     {
-        final NetworkPublication publication = publicationBySessionAndStreamId.get(
-            msg.sessionId(), msg.streamId());
+        final NetworkPublication publication = publicationBySessionAndStreamId.get(msg.sessionId(), msg.streamId());
 
         if (null != publication)
         {
@@ -265,19 +282,19 @@ public class SendChannelEndpoint extends UdpChannelTransport
 
     public void validateAllowsManualControl()
     {
-        if (null == multiDestinationTracker || !multiDestinationTracker.isManualControlMode())
+        if (null == multiDestination || !multiDestination.isManualControlMode())
         {
-            throw new IllegalArgumentException("Control channel does not allow manual control");
+            throw new IllegalArgumentException("control channel does not allow manual control");
         }
     }
 
     public void addDestination(final InetSocketAddress address)
     {
-        multiDestinationTracker.addDestination(address);
+        multiDestination.addDestination(address);
     }
 
     public void removeDestination(final InetSocketAddress address)
     {
-        multiDestinationTracker.removeDestination(address);
+        multiDestination.removeDestination(address);
     }
 }

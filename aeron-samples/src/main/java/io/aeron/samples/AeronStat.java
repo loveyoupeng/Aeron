@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,7 +17,7 @@ package io.aeron.samples;
 
 import io.aeron.CncFileDescriptor;
 import io.aeron.CommonContext;
-import io.aeron.driver.status.ChannelEndpointStatus;
+import io.aeron.status.ChannelEndpointStatus;
 import org.agrona.DirectBuffer;
 import org.agrona.IoUtil;
 import org.agrona.SystemUtil;
@@ -28,6 +28,7 @@ import java.io.File;
 import java.io.PrintStream;
 import java.nio.MappedByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Supplier;
@@ -36,6 +37,7 @@ import java.util.regex.Pattern;
 import static io.aeron.CncFileDescriptor.*;
 import static io.aeron.driver.status.PerImageIndicator.PER_IMAGE_TYPE_ID;
 import static io.aeron.driver.status.PublisherLimit.PUBLISHER_LIMIT_TYPE_ID;
+import static io.aeron.driver.status.PublisherPos.PUBLISHER_POS_TYPE_ID;
 import static io.aeron.driver.status.ReceiveChannelStatus.RECEIVE_CHANNEL_STATUS_TYPE_ID;
 import static io.aeron.driver.status.ReceiverPos.RECEIVER_POS_TYPE_ID;
 import static io.aeron.driver.status.SendChannelStatus.SEND_CHANNEL_STATUS_TYPE_ID;
@@ -60,7 +62,7 @@ public class AeronStat
     private static final String ANSI_HOME = "\u001b[H";
 
     /**
-     * The delay in second between each update.
+     * The delay in seconds between each update.
      */
     private static final String DELAY = "delay";
 
@@ -68,7 +70,7 @@ public class AeronStat
      * Types of the counters.
      * <ul>
      * <li>0: System Counters</li>
-     * <li>1 - 5, 9, 10: Stream Positions and Indicators</li>
+     * <li>1 - 5, 9, 10, 11: Stream Positions and Indicators</li>
      * <li>6 - 7: Channel Endpoint Status</li>
      * </ul>
      */
@@ -136,7 +138,7 @@ public class AeronStat
         final DirectBuffer cncMetaData = createMetaDataBuffer(cncByteBuffer);
         final int cncVersion = cncMetaData.getInt(cncVersionOffset(0));
 
-        if (CncFileDescriptor.CNC_VERSION != cncVersion)
+        if (CNC_VERSION != cncVersion)
         {
             throw new IllegalStateException(
                 "Aeron CnC version does not match: version=" + cncVersion + " required=" + CNC_VERSION);
@@ -211,12 +213,16 @@ public class AeronStat
         final AtomicBoolean running = new AtomicBoolean(true);
         SigInt.register(() -> running.set(false));
 
+        final String header = " - Aeron Stat (CnC v" + CNC_VERSION + "), pid " + SystemUtil.getPid();
+        final SimpleDateFormat dateFormat = new SimpleDateFormat("HH:mm:ss");
+
         while (running.get())
         {
             clearScreen();
 
-            System.out.format("%1$tH:%1$tM:%1$tS - Aeron Stat%n", new Date());
-            System.out.println("=========================");
+            System.out.print(dateFormat.format(new Date()));
+            System.out.println(header);
+            System.out.println("======================================================================");
 
             aeronStat.print(System.out);
             System.out.println("--");
@@ -246,13 +252,13 @@ public class AeronStat
             {
                 System.out.format(
                     "Usage: [-Daeron.dir=<directory containing CnC file>] AeronStat%n" +
-                        "\t[delay=<seconds between updates>]%n" +
-                        "filter by optional regex patterns:%n" +
-                        "\t[type=<pattern>]%n" +
-                        "\t[identity=<pattern>]%n" +
-                        "\t[sessionId=<pattern>]%n" +
-                        "\t[streamId=<pattern>]%n" +
-                        "\t[channel=<pattern>]%n");
+                    "\t[delay=<seconds between updates>]%n" +
+                    "filter by optional regex patterns:%n" +
+                    "\t[type=<pattern>]%n" +
+                    "\t[identity=<pattern>]%n" +
+                    "\t[sessionId=<pattern>]%n" +
+                    "\t[streamId=<pattern>]%n" +
+                    "\t[channel=<pattern>]%n");
 
                 System.exit(0);
             }
@@ -271,7 +277,7 @@ public class AeronStat
             return false;
         }
         else if ((typeId >= PUBLISHER_LIMIT_TYPE_ID && typeId <= RECEIVER_POS_TYPE_ID) ||
-            typeId == SENDER_LIMIT_TYPE_ID || typeId == PER_IMAGE_TYPE_ID)
+            typeId == SENDER_LIMIT_TYPE_ID || typeId == PER_IMAGE_TYPE_ID || typeId == PUBLISHER_POS_TYPE_ID)
         {
             if (!match(identityFilter, () -> Long.toString(keyBuffer.getLong(REGISTRATION_ID_OFFSET))) ||
                 !match(sessionFilter, () -> Integer.toString(keyBuffer.getInt(SESSION_ID_OFFSET))) ||

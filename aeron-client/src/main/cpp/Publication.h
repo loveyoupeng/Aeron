@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,6 +24,7 @@
 #include <concurrent/logbuffer/BufferClaim.h>
 #include <concurrent/logbuffer/TermAppender.h>
 #include <concurrent/status/UnsafeBufferPosition.h>
+#include "concurrent/status/StatusIndicatorReader.h"
 #include "LogBuffers.h"
 
 namespace aeron {
@@ -65,6 +66,7 @@ public:
         std::int32_t streamId,
         std::int32_t sessionId,
         UnsafeBufferPosition& publicationLimit,
+        std::int32_t channelStatusId,
         std::shared_ptr<LogBuffers> buffers);
     /// @endcond
 
@@ -175,6 +177,16 @@ public:
     }
 
     /**
+     * Number of bits to right shift a position to get a term count for how far the stream has progressed.
+     *
+     * @return of bits to right shift a position to get a term count for how far the stream has progressed.
+     */
+    inline std::int32_t positionBitsToShift() const
+    {
+        return m_positionBitsToShift;
+    }
+
+    /**
      * Has this Publication seen an active subscriber recently?
      *
      * @return true if this Publication has seen an active subscriber recently.
@@ -199,7 +211,7 @@ public:
      *
      * @return the current position to which the publication has advanced for this stream or {@link CLOSED}.
      */
-    inline std::int64_t position()
+    inline std::int64_t position() const
     {
         std::int64_t result = PUBLICATION_CLOSED;
 
@@ -222,7 +234,7 @@ public:
      *
      * @return the position limit beyond which this {@link Publication} will be back pressured.
      */
-    inline std::int64_t positionLimit()
+    inline std::int64_t publicationLimit() const
     {
         if (isClosed())
         {
@@ -230,6 +242,26 @@ public:
         }
 
         return m_publicationLimit.getVolatile();
+    }
+
+    /**
+     * Get the counter id used to represent the publication limit.
+     *
+     * @return the counter id used to represent the publication limit.
+     */
+    inline std::int32_t publicationLimitId() const
+    {
+        return m_publicationLimit.id();
+    }
+
+    /**
+     * Get the counter id used to represent the channel status.
+     *
+     * @return the counter id used to represent the channel status.
+     */
+    inline std::int32_t channelStatusId() const
+    {
+        return m_channelStatusId;
     }
 
     /**
@@ -243,7 +275,7 @@ public:
      * {@link #ADMIN_ACTION} or {@link #CLOSED}.
      */
     inline std::int64_t offer(
-        concurrent::AtomicBuffer& buffer,
+        const concurrent::AtomicBuffer& buffer,
         util::index_t offset,
         util::index_t length,
         const on_reserved_value_supplier_t& reservedValueSupplier)
@@ -258,9 +290,8 @@ public:
             const std::int64_t rawTail = termAppender->rawTailVolatile();
             const std::int64_t termOffset = rawTail & 0xFFFFFFFF;
             const std::int32_t termId = LogBufferDescriptor::termId(rawTail);
-            const std::int64_t position =
-                LogBufferDescriptor::computeTermBeginPosition(
-                    termId, m_positionBitsToShift, m_initialTermId) + termOffset;
+            const std::int64_t position = LogBufferDescriptor::computeTermBeginPosition(
+                termId, m_positionBitsToShift, m_initialTermId) + termOffset;
 
             if (termCount != (termId - m_initialTermId))
             {
@@ -277,14 +308,13 @@ public:
                 }
                 else
                 {
-                    checkForMaxMessageLength(length);
+                    checkMaxMessageLength(length);
                     resultingOffset = termAppender->appendFragmentedMessage(
                         m_headerWriter, buffer, offset, length, m_maxPayloadLength, reservedValueSupplier, termId);
                 }
 
-                newPosition =
-                    Publication::newPosition(
-                        termCount, static_cast<std::int32_t>(termOffset), termId, position, resultingOffset);
+                newPosition = Publication::newPosition(
+                    termCount, static_cast<std::int32_t>(termOffset), termId, position, resultingOffset);
             }
             else
             {
@@ -304,7 +334,7 @@ public:
      * @return The new stream position, otherwise {@link #NOT_CONNECTED}, {@link #BACK_PRESSURED},
      * {@link #ADMIN_ACTION} or {@link #CLOSED}.
      */
-    inline std::int64_t offer(concurrent::AtomicBuffer& buffer, util::index_t offset, util::index_t length)
+    inline std::int64_t offer(const concurrent::AtomicBuffer& buffer, util::index_t offset, util::index_t length)
     {
         return offer(buffer, offset, length, DEFAULT_RESERVED_VALUE_SUPPLIER);
     }
@@ -315,7 +345,7 @@ public:
      * @param buffer containing message.
      * @return The new stream position on success, otherwise {@link BACK_PRESSURED} or {@link NOT_CONNECTED}.
      */
-    inline std::int64_t offer(concurrent::AtomicBuffer& buffer)
+    inline std::int64_t offer(const concurrent::AtomicBuffer& buffer)
     {
         return offer(buffer, 0, buffer.capacity());
     }
@@ -340,7 +370,10 @@ public:
             if (AERON_COND_EXPECT(length + it->capacity() < 0, false))
             {
                 throw aeron::util::IllegalStateException(
-                    aeron::util::strPrintf("length overflow: %d + %d -> %d", length, it->capacity(), length + it->capacity()),
+                    aeron::util::strPrintf("length overflow: %d + %d -> %d",
+                        length,
+                        it->capacity(),
+                        length + it->capacity()),
                     SOURCEINFO);
             }
 
@@ -357,9 +390,8 @@ public:
             const std::int64_t rawTail = termAppender->rawTailVolatile();
             const std::int64_t termOffset = rawTail & 0xFFFFFFFF;
             const std::int32_t termId = LogBufferDescriptor::termId(rawTail);
-            const std::int64_t position =
-                LogBufferDescriptor::computeTermBeginPosition(
-                    termId, m_positionBitsToShift, m_initialTermId) + termOffset;
+            const std::int64_t position = LogBufferDescriptor::computeTermBeginPosition(
+                termId, m_positionBitsToShift, m_initialTermId) + termOffset;
 
             if (termCount != (termId - m_initialTermId))
             {
@@ -376,14 +408,13 @@ public:
                 }
                 else
                 {
-                    checkForMaxMessageLength(length);
+                    checkMaxMessageLength(length);
                     resultingOffset = termAppender->appendFragmentedMessage(
                         m_headerWriter, startBuffer, length, m_maxPayloadLength, reservedValueSupplier, termId);
                 }
 
-                newPosition =
-                    Publication::newPosition(
-                        termCount, static_cast<std::int32_t>(termOffset), termId, position, resultingOffset);
+                newPosition = Publication::newPosition(
+                    termCount, static_cast<std::int32_t>(termOffset), termId, position, resultingOffset);
             }
             else
             {
@@ -460,7 +491,7 @@ public:
      */
     inline std::int64_t tryClaim(util::index_t length, concurrent::logbuffer::BufferClaim& bufferClaim)
     {
-        checkForMaxPayloadLength(length);
+        checkPayloadLength(length);
         std::int64_t newPosition = PUBLICATION_CLOSED;
 
         if (!isClosed())
@@ -471,9 +502,8 @@ public:
             const std::int64_t rawTail = termAppender->rawTailVolatile();
             const std::int64_t termOffset = rawTail & 0xFFFFFFFF;
             const std::int32_t termId = LogBufferDescriptor::termId(rawTail);
-            const std::int64_t position =
-                LogBufferDescriptor::computeTermBeginPosition(
-                    termId, m_positionBitsToShift, m_initialTermId) + termOffset;
+            const std::int64_t position = LogBufferDescriptor::computeTermBeginPosition(
+                termId, m_positionBitsToShift, m_initialTermId) + termOffset;
 
             if (termCount != (termId - m_initialTermId))
             {
@@ -483,9 +513,8 @@ public:
             if (position < limit)
             {
                 const std::int32_t resultingOffset = termAppender->claim(m_headerWriter, length, bufferClaim, termId);
-                newPosition =
-                    Publication::newPosition(
-                        termCount, static_cast<std::int32_t>(termOffset), termId, position, resultingOffset);
+                newPosition = Publication::newPosition(
+                    termCount, static_cast<std::int32_t>(termOffset), termId, position, resultingOffset);
             }
             else
             {
@@ -510,6 +539,13 @@ public:
      */
     void removeDestination(const std::string& endpointChannel);
 
+    /**
+     * Get the status for the channel of this {@link Publication}
+     *
+     * @return status code for this channel
+     */
+    std::int64_t channelStatus();
+
     /// @cond HIDDEN_SYMBOLS
     inline void close()
     {
@@ -531,6 +567,7 @@ private:
     std::int32_t m_maxMessageLength;
     std::int32_t m_positionBitsToShift;
     ReadablePosition<UnsafeBufferPosition> m_publicationLimit;
+    std::int32_t m_channelStatusId;
     std::atomic<bool> m_isClosed = { false };
 
     std::shared_ptr<LogBuffers> m_logbuffers;
@@ -574,21 +611,21 @@ private:
         return NOT_CONNECTED;
     }
 
-    inline void checkForMaxMessageLength(const util::index_t length)
+    inline void checkMaxMessageLength(const util::index_t length) const
     {
         if (length > m_maxMessageLength)
         {
-            throw util::IllegalStateException(
+            throw util::IllegalArgumentException(
                 util::strPrintf("Encoded message exceeds maxMessageLength of %d, length=%d",
                     m_maxMessageLength, length), SOURCEINFO);
         }
     }
 
-    inline void checkForMaxPayloadLength(const util::index_t length)
+    inline void checkPayloadLength(const util::index_t length) const
     {
         if (length > m_maxPayloadLength)
         {
-            throw util::IllegalStateException(
+            throw util::IllegalArgumentException(
                 util::strPrintf("Encoded message exceeds maxPayloadLength of %d, length=%d",
                     m_maxPayloadLength, length), SOURCEINFO);
         }

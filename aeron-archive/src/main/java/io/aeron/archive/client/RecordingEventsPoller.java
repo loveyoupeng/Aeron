@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,6 +15,7 @@
  */
 package io.aeron.archive.client;
 
+import io.aeron.Aeron;
 import io.aeron.Subscription;
 import io.aeron.archive.codecs.MessageHeaderDecoder;
 import io.aeron.archive.codecs.RecordingProgressDecoder;
@@ -38,10 +39,15 @@ public class RecordingEventsPoller implements FragmentHandler
     private int templateId;
     private boolean pollComplete;
 
+    private long recordingId;
+    private long recordingStartPosition;
+    private long recordingPosition;
+    private long recordingStopPosition;
+
     /**
      * Create a poller for a given subscription to an archive for recording events.
      *
-     * @param subscription  to poll for new events.
+     * @param subscription to poll for new events.
      */
     public RecordingEventsPoller(final Subscription subscription)
     {
@@ -49,13 +55,13 @@ public class RecordingEventsPoller implements FragmentHandler
     }
 
     /**
-     * Poll for recording events and dispatch them to the {@link RecordingEventsListener} for this instance.
+     * Poll for recording events.
      *
      * @return the number of fragments read during the operation. Zero if no events are available.
      */
     public int poll()
     {
-        templateId = -1;
+        templateId = Aeron.NULL_VALUE;
         pollComplete = false;
 
         return subscription.poll(this, 1);
@@ -81,6 +87,46 @@ public class RecordingEventsPoller implements FragmentHandler
         return templateId;
     }
 
+    /**
+     * Get the recording id of the last received event.
+     *
+     * @return the recording id of the last received event.
+     */
+    public long recordingId()
+    {
+        return recordingId;
+    }
+
+    /**
+     * Get the position the recording started at.
+     *
+     * @return the position the recording started at.
+     */
+    public long recordingStartPosition()
+    {
+        return recordingStartPosition;
+    }
+
+    /**
+     * Get the current recording position.
+     *
+     * @return the current recording position.
+     */
+    public long recordingPosition()
+    {
+        return recordingPosition;
+    }
+
+    /**
+     * Get the position the recording stopped at.
+     *
+     * @return the position the recording stopped at.
+     */
+    public long recordingStopPosition()
+    {
+        return recordingStopPosition;
+    }
+
     public void onFragment(final DirectBuffer buffer, final int offset, final int length, final Header header)
     {
         messageHeaderDecoder.wrap(buffer, offset);
@@ -94,6 +140,11 @@ public class RecordingEventsPoller implements FragmentHandler
                     offset + MessageHeaderDecoder.ENCODED_LENGTH,
                     messageHeaderDecoder.blockLength(),
                     messageHeaderDecoder.version());
+
+                recordingId = recordingStartedDecoder.recordingId();
+                recordingStartPosition = recordingStartedDecoder.startPosition();
+                recordingPosition = recordingStartPosition;
+                recordingStopPosition = Aeron.NULL_VALUE;
                 break;
 
             case RecordingProgressDecoder.TEMPLATE_ID:
@@ -102,6 +153,11 @@ public class RecordingEventsPoller implements FragmentHandler
                     offset + MessageHeaderDecoder.ENCODED_LENGTH,
                     messageHeaderDecoder.blockLength(),
                     messageHeaderDecoder.version());
+
+                recordingId = recordingProgressDecoder.recordingId();
+                recordingStartPosition = recordingProgressDecoder.startPosition();
+                recordingPosition = recordingProgressDecoder.position();
+                recordingStopPosition = Aeron.NULL_VALUE;
                 break;
 
             case RecordingStoppedDecoder.TEMPLATE_ID:
@@ -110,32 +166,17 @@ public class RecordingEventsPoller implements FragmentHandler
                     offset + MessageHeaderDecoder.ENCODED_LENGTH,
                     messageHeaderDecoder.blockLength(),
                     messageHeaderDecoder.version());
+
+                recordingId = recordingStoppedDecoder.recordingId();
+                recordingStartPosition = recordingStoppedDecoder.startPosition();
+                recordingStopPosition = recordingStoppedDecoder.stopPosition();
+                recordingPosition = recordingStopPosition;
                 break;
 
             default:
-                throw new IllegalStateException("Unknown templateId: " + templateId);
+                throw new ArchiveException("unknown templateId: " + templateId);
         }
 
         pollComplete = true;
-    }
-
-    public MessageHeaderDecoder messageHeaderDecoder()
-    {
-        return messageHeaderDecoder;
-    }
-
-    public RecordingStartedDecoder recordingStartedDecoder()
-    {
-        return recordingStartedDecoder;
-    }
-
-    public RecordingProgressDecoder recordingProgressDecoder()
-    {
-        return recordingProgressDecoder;
-    }
-
-    public RecordingStoppedDecoder recordingStoppedDecoder()
-    {
-        return recordingStoppedDecoder;
     }
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,50 +16,49 @@
 package io.aeron.archive;
 
 import io.aeron.Aeron;
+import io.aeron.CommonContext;
+import io.aeron.Image;
 import io.aeron.archive.client.AeronArchive;
+import io.aeron.archive.client.ArchiveException;
+import io.aeron.logbuffer.LogBufferDescriptor;
+import org.agrona.BitUtil;
 import org.agrona.CloseHelper;
 import org.agrona.ErrorHandler;
 import org.agrona.IoUtil;
-import org.agrona.LangUtil;
 import org.agrona.concurrent.*;
 import org.agrona.concurrent.status.AtomicCounter;
-import org.agrona.concurrent.status.CountersManager;
 import org.agrona.concurrent.status.StatusIndicator;
 
 import java.io.File;
+import java.io.IOException;
+import java.nio.channels.FileChannel;
+import java.util.Objects;
 import java.util.concurrent.ThreadFactory;
-import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 
+import static io.aeron.driver.status.SystemCounterDescriptor.SYSTEM_COUNTER_TYPE_ID;
+import static io.aeron.logbuffer.LogBufferDescriptor.TERM_MAX_LENGTH;
+import static io.aeron.logbuffer.LogBufferDescriptor.TERM_MIN_LENGTH;
+import static org.agrona.SystemUtil.getSizeAsInt;
+import static org.agrona.SystemUtil.loadPropertiesFiles;
+
 /**
- * The Aeron Archive which allows for the archival of {@link io.aeron.Publication}s and
- * {@link io.aeron.ExclusivePublication}s. It expects to be launched in the same process as a Java
- * {@link io.aeron.driver.MediaDriver}.
+ * The Aeron Archive which allows for the recording and replay of local and remote {@link io.aeron.Publication}s .
  */
-public final class Archive implements AutoCloseable
+public class Archive implements AutoCloseable
 {
     private final Context ctx;
     private final AgentRunner conductorRunner;
     private final AgentInvoker conductorInvoker;
-    private final Aeron aeron;
 
-    private Archive(final Context ctx)
+    Archive(final Context ctx)
     {
         this.ctx = ctx;
         ctx.conclude();
 
-        ctx.aeronContext
-            .errorHandler(ctx.countedErrorHandler())
-            .driverAgentInvoker(ctx.mediaDriverAgentInvoker())
-            .useConductorAgentInvoker(true)
-            .clientLock(new NoOpLock());
-
-        aeron = Aeron.connect(ctx.aeronContext);
-
-        final ArchiveConductor conductor =
-            ArchiveThreadingMode.DEDICATED == ctx.threadingMode() ?
-                new DedicatedModeArchiveConductor(aeron, ctx) :
-                new SharedModeArchiveConductor(aeron, ctx);
+        final ArchiveConductor conductor = ArchiveThreadingMode.DEDICATED == ctx.threadingMode() ?
+            new DedicatedModeArchiveConductor(ctx) :
+            new SharedModeArchiveConductor(ctx);
 
         if (ArchiveThreadingMode.INVOKER == ctx.threadingMode())
         {
@@ -70,6 +69,24 @@ public final class Archive implements AutoCloseable
         {
             conductorInvoker = null;
             conductorRunner = new AgentRunner(ctx.idleStrategy(), ctx.errorHandler(), ctx.errorCounter(), conductor);
+        }
+    }
+
+    /**
+     * Launch an {@link Archive} with that communicates with an out of process {@link io.aeron.driver.MediaDriver}
+     * and await a shutdown signal.
+     *
+     * @param args command line argument which is a list for properties files as URLs or filenames.
+     */
+    public static void main(final String[] args)
+    {
+        loadPropertiesFiles(args);
+
+        try (Archive ignore = launch())
+        {
+            new ShutdownSignalBarrier().await();
+
+            System.out.println("Shutdown Archive...");
         }
     }
 
@@ -87,7 +104,7 @@ public final class Archive implements AutoCloseable
     {
         CloseHelper.close(conductorInvoker);
         CloseHelper.close(conductorRunner);
-        CloseHelper.close(aeron);
+        CloseHelper.close(ctx);
     }
 
     private Archive start()
@@ -129,7 +146,7 @@ public final class Archive implements AutoCloseable
      * Launch an Archive by providing a configuration context.
      *
      * @param ctx for the configuration parameters.
-     * @return  a new instance of an Archive.
+     * @return a new instance of an Archive.
      */
     public static Archive launch(final Context ctx)
     {
@@ -143,27 +160,21 @@ public final class Archive implements AutoCloseable
      */
     public static class Configuration
     {
-        public static final int ARCHIVE_RECORDING_POSITION_TYPE_ID = 100;
-
         public static final String ARCHIVE_DIR_PROP_NAME = "aeron.archive.dir";
-        public static final String ARCHIVE_DIR_DEFAULT = "archive";
+        public static final String ARCHIVE_DIR_DEFAULT = "aeron-archive";
 
-        static final String CATALOG_FILE_NAME = "archive.catalog";
-        static final String RECORDING_SEGMENT_POSTFIX = ".rec";
         public static final String SEGMENT_FILE_LENGTH_PROP_NAME = "aeron.archive.segment.file.length";
         public static final int SEGMENT_FILE_LENGTH_DEFAULT = 128 * 1024 * 1024;
 
         public static final String FILE_SYNC_LEVEL_PROP_NAME = "aeron.archive.file.sync.level";
         public static final int FILE_SYNC_LEVEL_DEFAULT = 0;
 
-        public static final String THREADING_MODE_PROP_NAME = "aeron.archive.threading.mode";
-        public static final String ARCHIVER_IDLE_STRATEGY_PROP_NAME = "aeron.archive.idle.strategy";
-        public static final String DEFAULT_IDLE_STRATEGY = "org.agrona.concurrent.BackoffIdleStrategy";
+        public static final String CATALOG_FILE_SYNC_LEVEL_PROP_NAME = "aeron.archive.catalog.file.sync.level";
+        public static final int CATALOG_FILE_SYNC_LEVEL_DEFAULT = FILE_SYNC_LEVEL_DEFAULT;
 
-        static final long AGENT_IDLE_MAX_SPINS = 100;
-        static final long AGENT_IDLE_MAX_YIELDS = 100;
-        static final long AGENT_IDLE_MIN_PARK_NS = 1;
-        static final long AGENT_IDLE_MAX_PARK_NS = TimeUnit.MICROSECONDS.toNanos(1000);
+        public static final String THREADING_MODE_PROP_NAME = "aeron.archive.threading.mode";
+        public static final String ARCHIVE_IDLE_STRATEGY_PROP_NAME = "aeron.archive.idle.strategy";
+        public static final String DEFAULT_IDLE_STRATEGY = "org.agrona.concurrent.BackoffIdleStrategy";
 
         public static final String MAX_CONCURRENT_RECORDINGS_PROP_NAME = "aeron.archive.max.concurrent.recordings";
         public static final int MAX_CONCURRENT_RECORDINGS_DEFAULT = 128;
@@ -172,109 +183,170 @@ public final class Archive implements AutoCloseable
         public static final int MAX_CONCURRENT_REPLAYS_DEFAULT = 128;
 
         public static final String REPLAY_FRAGMENT_LIMIT_PROP_NAME = "aeron.archive.replay.fragment.limit";
-        public static final int REPLAY_FRAGMENT_LIMIT_DEFAULT = 16;
+        public static final int REPLAY_FRAGMENT_LIMIT_DEFAULT = 64;
 
-        private static final String CONTROLLABLE_IDLE_STRATEGY = "org.agrona.concurrent.ControllableIdleStrategy";
+        public static final String MAX_CATALOG_ENTRIES_PROP_NAME = "aeron.archive.max.catalog.entries";
+        public static final long MAX_CATALOG_ENTRIES_DEFAULT = Catalog.DEFAULT_MAX_ENTRIES;
 
+        static final String CATALOG_FILE_NAME = "archive.catalog";
+        static final String RECORDING_SEGMENT_POSTFIX = ".rec";
+
+        /**
+         * Get the directory name to be used for storing the archive.
+         *
+         * @return the directory name to be used for storing the archive.
+         */
         public static String archiveDirName()
         {
             return System.getProperty(ARCHIVE_DIR_PROP_NAME, ARCHIVE_DIR_DEFAULT);
         }
 
+        /**
+         * The length of file to be used for storing recording segments that must be a power of 2.
+         * <p>
+         * If the {@link Image#termBufferLength()} is greater then this will take priority.
+         *
+         * @return length of file to be used for storing recording segments.
+         */
         public static int segmentFileLength()
         {
-            return Integer.getInteger(SEGMENT_FILE_LENGTH_PROP_NAME, SEGMENT_FILE_LENGTH_DEFAULT);
+            return getSizeAsInt(SEGMENT_FILE_LENGTH_PROP_NAME, SEGMENT_FILE_LENGTH_DEFAULT);
         }
 
+        /**
+         * The level at which files should be sync'ed to disk.
+         * <ul>
+         * <li>0 - normal writes.</li>
+         * <li>1 - sync file data.</li>
+         * <li>2 - sync file data + metadata.</li>
+         * </ul>
+         *
+         * @return level at which files should be sync'ed to disk.
+         */
         public static int fileSyncLevel()
         {
             return Integer.getInteger(FILE_SYNC_LEVEL_PROP_NAME, FILE_SYNC_LEVEL_DEFAULT);
         }
 
+        /**
+         * The level at which the catalog file should be sync'ed to disk.
+         * <ul>
+         * <li>0 - normal writes.</li>
+         * <li>1 - sync file data.</li>
+         * <li>2 - sync file data + metadata.</li>
+         * </ul>
+         *
+         * @return level at which files should be sync'ed to disk.
+         */
+        public static int catalogFileSyncLevel()
+        {
+            return Integer.getInteger(CATALOG_FILE_SYNC_LEVEL_PROP_NAME, CATALOG_FILE_SYNC_LEVEL_DEFAULT);
+        }
+
+        /**
+         * The threading mode to be employed by the archive.
+         *
+         * @return the threading mode to be employed by the archive.
+         */
         public static ArchiveThreadingMode threadingMode()
         {
             return ArchiveThreadingMode.valueOf(System.getProperty(
                 THREADING_MODE_PROP_NAME, ArchiveThreadingMode.DEDICATED.name()));
         }
 
+        /**
+         * Create a supplier of {@link IdleStrategy}s that will use the system property.
+         *
+         * @param controllableStatus if a {@link org.agrona.concurrent.ControllableIdleStrategy} is required.
+         * @return the new idle strategy
+         */
         public static Supplier<IdleStrategy> idleStrategySupplier(final StatusIndicator controllableStatus)
         {
-            final String strategyName = System.getProperty(ARCHIVER_IDLE_STRATEGY_PROP_NAME, DEFAULT_IDLE_STRATEGY);
             return () ->
             {
-                IdleStrategy idleStrategy = null;
-                switch (strategyName)
-                {
-                    case DEFAULT_IDLE_STRATEGY:
-                        idleStrategy = new BackoffIdleStrategy(
-                            AGENT_IDLE_MAX_SPINS,
-                            AGENT_IDLE_MAX_YIELDS,
-                            AGENT_IDLE_MIN_PARK_NS,
-                            AGENT_IDLE_MAX_PARK_NS);
-                        break;
-
-                    case CONTROLLABLE_IDLE_STRATEGY:
-                        idleStrategy = new ControllableIdleStrategy(controllableStatus);
-                        controllableStatus.setOrdered(ControllableIdleStrategy.PARK);
-                        break;
-
-                    default:
-                        try
-                        {
-                            idleStrategy = (IdleStrategy)Class.forName(strategyName).newInstance();
-                        }
-                        catch (final Exception ex)
-                        {
-                            LangUtil.rethrowUnchecked(ex);
-                        }
-                        break;
-                }
-
-                return idleStrategy;
+                final String name = System.getProperty(ARCHIVE_IDLE_STRATEGY_PROP_NAME, DEFAULT_IDLE_STRATEGY);
+                return io.aeron.driver.Configuration.agentIdleStrategy(name, controllableStatus);
             };
         }
 
+        /**
+         * The maximum number of recordings that can operate concurrently after which new requests will be rejected.
+         *
+         * @return the maximum number of recordings that can operate concurrently.
+         */
         public static int maxConcurrentRecordings()
         {
             return Integer.getInteger(MAX_CONCURRENT_RECORDINGS_PROP_NAME, MAX_CONCURRENT_RECORDINGS_DEFAULT);
         }
 
+        /**
+         * The maximum number of replays that can operate concurrently after which new requests will be rejected.
+         *
+         * @return the maximum number of replays that can operate concurrently.
+         */
         public static int maxConcurrentReplays()
         {
             return Integer.getInteger(MAX_CONCURRENT_REPLAYS_PROP_NAME, MAX_CONCURRENT_REPLAYS_DEFAULT);
         }
 
+        /**
+         * Limit for the number of fragments to be replayed per duty cycle on a replay.
+         *
+         * @return the limit for the number of fragments to be replayed per duty cycle on a replay.
+         */
         public static int replayFragmentLimit()
         {
             return Integer.getInteger(REPLAY_FRAGMENT_LIMIT_PROP_NAME, REPLAY_FRAGMENT_LIMIT_DEFAULT);
+        }
+
+        /**
+         * Maximum number of catalog entries to allocate for the catalog file.
+         *
+         * @return the maximum number of catalog entries to support for the catalog file.
+         */
+        public static long maxCatalogEntries()
+        {
+            return Long.getLong(MAX_CATALOG_ENTRIES_PROP_NAME, MAX_CATALOG_ENTRIES_DEFAULT);
         }
     }
 
     /**
      * Overrides for the defaults and system properties.
      */
-    public static class Context
+    public static class Context implements AutoCloseable, Cloneable
     {
-        private Aeron.Context aeronContext;
+        private boolean deleteArchiveOnStart = false;
+        private boolean ownsAeronClient = false;
+        private String aeronDirectoryName = CommonContext.getAeronDirectoryName();
+        private Aeron aeron;
         private File archiveDir;
+        private String archiveDirectoryName = Configuration.archiveDirName();
+        private FileChannel archiveDirChannel;
+        private Catalog catalog;
+        private ArchiveMarkFile markFile;
 
         private String controlChannel = AeronArchive.Configuration.controlChannel();
         private int controlStreamId = AeronArchive.Configuration.controlStreamId();
-
+        private String localControlChannel = AeronArchive.Configuration.localControlChannel();
+        private int localControlStreamId = AeronArchive.Configuration.localControlStreamId();
+        private boolean controlTermBufferSparse = AeronArchive.Configuration.controlTermBufferSparse();
+        private int controlTermBufferLength = AeronArchive.Configuration.controlTermBufferLength();
+        private int controlMtuLength = AeronArchive.Configuration.controlMtuLength();
         private String recordingEventsChannel = AeronArchive.Configuration.recordingEventsChannel();
         private int recordingEventsStreamId = AeronArchive.Configuration.recordingEventsStreamId();
 
+        private long maxCatalogEntries = Configuration.maxCatalogEntries();
         private int segmentFileLength = Configuration.segmentFileLength();
         private int fileSyncLevel = Configuration.fileSyncLevel();
+        private int catalogFileSyncLevel = Configuration.catalogFileSyncLevel();
 
         private ArchiveThreadingMode threadingMode = Configuration.threadingMode();
-        private ThreadFactory threadFactory = Thread::new;
+        private ThreadFactory threadFactory;
 
         private Supplier<IdleStrategy> idleStrategySupplier;
         private EpochClock epochClock;
 
         private ErrorHandler errorHandler;
-        private CountersManager countersManager;
         private AtomicCounter errorCounter;
         private CountedErrorHandler countedErrorHandler;
 
@@ -283,37 +355,72 @@ public final class Archive implements AutoCloseable
         private int maxConcurrentReplays = Configuration.maxConcurrentReplays();
 
         /**
+         * Perform a shallow copy of the object.
+         *
+         * @return a shallow copy of the object.
+         */
+        public Context clone()
+        {
+            try
+            {
+                return (Context)super.clone();
+            }
+            catch (final CloneNotSupportedException ex)
+            {
+                throw new RuntimeException(ex);
+            }
+        }
+
+        /**
          * Conclude the configuration parameters by resolving dependencies and null values to use defaults.
          */
         public void conclude()
         {
-            if (null == errorHandler)
+            Objects.requireNonNull(errorHandler, "Error handler must be supplied");
+
+            if (null == epochClock)
             {
-                throw new IllegalStateException("Error handler must be externally supplied");
+                epochClock = new SystemEpochClock();
             }
 
-            if (null == countersManager)
+            if (null == aeron)
             {
-                throw new IllegalStateException("Counter manager must be externally supplied");
+                ownsAeronClient = true;
+
+                aeron = Aeron.connect(
+                    new Aeron.Context()
+                        .aeronDirectoryName(aeronDirectoryName)
+                        .errorHandler(errorHandler)
+                        .epochClock(epochClock)
+                        .driverAgentInvoker(mediaDriverAgentInvoker)
+                        .useConductorAgentInvoker(true)
+                        .clientLock(new NoOpLock()));
+
+                if (null == errorCounter)
+                {
+                    errorCounter = aeron.addCounter(SYSTEM_COUNTER_TYPE_ID, "Archive errors");
+                }
             }
 
-            if (null == aeronContext)
+            if (null == aeron.conductorAgentInvoker())
             {
-                aeronContext = new Aeron.Context();
+                throw new ArchiveException("Aeron client must use conductor agent invoker");
             }
 
-            errorCounter = countersManager.newCounter("Archive errors");
-            countedErrorHandler = new CountedErrorHandler(errorHandler, errorCounter);
+            Objects.requireNonNull(errorCounter, "Error counter must be supplied if aeron client is");
 
-            if (null == archiveDir)
+            if (null == countedErrorHandler)
             {
-                archiveDir = new File(Configuration.archiveDirName());
+                countedErrorHandler = new CountedErrorHandler(errorHandler, errorCounter);
+                if (ownsAeronClient)
+                {
+                    aeron.context().errorHandler(countedErrorHandler);
+                }
             }
 
-            if (!archiveDir.exists() && !archiveDir.mkdirs())
+            if (null == threadFactory)
             {
-                throw new IllegalArgumentException(
-                    "Failed to create archive dir: " + archiveDir.getAbsolutePath());
+                threadFactory = Thread::new;
             }
 
             if (null == idleStrategySupplier)
@@ -321,34 +428,89 @@ public final class Archive implements AutoCloseable
                 idleStrategySupplier = Configuration.idleStrategySupplier(null);
             }
 
-            if (null == epochClock)
+            if (null == archiveDir)
             {
-                epochClock = new SystemEpochClock();
+                archiveDir = new File(archiveDirectoryName);
+            }
+
+            if (deleteArchiveOnStart && archiveDir.exists())
+            {
+                IoUtil.delete(archiveDir, false);
+            }
+
+            if (!archiveDir.exists() && !archiveDir.mkdirs())
+            {
+                throw new ArchiveException(
+                    "failed to create archive dir: " + archiveDir.getAbsolutePath());
+            }
+
+            archiveDirChannel = channelForDirectorySync(archiveDir, catalogFileSyncLevel);
+
+            if (!BitUtil.isPowerOfTwo(segmentFileLength))
+            {
+                throw new ArchiveException("segment file length not a power of 2: " + segmentFileLength);
+            }
+            else if (segmentFileLength < TERM_MIN_LENGTH || segmentFileLength > TERM_MAX_LENGTH)
+            {
+                throw new ArchiveException("segment file length not in valid range: " + segmentFileLength);
+            }
+
+            if (null == markFile)
+            {
+                markFile = new ArchiveMarkFile(this);
+            }
+
+            if (null == catalog)
+            {
+                catalog = new Catalog(
+                    archiveDir, archiveDirChannel, catalogFileSyncLevel, maxCatalogEntries, epochClock);
             }
         }
 
         /**
-         * Get the Aeron client context used by the Archive.
+         * Should an existing archive be deleted on start. Useful only for testing.
          *
-         * @return Aeron client context used by the Archive
+         * @param deleteArchiveOnStart true if an existing archive should be deleted on startup.
+         * @return this for a fluent API.
          */
-        public Aeron.Context aeronContext()
+        public Context deleteArchiveOnStart(final boolean deleteArchiveOnStart)
         {
-            return aeronContext;
+            this.deleteArchiveOnStart = deleteArchiveOnStart;
+            return this;
         }
 
         /**
-         * Provide an {@link Aeron.Context} for configuring the connection to Aeron.
-         * <p>
-         * If not provided then a default context will be created.
+         * Should an existing archive be deleted on start. Useful only for testing.
          *
-         * @param aeronContext for configuring the connection to Aeron.
-         * @return this for a fluent API.
+         * @return true if an existing archive should be deleted on start up.
          */
-        public Context aeronContext(final Aeron.Context aeronContext)
+        public boolean deleteArchiveOnStart()
         {
-            this.aeronContext = aeronContext;
+            return deleteArchiveOnStart;
+        }
+
+        /**
+         * Set the directory name to be used for the archive to store recordings and the {@link Catalog}.
+         * This name is used if {@link #archiveDir(File)} is not set.
+         *
+         * @param archiveDirectoryName to store recordings and the {@link Catalog}.
+         * @return this for a fluent API.
+         * @see Configuration#ARCHIVE_DIR_PROP_NAME
+         */
+        public Context archiveDirectoryName(final String archiveDirectoryName)
+        {
+            this.archiveDirectoryName = archiveDirectoryName;
             return this;
+        }
+
+        /**
+         * Get the directory name to be used to store recordings and the {@link Catalog}.
+         *
+         * @return the directory name to be used for the archive to store recordings and the {@link Catalog}.
+         */
+        public String archiveDirectoryName()
+        {
+            return archiveDirectoryName;
         }
 
         /**
@@ -362,9 +524,9 @@ public final class Archive implements AutoCloseable
         }
 
         /**
-         * Set the directory in which the Archive will store recordings/index/counters etc.
+         * Set the the directory in which the Archive will store recordings and the {@link Catalog}.
          *
-         * @param archiveDir the directory in which the Archive will store recordings/index/counters etc
+         * @param archiveDir the directory in which the Archive will store recordings and the {@link Catalog}.
          * @return this for a fluent API.
          */
         public Context archiveDir(final File archiveDir)
@@ -374,9 +536,21 @@ public final class Archive implements AutoCloseable
         }
 
         /**
+         * Get the {@link FileChannel} for the directory in which the Archive will store recordings and the
+         * {@link Catalog}. This can be used for sync'ing the directory.
+         *
+         * @return the directory in which the Archive will store recordings and the {@link Catalog}.
+         */
+        public FileChannel archiveDirChannel()
+        {
+            return archiveDirChannel;
+        }
+
+        /**
          * Get the channel URI on which the control request subscription will listen.
          *
          * @return the channel URI on which the control request subscription will listen.
+         * @see AeronArchive.Configuration#CONTROL_CHANNEL_PROP_NAME
          */
         public String controlChannel()
         {
@@ -388,6 +562,7 @@ public final class Archive implements AutoCloseable
          *
          * @param controlChannel channel URI on which the control request subscription will listen.
          * @return this for a fluent API.
+         * @see AeronArchive.Configuration#CONTROL_CHANNEL_PROP_NAME
          */
         public Context controlChannel(final String controlChannel)
         {
@@ -399,6 +574,7 @@ public final class Archive implements AutoCloseable
          * Get the stream id on which the control request subscription will listen.
          *
          * @return the stream id on which the control request subscription will listen.
+         * @see AeronArchive.Configuration#CONTROL_STREAM_ID_PROP_NAME
          */
         public int controlStreamId()
         {
@@ -410,6 +586,7 @@ public final class Archive implements AutoCloseable
          *
          * @param controlStreamId stream id on which the control request subscription will listen.
          * @return this for a fluent API.
+         * @see AeronArchive.Configuration#CONTROL_STREAM_ID_PROP_NAME
          */
         public Context controlStreamId(final int controlStreamId)
         {
@@ -418,9 +595,130 @@ public final class Archive implements AutoCloseable
         }
 
         /**
+         * Get the driver local channel URI on which the control request subscription will listen.
+         *
+         * @return the channel URI on which the control request subscription will listen.
+         * @see AeronArchive.Configuration#LOCAL_CONTROL_CHANNEL_PROP_NAME
+         */
+        public String localControlChannel()
+        {
+            return localControlChannel;
+        }
+
+        /**
+         * Set the driver local channel URI on which the control request subscription will listen.
+         *
+         * @param controlChannel channel URI on which the control request subscription will listen.
+         * @return this for a fluent API.
+         * @see AeronArchive.Configuration#LOCAL_CONTROL_CHANNEL_PROP_NAME
+         */
+        public Context localControlChannel(final String controlChannel)
+        {
+            this.localControlChannel = controlChannel;
+            return this;
+        }
+
+        /**
+         * Get the local stream id on which the control request subscription will listen.
+         *
+         * @return the stream id on which the control request subscription will listen.
+         * @see AeronArchive.Configuration#LOCAL_CONTROL_STREAM_ID_PROP_NAME
+         */
+        public int localControlStreamId()
+        {
+            return localControlStreamId;
+        }
+
+        /**
+         * Should the control streams use sparse file term buffers.
+         *
+         * @param controlTermBufferSparse for the control stream.
+         * @return this for a fluent API.
+         * @see AeronArchive.Configuration#CONTROL_TERM_BUFFER_SPARSE_PARAM_NAME
+         */
+        public Context controlTermBufferSparse(final boolean controlTermBufferSparse)
+        {
+            this.controlTermBufferSparse = controlTermBufferSparse;
+            return this;
+        }
+
+        /**
+         * Should the control streams use sparse file term buffers.
+         *
+         * @return true if the control stream should use sparse file term buffers.
+         * @see AeronArchive.Configuration#CONTROL_TERM_BUFFER_SPARSE_PARAM_NAME
+         */
+        public boolean controlTermBufferSparse()
+        {
+            return controlTermBufferSparse;
+        }
+
+        /**
+         * Set the term buffer length for the control streams.
+         *
+         * @param controlTermBufferLength for the control streams.
+         * @return this for a fluent API.
+         * @see AeronArchive.Configuration#CONTROL_TERM_BUFFER_LENGTH_PARAM_NAME
+         */
+        public Context controlTermBufferLength(final int controlTermBufferLength)
+        {
+            this.controlTermBufferLength = controlTermBufferLength;
+            return this;
+        }
+
+        /**
+         * Get the term buffer length for the control streams.
+         *
+         * @return the term buffer length for the control streams.
+         * @see AeronArchive.Configuration#CONTROL_TERM_BUFFER_LENGTH_PARAM_NAME
+         */
+        public int controlTermBufferLength()
+        {
+            return controlTermBufferLength;
+        }
+
+        /**
+         * Set the MTU length for the control streams.
+         *
+         * @param controlMtuLength for the control streams.
+         * @return this for a fluent API.
+         * @see AeronArchive.Configuration#CONTROL_MTU_LENGTH_PARAM_NAME
+         */
+        public Context controlMtuLength(final int controlMtuLength)
+        {
+            this.controlMtuLength = controlMtuLength;
+            return this;
+        }
+
+        /**
+         * Get the MTU length for the control streams.
+         *
+         * @return the MTU length for the control streams.
+         * @see AeronArchive.Configuration#CONTROL_MTU_LENGTH_PARAM_NAME
+         */
+        public int controlMtuLength()
+        {
+            return controlMtuLength;
+        }
+
+        /**
+         * Set the local stream id on which the control request subscription will listen.
+         *
+         * @param controlStreamId stream id on which the control request subscription will listen.
+         * @return this for a fluent API.
+         * @see AeronArchive.Configuration#LOCAL_CONTROL_STREAM_ID_PROP_NAME
+         */
+        public Context localControlStreamId(final int controlStreamId)
+        {
+            this.localControlStreamId = controlStreamId;
+            return this;
+        }
+
+        /**
          * Get the channel URI on which the recording events publication will publish.
          *
          * @return the channel URI on which the recording events publication will publish.
+         * @see AeronArchive.Configuration#RECORDING_EVENTS_CHANNEL_PROP_NAME
          */
         public String recordingEventsChannel()
         {
@@ -435,6 +733,7 @@ public final class Archive implements AutoCloseable
          *
          * @param recordingEventsChannel channel URI on which the recording events publication will publish.
          * @return this for a fluent API.
+         * @see AeronArchive.Configuration#RECORDING_EVENTS_CHANNEL_PROP_NAME
          * @see io.aeron.CommonContext#MDC_CONTROL_PARAM_NAME
          */
         public Context recordingEventsChannel(final String recordingEventsChannel)
@@ -447,6 +746,7 @@ public final class Archive implements AutoCloseable
          * Get the stream id on which the recording events publication will publish.
          *
          * @return the stream id on which the recording events publication will publish.
+         * @see AeronArchive.Configuration#RECORDING_EVENTS_STREAM_ID_PROP_NAME
          */
         public int recordingEventsStreamId()
         {
@@ -458,6 +758,7 @@ public final class Archive implements AutoCloseable
          *
          * @param recordingEventsStreamId stream id on which the recording events publication will publish.
          * @return this for a fluent API.
+         * @see AeronArchive.Configuration#RECORDING_EVENTS_STREAM_ID_PROP_NAME
          */
         public Context recordingEventsStreamId(final int recordingEventsStreamId)
         {
@@ -488,9 +789,9 @@ public final class Archive implements AutoCloseable
         }
 
         /**
-         * Set the {@link EpochClock} to be used for tracking wall clock time when interacting with the archive.
+         * Set the {@link EpochClock} to be used for tracking wall clock time.
          *
-         * @param clock {@link EpochClock} to be used for tracking wall clock time when interacting with the archive.
+         * @param clock {@link EpochClock} to be used for tracking wall clock time.
          * @return this for a fluent API.
          */
         public Context epochClock(final EpochClock clock)
@@ -500,9 +801,9 @@ public final class Archive implements AutoCloseable
         }
 
         /**
-         * Get the {@link EpochClock} to used for tracking wall clock time within the archive.
+         * Get the {@link EpochClock} to used for tracking wall clock time.
          *
-         * @return the {@link EpochClock} to used for tracking wall clock time within the archive.
+         * @return the {@link EpochClock} to used for tracking wall clock time.
          */
         public EpochClock epochClock()
         {
@@ -520,7 +821,8 @@ public final class Archive implements AutoCloseable
         }
 
         /**
-         * Set the file length to be used for recording data segment files.
+         * Set the file length to be used for recording data segment files. If the {@link Image#termBufferLength()} is
+         * larger than the segment file length then the term length will be used.
          *
          * @param segmentFileLength the file length to be used for recording data segment files.
          * @return this for a fluent API.
@@ -560,6 +862,38 @@ public final class Archive implements AutoCloseable
         public Context fileSyncLevel(final int syncLevel)
         {
             this.fileSyncLevel = syncLevel;
+            return this;
+        }
+
+        /**
+         * Get level at which the catalog file should be sync'ed to disk.
+         * <ul>
+         * <li>0 - normal writes.</li>
+         * <li>1 - sync file data.</li>
+         * <li>2 - sync file data + metadata.</li>
+         * </ul>
+         *
+         * @return the level to be applied for file write.
+         */
+        int catalogFileSyncLevel()
+        {
+            return catalogFileSyncLevel;
+        }
+
+        /**
+         * Set level at which the catalog file should be sync'ed to disk.
+         * <ul>
+         * <li>0 - normal writes.</li>
+         * <li>1 - sync file data.</li>
+         * <li>2 - sync file data + metadata.</li>
+         * </ul>
+         *
+         * @param syncLevel to be applied for file writes.
+         * @return this for a fluent API.
+         */
+        public Context catalogFileSyncLevel(final int syncLevel)
+        {
+            this.catalogFileSyncLevel = syncLevel;
             return this;
         }
 
@@ -608,9 +942,21 @@ public final class Archive implements AutoCloseable
         }
 
         /**
-         * The {@link #errorHandler()} that will increment {@link #errorCounter()}.
+         * Non-default for context.
          *
-         * @return {@link #errorHandler()} that will increment {@link #errorCounter()}.
+         * @param countedErrorHandler to override the default.
+         * @return this for a fluent API.
+         */
+        public Context countedErrorHandler(final CountedErrorHandler countedErrorHandler)
+        {
+            this.countedErrorHandler = countedErrorHandler;
+            return this;
+        }
+
+        /**
+         * The {@link #errorHandler()} that will increment {@link #errorCounter()} by default.
+         *
+         * @return {@link #errorHandler()} that will increment {@link #errorCounter()} by default.
          */
         public CountedErrorHandler countedErrorHandler()
         {
@@ -663,9 +1009,26 @@ public final class Archive implements AutoCloseable
             return this;
         }
 
+        /**
+         * Get the error counter that will record the number of errors observed.
+         *
+         * @return the error counter that will record the number of errors observed.
+         */
         public AtomicCounter errorCounter()
         {
             return errorCounter;
+        }
+
+        /**
+         * Set the error counter that will record the number of errors observed.
+         *
+         * @param errorCounter the error counter that will record the number of errors observed.
+         * @return this for a fluent API.
+         */
+        public Context errorCounter(final AtomicCounter errorCounter)
+        {
+            this.errorCounter = errorCounter;
+            return this;
         }
 
         /**
@@ -713,28 +1076,6 @@ public final class Archive implements AutoCloseable
         }
 
         /**
-         * The {@link CountersManager} used for shared resource between the embedded media driver and the archive.
-         *
-         * @return {@link CountersManager} used for shared resource between the embedded media driver and the archive.
-         */
-        public CountersManager countersManager()
-        {
-            return countersManager;
-        }
-
-        /**
-         * The {@link CountersManager} is a shared resource between the embedded media driver and the archive.
-         *
-         * @param countersManager shared counters manager to be used.
-         * @return this for a fluent API.
-         */
-        public Context countersManager(final CountersManager countersManager)
-        {
-            this.countersManager = countersManager;
-            return this;
-        }
-
-        /**
          * Delete the archive directory if the {@link #archiveDir()} value is not null.
          */
         public void deleteArchiveDirectory()
@@ -744,15 +1085,187 @@ public final class Archive implements AutoCloseable
                 IoUtil.delete(archiveDir, false);
             }
         }
+
+        /**
+         * Set the top level Aeron directory used for communication between the Aeron client and Media Driver.
+         *
+         * @param aeronDirectoryName the top level Aeron directory.
+         * @return this for a fluent API.
+         */
+        public Context aeronDirectoryName(final String aeronDirectoryName)
+        {
+            this.aeronDirectoryName = aeronDirectoryName;
+            return this;
+        }
+
+        /**
+         * Get the top level Aeron directory used for communication between the Aeron client and Media Driver.
+         *
+         * @return The top level Aeron directory.
+         */
+        public String aeronDirectoryName()
+        {
+            return aeronDirectoryName;
+        }
+
+        /**
+         * {@link Aeron} client for communicating with the local Media Driver.
+         * <p>
+         * This client will be closed when the {@link Archive#close()} or {@link #close()} methods are called if
+         * {@link #ownsAeronClient()} is true.
+         *
+         * @param aeron client for communicating with the local Media Driver.
+         * @return this for a fluent API.
+         * @see Aeron#connect()
+         */
+        public Context aeron(final Aeron aeron)
+        {
+            this.aeron = aeron;
+            return this;
+        }
+
+        /**
+         * {@link Aeron} client for communicating with the local Media Driver.
+         * <p>
+         * If not provided then a default will be established during {@link #conclude()} by calling
+         * {@link Aeron#connect()}.
+         *
+         * @return client for communicating with the local Media Driver.
+         */
+        public Aeron aeron()
+        {
+            return aeron;
+        }
+
+        /**
+         * Does this context own the {@link #aeron()} client and this takes responsibility for closing it?
+         *
+         * @param ownsAeronClient does this context own the {@link #aeron()} client.
+         * @return this for a fluent API.
+         */
+        public Context ownsAeronClient(final boolean ownsAeronClient)
+        {
+            this.ownsAeronClient = ownsAeronClient;
+            return this;
+        }
+
+        /**
+         * Does this context own the {@link #aeron()} client and this takes responsibility for closing it?
+         *
+         * @return does this context own the {@link #aeron()} client and this takes responsibility for closing it?
+         */
+        public boolean ownsAeronClient()
+        {
+            return ownsAeronClient;
+        }
+
+        /**
+         * The {@link Catalog} describing the contents of the Archive.
+         *
+         * @param catalog {@link Catalog} describing the contents of the Archive.
+         * @return this for a fluent API.
+         */
+        public Context catalog(final Catalog catalog)
+        {
+            this.catalog = catalog;
+            return this;
+        }
+
+        /**
+         * The {@link Catalog} describing the contents of the Archive.
+         *
+         * @return the {@link Catalog} describing the contents of the Archive.
+         */
+        public Catalog catalog()
+        {
+            return catalog;
+        }
+
+        /**
+         * The {@link ArchiveMarkFile} for the Archive.
+         *
+         * @param archiveMarkFile {@link ArchiveMarkFile} for the Archive.
+         * @return this for a fluent API.
+         */
+        public Context archiveMarkFile(final ArchiveMarkFile archiveMarkFile)
+        {
+            this.markFile = archiveMarkFile;
+            return this;
+        }
+
+        /**
+         * The {@link ArchiveMarkFile} for the Archive.
+         *
+         * @return {@link ArchiveMarkFile} for the Archive.
+         */
+        public ArchiveMarkFile archiveMarkFile()
+        {
+            return markFile;
+        }
+
+        /**
+         * Maximum number of catalog entries for the Archive.
+         *
+         * @param maxCatalogEntries for the archive.
+         * @return this for a fluent API.
+         */
+        public Context maxCatalogEntries(final long maxCatalogEntries)
+        {
+            this.maxCatalogEntries = maxCatalogEntries;
+            return this;
+        }
+
+        /**
+         * Maximum number of catalog entries for the Archive.
+         *
+         * @return maximum number of catalog entries for the Archive.
+         */
+        public long maxCatalogEntries()
+        {
+            return maxCatalogEntries;
+        }
+
+        /**
+         * Close the context and free applicable resources.
+         * <p>
+         * If {@link #ownsAeronClient()} is true then the {@link #aeron()} client will be closed.
+         */
+        public void close()
+        {
+            if (ownsAeronClient)
+            {
+                CloseHelper.close(aeron);
+            }
+
+            CloseHelper.close(catalog);
+            CloseHelper.close(markFile);
+            CloseHelper.close(archiveDirChannel);
+        }
     }
 
     static int segmentFileIndex(final long startPosition, final long position, final int segmentFileLength)
     {
-        return (int)((position - startPosition) / segmentFileLength);
+        return (int)((position - startPosition) >> LogBufferDescriptor.positionBitsToShift(segmentFileLength));
     }
 
     static String segmentFileName(final long recordingId, final int segmentIndex)
     {
         return recordingId + "-" + segmentIndex + Configuration.RECORDING_SEGMENT_POSTFIX;
+    }
+
+    static FileChannel channelForDirectorySync(final File directory, final int fileSyncLevel)
+    {
+        if (fileSyncLevel > 0)
+        {
+            try
+            {
+                return FileChannel.open(directory.toPath());
+            }
+            catch (final IOException ignore)
+            {
+            }
+        }
+
+        return null;
     }
 }

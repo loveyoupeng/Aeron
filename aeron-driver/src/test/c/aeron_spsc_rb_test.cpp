@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -387,7 +387,6 @@ TEST(SpscRbConcurrentTest, shouldExchangeMessages)
     ASSERT_EQ(aeron_spsc_rb_init(&rb, spsc_buffer.data(), spsc_buffer.size()), 0);
 
     std::atomic<int> countDown(1);
-    std::atomic<int> publisherId(0);
 
     std::vector<std::thread> threads;
     size_t msgCount = 0;

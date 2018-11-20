@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,26 +15,27 @@
  */
 package io.aeron.archive;
 
+import io.aeron.Counter;
 import io.aeron.ExclusivePublication;
-import io.aeron.archive.codecs.RecordingDescriptorEncoder;
+import io.aeron.Image;
+import io.aeron.archive.client.AeronArchive;
 import io.aeron.logbuffer.ExclusiveBufferClaim;
 import io.aeron.logbuffer.FrameDescriptor;
 import io.aeron.logbuffer.Header;
+import io.aeron.logbuffer.LogBufferDescriptor;
 import io.aeron.protocol.DataHeaderFlyweight;
 import org.agrona.IoUtil;
 import org.agrona.concurrent.EpochClock;
 import org.agrona.concurrent.UnsafeBuffer;
-import org.agrona.concurrent.status.AtomicCounter;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.channels.FileChannel;
 
-import static io.aeron.archive.TestUtil.makeTempDir;
-import static io.aeron.archive.TestUtil.newRecordingFragmentReader;
-import static io.aeron.logbuffer.FrameDescriptor.FRAME_ALIGNMENT;
+import static io.aeron.archive.client.AeronArchive.NULL_POSITION;
 import static io.aeron.protocol.DataHeaderFlyweight.HEADER_LENGTH;
 import static io.aeron.protocol.HeaderFlyweight.HDR_TYPE_DATA;
 import static io.aeron.protocol.HeaderFlyweight.HDR_TYPE_PAD;
@@ -45,98 +46,78 @@ import static org.mockito.Mockito.*;
 
 public class ReplaySessionTest
 {
-    private static final String REPLAY_CHANNEL = "aeron:ipc";
-    private static final int REPLAY_STREAM_ID = 101;
     private static final int RECORDING_ID = 0;
-    private static final int TERM_BUFFER_LENGTH = 4096 * 4;
+    private static final int TERM_BUFFER_LENGTH = LogBufferDescriptor.TERM_MIN_LENGTH;
+    private static final int SEGMENT_LENGTH = TERM_BUFFER_LENGTH;
     private static final int INITIAL_TERM_ID = 8231773;
     private static final int INITIAL_TERM_OFFSET = 1024;
+    private static final long REPLAY_ID = 1;
     private static final long START_POSITION = INITIAL_TERM_OFFSET;
+    private static final long JOIN_POSITION = START_POSITION;
     private static final long RECORDING_POSITION = INITIAL_TERM_OFFSET;
     private static final int MTU_LENGTH = 4096;
     private static final long TIME = 0;
-    private static final int REPLAY_SESSION_ID = 0;
     private static final int FRAME_LENGTH = 1024;
     private static final int SESSION_ID = 1;
     private static final int STREAM_ID = 1;
-    private static final long START_TIMESTAMP = 0L;
+    private static final FileChannel ARCHIVE_DIR_CHANNEL = null;
 
+    private final Image mockImage = mock(Image.class);
     private final ExclusivePublication mockReplayPub = mock(ExclusivePublication.class);
     private final ControlSession mockControlSession = mock(ControlSession.class);
-    private final ArchiveConductor.ReplayPublicationSupplier mockReplyPubSupplier =
-        mock(ArchiveConductor.ReplayPublicationSupplier.class);
-    private final AtomicCounter position = mock(AtomicCounter.class);
-    private final UnsafeBuffer descriptorBuffer =
-        new UnsafeBuffer(allocateDirectAligned(Catalog.DEFAULT_RECORD_LENGTH, FRAME_ALIGNMENT));
+    private final ArchiveConductor mockArchiveConductor = mock(ArchiveConductor.class);
+    private final Counter recordingPositionCounter = mock(Counter.class);
 
     private int messageCounter = 0;
 
-    private File archiveDir = makeTempDir();
+    private final File archiveDir = TestUtil.makeTestDirectory();
     private ControlResponseProxy proxy = mock(ControlResponseProxy.class);
     private EpochClock epochClock = mock(EpochClock.class);
+    private Catalog mockCatalog = mock(Catalog.class);
     private Archive.Context context;
-    private long positionLong;
+    private long recordingPosition;
+    private RecordingSummary recordingSummary = new RecordingSummary();
 
     @Before
-    public void before() throws Exception
+    public void before() throws IOException
     {
-        when(position.getWeak()).then((invocation) -> positionLong);
-        when(position.get()).then((invocation) -> positionLong);
-
-        doAnswer(
-            (invocation) ->
-            {
-                positionLong = invocation.getArgument(0);
-                return null;
-            })
-            .when(position).setOrdered(anyLong());
-
-        doAnswer(
-            (invocation) ->
-            {
-                final long delta = invocation.getArgument(0);
-                positionLong += delta;
-                return null;
-            })
-            .when(position).addOrdered(anyLong());
+        when(recordingPositionCounter.get()).then((invocation) -> recordingPosition);
+        when(mockArchiveConductor.catalog()).thenReturn(mockCatalog);
+        when(mockImage.termBufferLength()).thenReturn(TERM_BUFFER_LENGTH);
+        when(mockImage.joinPosition()).thenReturn(JOIN_POSITION);
 
         context = new Archive.Context()
+            .segmentFileLength(SEGMENT_LENGTH)
             .archiveDir(archiveDir)
             .epochClock(epochClock);
 
-        final RecordingDescriptorEncoder encoder = new RecordingDescriptorEncoder();
-        Catalog.initDescriptor(
-            encoder.wrap(descriptorBuffer, Catalog.DESCRIPTOR_HEADER_LENGTH),
-            RECORDING_ID,
-            START_TIMESTAMP,
-            START_POSITION,
-            INITIAL_TERM_ID,
-            context.segmentFileLength(),
-            TERM_BUFFER_LENGTH,
-            MTU_LENGTH,
-            SESSION_ID,
-            STREAM_ID,
-            "channel",
-            "channel",
-            "sourceIdentity");
+        recordingSummary.recordingId = RECORDING_ID;
+        recordingSummary.startPosition = START_POSITION;
+        recordingSummary.segmentFileLength = context.segmentFileLength();
+        recordingSummary.initialTermId = INITIAL_TERM_ID;
+        recordingSummary.termBufferLength = TERM_BUFFER_LENGTH;
+        recordingSummary.mtuLength = MTU_LENGTH;
+        recordingSummary.streamId = STREAM_ID;
+        recordingSummary.sessionId = SESSION_ID;
 
-        try (RecordingWriter writer = new RecordingWriter(
-            RECORDING_ID, START_POSITION, TERM_BUFFER_LENGTH, context, null, position))
-        {
+        final RecordingWriter writer = new RecordingWriter(
+            RECORDING_ID, START_POSITION, SEGMENT_LENGTH, mockImage, context, ARCHIVE_DIR_CHANNEL);
 
-            final UnsafeBuffer buffer = new UnsafeBuffer(allocateDirectAligned(TERM_BUFFER_LENGTH, 64));
+        writer.init();
 
-            final DataHeaderFlyweight headerFwt = new DataHeaderFlyweight();
-            final Header header = new Header(INITIAL_TERM_ID, Integer.numberOfLeadingZeros(TERM_BUFFER_LENGTH));
-            header.buffer(buffer);
+        final UnsafeBuffer buffer = new UnsafeBuffer(allocateDirectAligned(TERM_BUFFER_LENGTH, 64));
 
-            recordFragment(writer, buffer, headerFwt, header, 0, FrameDescriptor.UNFRAGMENTED, HDR_TYPE_DATA);
-            recordFragment(writer, buffer, headerFwt, header, 1, FrameDescriptor.BEGIN_FRAG_FLAG, HDR_TYPE_DATA);
-            recordFragment(writer, buffer, headerFwt, header, 2, FrameDescriptor.END_FRAG_FLAG, HDR_TYPE_DATA);
-            recordFragment(writer, buffer, headerFwt, header, 3, FrameDescriptor.UNFRAGMENTED, HDR_TYPE_PAD);
-        }
-        encoder.stopPosition(START_POSITION + 4 * FRAME_LENGTH);
-        encoder.stopTimestamp(128);
+        final DataHeaderFlyweight headerFwt = new DataHeaderFlyweight();
+        final Header header = new Header(INITIAL_TERM_ID, Integer.numberOfLeadingZeros(TERM_BUFFER_LENGTH));
+        header.buffer(buffer);
+
+        recordFragment(writer, buffer, headerFwt, header, 0, FrameDescriptor.UNFRAGMENTED, HDR_TYPE_DATA);
+        recordFragment(writer, buffer, headerFwt, header, 1, FrameDescriptor.BEGIN_FRAG_FLAG, HDR_TYPE_DATA);
+        recordFragment(writer, buffer, headerFwt, header, 2, FrameDescriptor.END_FRAG_FLAG, HDR_TYPE_DATA);
+        recordFragment(writer, buffer, headerFwt, header, 3, FrameDescriptor.UNFRAGMENTED, HDR_TYPE_PAD);
+
+        writer.close();
+        recordingSummary.stopPosition = START_POSITION + 4 * FRAME_LENGTH;
     }
 
     @After
@@ -146,12 +127,18 @@ public class ReplaySessionTest
     }
 
     @Test
-    public void verifyRecordingFile() throws IOException
+    public void verifyRecordingFile()
     {
-        try (RecordingFragmentReader reader = newRecordingFragmentReader(descriptorBuffer, archiveDir))
+        try (RecordingFragmentReader reader = new RecordingFragmentReader(
+            mockCatalog,
+            recordingSummary,
+            archiveDir,
+            NULL_POSITION,
+            AeronArchive.NULL_LENGTH,
+            null))
         {
-            int polled = reader.controlledPoll(
-                (buffer, offset, length) ->
+            int fragments = reader.controlledPoll(
+                (buffer, offset, length, frameType, flags, reservedValue) ->
                 {
                     final int frameOffset = offset - DataHeaderFlyweight.HEADER_LENGTH;
                     assertEquals(offset, INITIAL_TERM_OFFSET + HEADER_LENGTH);
@@ -163,10 +150,10 @@ public class ReplaySessionTest
                 },
                 1);
 
-            assertEquals(1, polled);
+            assertEquals(1, fragments);
 
-            polled = reader.controlledPoll(
-                (buffer, offset, length) ->
+            fragments = reader.controlledPoll(
+                (buffer, offset, length, frameType, flags, reservedValue) ->
                 {
                     final int frameOffset = offset - DataHeaderFlyweight.HEADER_LENGTH;
                     assertEquals(offset, INITIAL_TERM_OFFSET + FRAME_LENGTH + HEADER_LENGTH);
@@ -178,10 +165,10 @@ public class ReplaySessionTest
                 },
                 1);
 
-            assertEquals(1, polled);
+            assertEquals(1, fragments);
 
-            polled = reader.controlledPoll(
-                (buffer, offset, length) ->
+            fragments = reader.controlledPoll(
+                (buffer, offset, length, frameType, flags, reservedValue) ->
                 {
                     final int frameOffset = offset - DataHeaderFlyweight.HEADER_LENGTH;
                     assertEquals(offset, INITIAL_TERM_OFFSET + 2 * FRAME_LENGTH + HEADER_LENGTH);
@@ -193,10 +180,10 @@ public class ReplaySessionTest
                 },
                 1);
 
-            assertEquals(1, polled);
+            assertEquals(1, fragments);
 
-            polled = reader.controlledPoll(
-                (buffer, offset, length) ->
+            fragments = reader.controlledPoll(
+                (buffer, offset, length, frameType, flags, reservedValue) ->
                 {
                     final int frameOffset = offset - DataHeaderFlyweight.HEADER_LENGTH;
                     assertEquals(offset, INITIAL_TERM_OFFSET + 3 * FRAME_LENGTH + HEADER_LENGTH);
@@ -208,7 +195,7 @@ public class ReplaySessionTest
                 },
                 1);
 
-            assertEquals(1, polled);
+            assertEquals(1, fragments);
         }
     }
 
@@ -217,218 +204,14 @@ public class ReplaySessionTest
     {
         final long correlationId = 1L;
 
-        final ReplaySession replaySession = replaySession(
+        try (ReplaySession replaySession = replaySession(
             RECORDING_POSITION,
             FRAME_LENGTH,
             correlationId,
             mockReplayPub,
             mockControlSession,
-            mockReplyPubSupplier);
-
-        when(mockReplayPub.isClosed()).thenReturn(false);
-        when(mockReplayPub.isConnected()).thenReturn(false);
-
-        replaySession.doWork();
-
-        assertEquals(replaySession.state(), ReplaySession.State.INIT);
-
-        when(mockReplayPub.isConnected()).thenReturn(true);
-
-        replaySession.doWork();
-        assertEquals(replaySession.state(), ReplaySession.State.REPLAY);
-
-        verify(mockControlSession, times(1)).sendOkResponse(correlationId, proxy);
-        verify(mockReplyPubSupplier).newReplayPublication(
-            REPLAY_CHANNEL,
-            REPLAY_STREAM_ID,
-            RECORDING_POSITION,
-            MTU_LENGTH,
-            INITIAL_TERM_ID,
-            TERM_BUFFER_LENGTH);
-
-        final UnsafeBuffer termBuffer = new UnsafeBuffer(allocateDirectAligned(4096, 64));
-        mockPublication(mockReplayPub, termBuffer);
-        assertNotEquals(0, replaySession.doWork());
-        assertThat(messageCounter, is(1));
-
-        validateFrame(termBuffer, 0, FrameDescriptor.UNFRAGMENTED);
-
-        assertTrue(replaySession.isDone());
-        replaySession.close();
-    }
-
-    @Test(expected = IllegalArgumentException.class)
-    public void shouldNotReplayPartialUnalignedDataFromFile()
-    {
-        final long correlationId = 1L;
-        new ReplaySession(
-            RECORDING_POSITION + 1,
-            (long)FRAME_LENGTH,
-            mockReplyPubSupplier,
-            mockControlSession,
-            archiveDir,
-            proxy,
-            REPLAY_SESSION_ID,
-            correlationId,
-            epochClock,
-            REPLAY_CHANNEL,
-            REPLAY_STREAM_ID,
-            descriptorBuffer, position);
-    }
-
-    @Test
-    public void shouldReplayFullDataFromFile()
-    {
-        final long length = 4 * FRAME_LENGTH;
-        final long correlationId = 1L;
-
-        final ReplaySession replaySession = replaySession(
-            RECORDING_POSITION,
-            length,
-            correlationId,
-            mockReplayPub,
-            mockControlSession,
-            mockReplyPubSupplier);
-
-        when(mockReplayPub.isClosed()).thenReturn(false);
-        when(mockReplayPub.isConnected()).thenReturn(false);
-
-        replaySession.doWork();
-
-        assertEquals(replaySession.state(), ReplaySession.State.INIT);
-
-        when(mockReplayPub.isConnected()).thenReturn(true);
-
-        replaySession.doWork();
-        assertEquals(replaySession.state(), ReplaySession.State.REPLAY);
-
-        verify(mockControlSession, times(1)).sendOkResponse(correlationId, proxy);
-        verify(mockReplyPubSupplier).newReplayPublication(
-            REPLAY_CHANNEL,
-            REPLAY_STREAM_ID,
-            RECORDING_POSITION,
-            MTU_LENGTH,
-            INITIAL_TERM_ID,
-            TERM_BUFFER_LENGTH);
-
-        final UnsafeBuffer termBuffer = new UnsafeBuffer(allocateDirectAligned(4096, 64));
-        mockPublication(mockReplayPub, termBuffer);
-
-        assertNotEquals(0, replaySession.doWork());
-        assertThat(messageCounter, is(4));
-
-        validateFrame(termBuffer, 0, FrameDescriptor.UNFRAGMENTED);
-        validateFrame(termBuffer, 1, FrameDescriptor.BEGIN_FRAG_FLAG);
-        validateFrame(termBuffer, 2, FrameDescriptor.END_FRAG_FLAG);
-
-        verify(mockReplayPub).appendPadding(FRAME_LENGTH - HEADER_LENGTH);
-        assertTrue(replaySession.isDone());
-        replaySession.close();
-    }
-
-    @Test
-    public void shouldAbortReplay()
-    {
-        final long length = 1024L;
-        final long correlationId = 1L;
-
-        final ReplaySession replaySession = replaySession(
-            RECORDING_POSITION,
-            length,
-            correlationId,
-            mockReplayPub,
-            mockControlSession,
-            mockReplyPubSupplier);
-
-        when(mockReplayPub.isClosed()).thenReturn(false);
-        when(mockReplayPub.isConnected()).thenReturn(true);
-
-        replaySession.doWork();
-
-        verify(mockControlSession, times(1)).sendOkResponse(correlationId, proxy);
-        assertEquals(replaySession.state(), ReplaySession.State.REPLAY);
-
-        replaySession.abort();
-        assertEquals(replaySession.state(), ReplaySession.State.INACTIVE);
-
-        replaySession.doWork();
-        assertTrue(replaySession.isDone());
-        replaySession.close();
-    }
-
-    @Test
-    public void shouldGiveUpIfPublishersAreNotConnectedAfterTimeout()
-    {
-        final long length = 1024L;
-        final long correlationId = 1L;
-        final ReplaySession replaySession = replaySession(
-            RECORDING_POSITION,
-            length,
-            correlationId,
-            mockReplayPub,
-            mockControlSession,
-            mockReplyPubSupplier);
-
-        when(mockReplayPub.isClosed()).thenReturn(false);
-        when(mockReplayPub.isConnected()).thenReturn(false);
-
-        replaySession.doWork();
-
-        when(epochClock.time()).thenReturn(ReplaySession.CONNECT_TIMEOUT_MS + TIME + 1L);
-        replaySession.doWork();
-        assertTrue(replaySession.isDone());
-        replaySession.close();
-    }
-
-    @Test
-    public void shouldReplayFromActiveRecording()
-    {
-        final ReplaySession replaySession;
-        final UnsafeBuffer termBuffer = new UnsafeBuffer(allocateDirectAligned(4096, 64));
-
-        final int recordingId = RECORDING_ID + 1;
-        final RecordingDescriptorEncoder encoder =
-            new RecordingDescriptorEncoder().wrap(descriptorBuffer, Catalog.DESCRIPTOR_HEADER_LENGTH);
-        Catalog.initDescriptor(
-            encoder,
-            recordingId,
-            START_TIMESTAMP,
-            START_POSITION,
-            INITIAL_TERM_ID,
-            context.segmentFileLength(),
-            TERM_BUFFER_LENGTH,
-            MTU_LENGTH,
-            1,
-            1,
-            "channel",
-            "channel",
-            "sourceIdentity");
-
-        try (RecordingWriter writer = new RecordingWriter(
-            recordingId, START_POSITION, TERM_BUFFER_LENGTH, context, null, position))
+            recordingPositionCounter))
         {
-            when(epochClock.time()).thenReturn(TIME);
-
-            final UnsafeBuffer buffer = new UnsafeBuffer(allocateDirectAligned(TERM_BUFFER_LENGTH, 64));
-
-            final DataHeaderFlyweight headerFwt = new DataHeaderFlyweight();
-            final Header header = new Header(INITIAL_TERM_ID, Integer.numberOfLeadingZeros(TERM_BUFFER_LENGTH));
-            header.buffer(buffer);
-
-            recordFragment(writer, buffer, headerFwt, header, 0, FrameDescriptor.UNFRAGMENTED, HDR_TYPE_DATA);
-            recordFragment(writer, buffer, headerFwt, header, 1, FrameDescriptor.BEGIN_FRAG_FLAG, HDR_TYPE_DATA);
-
-            final long length = 5 * FRAME_LENGTH;
-            final long correlationId = 1L;
-
-            replaySession = replaySession(
-                RECORDING_POSITION,
-                length,
-                correlationId,
-                mockReplayPub,
-                mockControlSession,
-                mockReplyPubSupplier);
-
             when(mockReplayPub.isClosed()).thenReturn(false);
             when(mockReplayPub.isConnected()).thenReturn(false);
 
@@ -441,14 +224,155 @@ public class ReplaySessionTest
             replaySession.doWork();
             assertEquals(replaySession.state(), ReplaySession.State.REPLAY);
 
-            verify(mockControlSession, times(1)).sendOkResponse(correlationId, proxy);
-            verify(mockReplyPubSupplier).newReplayPublication(
-                REPLAY_CHANNEL,
-                REPLAY_STREAM_ID,
-                RECORDING_POSITION,
-                MTU_LENGTH,
-                INITIAL_TERM_ID,
-                TERM_BUFFER_LENGTH);
+            verify(mockControlSession).sendOkResponse(eq(correlationId), anyLong(), eq(proxy));
+
+            final UnsafeBuffer termBuffer = new UnsafeBuffer(allocateDirectAligned(4096, 64));
+            mockPublication(mockReplayPub, termBuffer);
+            assertNotEquals(0, replaySession.doWork());
+            assertThat(messageCounter, is(1));
+
+            validateFrame(termBuffer, 0, FrameDescriptor.UNFRAGMENTED);
+
+            assertTrue(replaySession.isDone());
+        }
+    }
+
+    @Test(expected = IllegalArgumentException.class)
+    public void shouldNotReplayPartialUnalignedDataFromFile()
+    {
+        final long correlationId = 1L;
+        new ReplaySession(
+            RECORDING_POSITION + 1,
+            FRAME_LENGTH,
+            REPLAY_ID,
+            mockCatalog,
+            mockControlSession,
+            archiveDir,
+            proxy,
+            correlationId,
+            epochClock,
+            mockReplayPub,
+            recordingSummary,
+            recordingPositionCounter);
+    }
+
+    @Test
+    public void shouldReplayFullDataFromFile()
+    {
+        final long length = 4 * FRAME_LENGTH;
+        final long correlationId = 1L;
+
+        try (ReplaySession replaySession = replaySession(
+            RECORDING_POSITION,
+            length,
+            correlationId,
+            mockReplayPub,
+            mockControlSession,
+            null))
+        {
+            when(mockReplayPub.isClosed()).thenReturn(false);
+            when(mockReplayPub.isConnected()).thenReturn(false);
+
+            replaySession.doWork();
+
+            assertEquals(replaySession.state(), ReplaySession.State.INIT);
+
+            when(mockReplayPub.isConnected()).thenReturn(true);
+
+            replaySession.doWork();
+            assertEquals(replaySession.state(), ReplaySession.State.REPLAY);
+
+            verify(mockControlSession).sendOkResponse(eq(correlationId), anyLong(), eq(proxy));
+
+            final UnsafeBuffer termBuffer = new UnsafeBuffer(allocateDirectAligned(4096, 64));
+            mockPublication(mockReplayPub, termBuffer);
+
+            assertNotEquals(0, replaySession.doWork());
+            assertThat(messageCounter, is(4));
+
+            validateFrame(termBuffer, 0, FrameDescriptor.UNFRAGMENTED);
+            validateFrame(termBuffer, 1, FrameDescriptor.BEGIN_FRAG_FLAG);
+            validateFrame(termBuffer, 2, FrameDescriptor.END_FRAG_FLAG);
+
+            verify(mockReplayPub).appendPadding(FRAME_LENGTH - HEADER_LENGTH);
+            assertTrue(replaySession.isDone());
+        }
+    }
+
+    @Test
+    public void shouldGiveUpIfPublishersAreNotConnectedAfterTimeout()
+    {
+        final long length = 1024L;
+        final long correlationId = 1L;
+        try (ReplaySession replaySession = replaySession(
+            RECORDING_POSITION,
+            length,
+            correlationId,
+            mockReplayPub,
+            mockControlSession,
+            recordingPositionCounter))
+        {
+            when(mockReplayPub.isClosed()).thenReturn(false);
+            when(mockReplayPub.isConnected()).thenReturn(false);
+
+            replaySession.doWork();
+
+            when(epochClock.time()).thenReturn(ReplaySession.CONNECT_TIMEOUT_MS + TIME + 1L);
+            replaySession.doWork();
+            assertTrue(replaySession.isDone());
+        }
+    }
+
+    @Test
+    public void shouldReplayFromActiveRecording() throws IOException
+    {
+        final UnsafeBuffer termBuffer = new UnsafeBuffer(allocateDirectAligned(4096, 64));
+
+        final int recordingId = RECORDING_ID + 1;
+        recordingSummary.recordingId = recordingId;
+        recordingSummary.stopPosition = NULL_POSITION;
+
+        when(mockCatalog.stopPosition(recordingId)).thenReturn(START_POSITION + FRAME_LENGTH * 4);
+        recordingPosition = START_POSITION;
+
+        final RecordingWriter writer = new RecordingWriter(
+            recordingId, START_POSITION, SEGMENT_LENGTH, mockImage, context, ARCHIVE_DIR_CHANNEL);
+
+        writer.init();
+
+        final UnsafeBuffer buffer = new UnsafeBuffer(allocateDirectAligned(TERM_BUFFER_LENGTH, 64));
+
+        final DataHeaderFlyweight headerFwt = new DataHeaderFlyweight();
+        final Header header = new Header(INITIAL_TERM_ID, Integer.numberOfLeadingZeros(TERM_BUFFER_LENGTH));
+        header.buffer(buffer);
+
+        recordFragment(writer, buffer, headerFwt, header, 0, FrameDescriptor.UNFRAGMENTED, HDR_TYPE_DATA);
+        recordFragment(writer, buffer, headerFwt, header, 1, FrameDescriptor.BEGIN_FRAG_FLAG, HDR_TYPE_DATA);
+
+        final long length = 5 * FRAME_LENGTH;
+        final long correlationId = 1L;
+
+        try (ReplaySession replaySession = replaySession(
+            RECORDING_POSITION,
+            length,
+            correlationId,
+            mockReplayPub,
+            mockControlSession,
+            recordingPositionCounter))
+        {
+            when(mockReplayPub.isClosed()).thenReturn(false);
+            when(mockReplayPub.isConnected()).thenReturn(false);
+
+            replaySession.doWork();
+
+            assertEquals(replaySession.state(), ReplaySession.State.INIT);
+
+            when(mockReplayPub.isConnected()).thenReturn(true);
+
+            replaySession.doWork();
+            assertEquals(replaySession.state(), ReplaySession.State.REPLAY);
+
+            verify(mockControlSession).sendOkResponse(eq(correlationId), anyLong(), eq(proxy));
 
             mockPublication(mockReplayPub, termBuffer);
 
@@ -462,16 +386,18 @@ public class ReplaySessionTest
 
             recordFragment(writer, buffer, headerFwt, header, 2, FrameDescriptor.END_FRAG_FLAG, HDR_TYPE_DATA);
             recordFragment(writer, buffer, headerFwt, header, 3, FrameDescriptor.UNFRAGMENTED, HDR_TYPE_PAD);
+
+            writer.close();
+
+            when(recordingPositionCounter.isClosed()).thenReturn(true);
+            when(mockCatalog.stopPosition(recordingId)).thenReturn(START_POSITION + FRAME_LENGTH * 4);
+            assertNotEquals(0, replaySession.doWork());
+
+            validateFrame(termBuffer, 2, FrameDescriptor.END_FRAG_FLAG);
+            verify(mockReplayPub).appendPadding(FRAME_LENGTH - HEADER_LENGTH);
+
+            assertTrue(replaySession.isDone());
         }
-        when(position.isClosed()).thenReturn(true);
-        encoder.stopPosition(START_POSITION + FRAME_LENGTH * 4);
-        assertNotEquals(0, replaySession.doWork());
-
-        validateFrame(termBuffer, 2, FrameDescriptor.END_FRAG_FLAG);
-        verify(mockReplayPub).appendPadding(FRAME_LENGTH - HEADER_LENGTH);
-
-        assertTrue(replaySession.isDone());
-        replaySession.close();
     }
 
     private void recordFragment(
@@ -502,7 +428,8 @@ public class ReplaySessionTest
 
         header.offset(offset);
 
-        recordingWriter.writeFragment(buffer, header);
+        recordingWriter.onBlock(buffer, offset, FRAME_LENGTH, SESSION_ID, INITIAL_TERM_ID);
+        recordingPosition += FRAME_LENGTH;
     }
 
     private void mockPublication(final ExclusivePublication replay, final UnsafeBuffer termBuffer)
@@ -528,39 +455,31 @@ public class ReplaySessionTest
             });
     }
 
+    @SuppressWarnings("SameParameterValue")
     private ReplaySession replaySession(
         final long recordingPosition,
         final long length,
         final long correlationId,
         final ExclusivePublication replay,
         final ControlSession control,
-        final ArchiveConductor.ReplayPublicationSupplier conductor)
+        final Counter recordingPositionCounter)
     {
-        when(conductor.newReplayPublication(
-            eq(REPLAY_CHANNEL),
-            eq(REPLAY_STREAM_ID),
-            eq(recordingPosition),
-            eq(MTU_LENGTH),
-            eq(INITIAL_TERM_ID),
-            eq(TERM_BUFFER_LENGTH))).thenReturn(replay);
-
         return new ReplaySession(
             recordingPosition,
             length,
-            conductor,
+            REPLAY_ID,
+            mockCatalog,
             control,
             archiveDir,
             proxy,
-            REPLAY_SESSION_ID,
             correlationId,
             epochClock,
-            REPLAY_CHANNEL,
-            REPLAY_STREAM_ID,
-            descriptorBuffer,
-            position);
+            replay,
+            recordingSummary,
+            recordingPositionCounter);
     }
 
-    private void validateFrame(final UnsafeBuffer buffer, final int message, final byte flags)
+    private static void validateFrame(final UnsafeBuffer buffer, final int message, final byte flags)
     {
         final int offset = message * FRAME_LENGTH;
 

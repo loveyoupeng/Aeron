@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -83,13 +83,14 @@ public class DebugReceiveChannelEndpoint extends ReceiveChannelEndpoint
         final DataHeaderFlyweight header,
         final UnsafeBuffer buffer,
         final int length,
-        final InetSocketAddress srcAddress)
+        final InetSocketAddress srcAddress,
+        final int transportIndex)
     {
         int result = 0;
 
         if (!dataLossGenerator.shouldDropFrame(srcAddress, buffer, length))
         {
-            result = super.onDataPacket(header, buffer, length, srcAddress);
+            result = super.onDataPacket(header, buffer, length, srcAddress, transportIndex);
         }
 
         return result;
@@ -99,11 +100,12 @@ public class DebugReceiveChannelEndpoint extends ReceiveChannelEndpoint
         final SetupFlyweight header,
         final UnsafeBuffer buffer,
         final int length,
-        final InetSocketAddress srcAddress)
+        final InetSocketAddress srcAddress,
+        final int transportIndex)
     {
         if (!dataLossGenerator.shouldDropFrame(srcAddress, buffer, header.frameLength()))
         {
-            super.onSetupMessage(header, buffer, length, srcAddress);
+            super.onSetupMessage(header, buffer, length, srcAddress, transportIndex);
         }
     }
 
@@ -111,11 +113,12 @@ public class DebugReceiveChannelEndpoint extends ReceiveChannelEndpoint
         final RttMeasurementFlyweight header,
         final UnsafeBuffer buffer,
         final int length,
-        final InetSocketAddress srcAddress)
+        final InetSocketAddress srcAddress,
+        final int transportIndex)
     {
         if (!dataLossGenerator.shouldDropFrame(srcAddress, buffer, header.frameLength()))
         {
-            super.onRttMeasurement(header, buffer, length, srcAddress);
+            super.onRttMeasurement(header, buffer, length, srcAddress, transportIndex);
         }
     }
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,41 +16,41 @@
 package io.aeron.driver;
 
 import io.aeron.driver.buffer.RawLog;
-import io.aeron.driver.cmd.NewPublicationCmd;
-import io.aeron.driver.media.UdpChannel;
-import io.aeron.driver.status.SystemCounters;
-import io.aeron.protocol.StatusMessageFlyweight;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
-import org.mockito.stubbing.Answer;
-import io.aeron.driver.cmd.SenderCmd;
 import io.aeron.driver.media.ControlTransportPoller;
 import io.aeron.driver.media.SendChannelEndpoint;
+import io.aeron.driver.media.UdpChannel;
+import io.aeron.driver.status.SystemCounters;
 import io.aeron.logbuffer.HeaderWriter;
 import io.aeron.logbuffer.LogBufferDescriptor;
 import io.aeron.logbuffer.TermAppender;
 import io.aeron.protocol.DataHeaderFlyweight;
 import io.aeron.protocol.HeaderFlyweight;
 import io.aeron.protocol.SetupFlyweight;
+import io.aeron.protocol.StatusMessageFlyweight;
+import org.agrona.concurrent.CachedEpochClock;
+import org.agrona.concurrent.CachedNanoClock;
 import org.agrona.concurrent.OneToOneConcurrentArrayQueue;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.agrona.concurrent.status.AtomicCounter;
 import org.agrona.concurrent.status.AtomicLongPosition;
 import org.agrona.concurrent.status.Position;
+import org.junit.After;
+import org.junit.Before;
+import org.junit.Test;
+import org.mockito.stubbing.Answer;
 
 import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
 import java.util.ArrayDeque;
 import java.util.Queue;
 
+import static io.aeron.logbuffer.FrameDescriptor.FRAME_ALIGNMENT;
 import static io.aeron.logbuffer.LogBufferDescriptor.PARTITION_COUNT;
+import static org.agrona.BitUtil.align;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.greaterThanOrEqualTo;
 import static org.hamcrest.core.Is.is;
 import static org.mockito.Mockito.*;
-import static io.aeron.logbuffer.FrameDescriptor.FRAME_ALIGNMENT;
-import static org.agrona.BitUtil.align;
 
 public class SenderTest
 {
@@ -86,10 +86,10 @@ public class SenderTest
     private final DataHeaderFlyweight dataHeader = new DataHeaderFlyweight();
     private final SetupFlyweight setupHeader = new SetupFlyweight();
     private final SystemCounters mockSystemCounters = mock(SystemCounters.class);
-    private final OneToOneConcurrentArrayQueue<SenderCmd> senderCommandQueue =
+    private final OneToOneConcurrentArrayQueue<Runnable> senderCommandQueue =
         new OneToOneConcurrentArrayQueue<>(Configuration.CMD_QUEUE_CAPACITY);
 
-    private final HeaderWriter headerWriter = new HeaderWriter(HEADER);
+    private final HeaderWriter headerWriter = HeaderWriter.newInstance(HEADER);
 
     private Answer<Integer> saveByteBufferAnswer =
         (invocation) ->
@@ -105,15 +105,20 @@ public class SenderTest
         };
 
     @Before
-    public void setUp() throws Exception
+    public void setUp()
     {
         final SendChannelEndpoint mockSendChannelEndpoint = mock(SendChannelEndpoint.class);
         when(mockSendChannelEndpoint.udpChannel()).thenReturn(udpChannel);
         when(mockSendChannelEndpoint.send(any())).thenAnswer(saveByteBufferAnswer);
         when(mockSystemCounters.get(any())).thenReturn(mock(AtomicCounter.class));
 
+        final CachedNanoClock mockCachedNanoClock = mock(CachedNanoClock.class);
+        when(mockCachedNanoClock.nanoTime()).thenAnswer((invocation) -> currentTimestamp);
+
         sender = new Sender(
             new MediaDriver.Context()
+                .cachedEpochClock(new CachedEpochClock())
+                .cachedNanoClock(mockCachedNanoClock)
                 .controlTransportPoller(mockTransportPoller)
                 .systemCounters(mockSystemCounters)
                 .senderCommandQueue(senderCommandQueue)
@@ -129,9 +134,11 @@ public class SenderTest
 
         publication = new NetworkPublication(
             1,
+            101,
             mockSendChannelEndpoint,
             () -> currentTimestamp,
             rawLog,
+            mock(Position.class),
             mock(Position.class),
             new AtomicLongPosition(),
             new AtomicLongPosition(),
@@ -145,20 +152,21 @@ public class SenderTest
             new NetworkPublicationThreadLocals(),
             Configuration.PUBLICATION_UNBLOCK_TIMEOUT_NS,
             Configuration.PUBLICATION_CONNECTION_TIMEOUT_NS,
+            Configuration.PUBLICATION_LINGER_NS,
             false,
             false);
 
-        senderCommandQueue.offer(new NewPublicationCmd(publication));
+        senderCommandQueue.offer(() -> sender.onNewNetworkPublication(publication));
     }
 
     @After
-    public void tearDown() throws Exception
+    public void tearDown()
     {
         sender.onClose();
     }
 
     @Test
-    public void shouldSendSetupFrameOnChannelWhenTimeoutWithoutStatusMessage() throws Exception
+    public void shouldSendSetupFrameOnChannelWhenTimeoutWithoutStatusMessage()
     {
         sender.doWork();
         assertThat(receivedFrames.size(), is(1));
@@ -181,7 +189,7 @@ public class SenderTest
     }
 
     @Test
-    public void shouldSendMultipleSetupFramesOnChannelWhenTimeoutWithoutStatusMessage() throws Exception
+    public void shouldSendMultipleSetupFramesOnChannelWhenTimeoutWithoutStatusMessage()
     {
         sender.doWork();
         assertThat(receivedFrames.size(), is(1));
@@ -195,7 +203,7 @@ public class SenderTest
     }
 
     @Test
-    public void shouldNotSendSetupFrameAfterReceivingStatusMessage() throws Exception
+    public void shouldNotSendSetupFrameAfterReceivingStatusMessage()
     {
         final StatusMessageFlyweight msg = mock(StatusMessageFlyweight.class);
         when(msg.consumptionTermId()).thenReturn(INITIAL_TERM_ID);
@@ -219,7 +227,7 @@ public class SenderTest
     }
 
     @Test
-    public void shouldSendSetupFrameAfterReceivingStatusMessageWithSetupBit() throws Exception
+    public void shouldSendSetupFrameAfterReceivingStatusMessageWithSetupBit()
     {
         final StatusMessageFlyweight msg = mock(StatusMessageFlyweight.class);
         when(msg.consumptionTermId()).thenReturn(INITIAL_TERM_ID);
@@ -227,8 +235,6 @@ public class SenderTest
         when(msg.receiverWindowLength()).thenReturn(ALIGNED_FRAME_LENGTH);
 
         publication.onStatusMessage(msg, rcvAddress);
-//        publication.senderPositionLimit(
-//            flowControl.onStatusMessage(INITIAL_TERM_ID, 0, ALIGNED_FRAME_LENGTH, rcvAddress));
 
         final UnsafeBuffer buffer = new UnsafeBuffer(ByteBuffer.allocateDirect(PAYLOAD.length));
         buffer.putBytes(0, PAYLOAD);
@@ -256,7 +262,7 @@ public class SenderTest
     }
 
     @Test
-    public void shouldBeAbleToSendOnChannel() throws Exception
+    public void shouldBeAbleToSendOnChannel()
     {
         final StatusMessageFlyweight msg = mock(StatusMessageFlyweight.class);
         when(msg.consumptionTermId()).thenReturn(INITIAL_TERM_ID);
@@ -264,8 +270,6 @@ public class SenderTest
         when(msg.receiverWindowLength()).thenReturn(ALIGNED_FRAME_LENGTH);
 
         publication.onStatusMessage(msg, rcvAddress);
-//        publication.senderPositionLimit(
-//            flowControl.onStatusMessage(INITIAL_TERM_ID, 0, ALIGNED_FRAME_LENGTH, rcvAddress));
 
         final UnsafeBuffer buffer = new UnsafeBuffer(ByteBuffer.allocateDirect(PAYLOAD.length));
         buffer.putBytes(0, PAYLOAD);
@@ -289,7 +293,7 @@ public class SenderTest
     }
 
     @Test
-    public void shouldBeAbleToSendOnChannelTwice() throws Exception
+    public void shouldBeAbleToSendOnChannelTwice()
     {
         final StatusMessageFlyweight msg = mock(StatusMessageFlyweight.class);
         when(msg.consumptionTermId()).thenReturn(INITIAL_TERM_ID);
@@ -297,8 +301,6 @@ public class SenderTest
         when(msg.receiverWindowLength()).thenReturn(2 * ALIGNED_FRAME_LENGTH);
 
         publication.onStatusMessage(msg, rcvAddress);
-//        publication.senderPositionLimit(
-//            flowControl.onStatusMessage(INITIAL_TERM_ID, 0, (2 * ALIGNED_FRAME_LENGTH), rcvAddress));
 
         final UnsafeBuffer buffer = new UnsafeBuffer(ByteBuffer.allocateDirect(PAYLOAD.length));
         buffer.putBytes(0, PAYLOAD);
@@ -335,7 +337,7 @@ public class SenderTest
     }
 
     @Test
-    public void shouldNotSendUntilStatusMessageReceived() throws Exception
+    public void shouldNotSendUntilStatusMessageReceived()
     {
         final UnsafeBuffer buffer = new UnsafeBuffer(ByteBuffer.allocateDirect(PAYLOAD.length));
         buffer.putBytes(0, PAYLOAD);
@@ -352,8 +354,6 @@ public class SenderTest
         when(msg.receiverWindowLength()).thenReturn(ALIGNED_FRAME_LENGTH);
 
         publication.onStatusMessage(msg, rcvAddress);
-//        publication.senderPositionLimit(
-//            flowControl.onStatusMessage(INITIAL_TERM_ID, 0, ALIGNED_FRAME_LENGTH, rcvAddress));
         sender.doWork();
 
         assertThat(receivedFrames.size(), is(1));
@@ -371,7 +371,7 @@ public class SenderTest
     }
 
     @Test
-    public void shouldNotBeAbleToSendAfterUsingUpYourWindow() throws Exception
+    public void shouldNotBeAbleToSendAfterUsingUpYourWindow()
     {
         final UnsafeBuffer buffer = new UnsafeBuffer(ByteBuffer.allocateDirect(PAYLOAD.length));
         buffer.putBytes(0, PAYLOAD);
@@ -383,8 +383,6 @@ public class SenderTest
         when(msg.receiverWindowLength()).thenReturn(ALIGNED_FRAME_LENGTH);
 
         publication.onStatusMessage(msg, rcvAddress);
-//        publication.senderPositionLimit(
-//            flowControl.onStatusMessage(INITIAL_TERM_ID, 0, ALIGNED_FRAME_LENGTH, rcvAddress));
 
         sender.doWork();
 
@@ -408,7 +406,7 @@ public class SenderTest
     }
 
     @Test
-    public void shouldSendLastDataFrameAsHeartbeatWhenIdle() throws Exception
+    public void shouldSendLastDataFrameAsHeartbeatWhenIdle()
     {
         final StatusMessageFlyweight msg = mock(StatusMessageFlyweight.class);
         when(msg.consumptionTermId()).thenReturn(INITIAL_TERM_ID);
@@ -416,8 +414,6 @@ public class SenderTest
         when(msg.receiverWindowLength()).thenReturn(ALIGNED_FRAME_LENGTH);
 
         publication.onStatusMessage(msg, rcvAddress);
-//        publication.senderPositionLimit(
-//            flowControl.onStatusMessage(INITIAL_TERM_ID, 0, ALIGNED_FRAME_LENGTH, rcvAddress));
 
         final UnsafeBuffer buffer = new UnsafeBuffer(ByteBuffer.allocateDirect(PAYLOAD.length));
         buffer.putBytes(0, PAYLOAD);
@@ -452,8 +448,6 @@ public class SenderTest
         when(msg.receiverWindowLength()).thenReturn(ALIGNED_FRAME_LENGTH);
 
         publication.onStatusMessage(msg, rcvAddress);
-//        publication.senderPositionLimit(
-//            flowControl.onStatusMessage(INITIAL_TERM_ID, 0, ALIGNED_FRAME_LENGTH, rcvAddress));
 
         final UnsafeBuffer buffer = new UnsafeBuffer(ByteBuffer.allocateDirect(PAYLOAD.length));
         buffer.putBytes(0, PAYLOAD);

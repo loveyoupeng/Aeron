@@ -1,5 +1,5 @@
 /*
- * Copyright 2015 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,55 +15,126 @@
  */
 package io.aeron.driver;
 
-import io.aeron.CommonContext;
 import io.aeron.driver.buffer.RawLog;
 import io.aeron.ChannelUri;
 import io.aeron.logbuffer.FrameDescriptor;
 import io.aeron.logbuffer.LogBufferDescriptor;
+import org.agrona.SystemUtil;
 
+import static io.aeron.ChannelUri.INVALID_TAG;
 import static io.aeron.CommonContext.*;
 
-class PublicationParams
+final class PublicationParams
 {
-    int termLength = 0;
-    int mtuLength = 0;
+    long lingerTimeoutNs;
+    long tag = ChannelUri.INVALID_TAG;
+    int termLength;
+    int mtuLength;
     int initialTermId = 0;
     int termId = 0;
     int termOffset = 0;
+    int sessionId = 0;
     boolean isReplay = false;
+    boolean hasSessionId = false;
+    boolean isSessionIdTagged = false;
+    boolean isSparse;
 
-    static int getTermBufferLength(final ChannelUri channelUri, final int defaultTermLength)
+    private PublicationParams(final MediaDriver.Context context, final boolean isIpc)
     {
-        final String termLengthParam = channelUri.get(CommonContext.TERM_LENGTH_PARAM_NAME);
-        int termLength = defaultTermLength;
+        termLength = isIpc ? context.ipcTermBufferLength() : context.publicationTermBufferLength();
+        mtuLength = isIpc ? context.ipcMtuLength() : context.mtuLength();
+        lingerTimeoutNs = context.publicationLingerTimeoutNs();
+        isSparse = context.termBufferSparseFile();
+    }
+
+    private void getTag(final ChannelUri channelUri, final DriverConductor driverConductor)
+    {
+        final String tagParam = channelUri.entityTag();
+        if (null != tagParam)
+        {
+            final long tag = Long.parseLong(tagParam);
+            validateTag(tag, driverConductor);
+            this.tag = tag;
+        }
+    }
+
+    private void getTermBufferLength(final ChannelUri channelUri)
+    {
+        final String termLengthParam = channelUri.get(TERM_LENGTH_PARAM_NAME);
         if (null != termLengthParam)
         {
-            termLength = Integer.parseInt(termLengthParam);
+            final int termLength = (int)SystemUtil.parseSize(TERM_LENGTH_PARAM_NAME, termLengthParam);
             LogBufferDescriptor.checkTermLength(termLength);
+            validateTermLength(this, termLength);
+            this.termLength = termLength;
         }
-
-        return termLength;
     }
 
-    static int getMtuLength(final ChannelUri channelUri, final int defaultMtuLength)
+    private void getMtuLength(final ChannelUri channelUri)
     {
-        int mtuLength = defaultMtuLength;
-        final String mtu = channelUri.get(CommonContext.MTU_LENGTH_PARAM_NAME);
-        if (null != mtu)
+        final String mtuParam = channelUri.get(MTU_LENGTH_PARAM_NAME);
+        if (null != mtuParam)
         {
-            mtuLength = Integer.parseInt(mtu);
+            final int mtuLength = (int)SystemUtil.parseSize(MTU_LENGTH_PARAM_NAME, mtuParam);
             Configuration.validateMtuLength(mtuLength);
+            validateMtuLength(this, mtuLength);
+            this.mtuLength = mtuLength;
         }
-
-        return mtuLength;
     }
 
-    static void validateMtuForMaxMessage(final PublicationParams params, final boolean isExclusive)
+    private void getLingerTimeoutNs(final ChannelUri channelUri)
+    {
+        final String lingerParam = channelUri.get(LINGER_PARAM_NAME);
+        if (null != lingerParam)
+        {
+            lingerTimeoutNs = SystemUtil.parseDuration(LINGER_PARAM_NAME, lingerParam);
+            Configuration.validatePublicationLingerTimeoutNs(lingerTimeoutNs, lingerTimeoutNs);
+        }
+    }
+
+    private void getSessionId(final ChannelUri channelUri, final DriverConductor driverConductor)
+    {
+        final String sessionIdStr = channelUri.get(SESSION_ID_PARAM_NAME);
+        if (null != sessionIdStr)
+        {
+            isSessionIdTagged = ChannelUri.isTagged(sessionIdStr);
+            if (isSessionIdTagged)
+            {
+                final NetworkPublication publication = driverConductor.findNetworkPublicationByTag(
+                    ChannelUri.getTag(sessionIdStr));
+
+                if (null == publication)
+                {
+                    throw new IllegalArgumentException(
+                        SESSION_ID_PARAM_NAME + "=" + sessionIdStr + " must reference a network publication");
+                }
+
+                sessionId = publication.sessionId();
+                mtuLength = publication.mtuLength();
+                termLength = publication.termBufferLength();
+            }
+            else
+            {
+                sessionId = Integer.parseInt(sessionIdStr);
+            }
+
+            hasSessionId = true;
+        }
+    }
+
+    private void getSparse(final ChannelUri channelUri)
+    {
+        final String sparseStr = channelUri.get(SPARSE_PARAM_NAME);
+        if (null != sparseStr)
+        {
+            isSparse = "true".equals(sparseStr);
+        }
+    }
+
+    static void validateMtuForMaxMessage(final PublicationParams params)
     {
         final int termLength = params.termLength;
-        final int maxMessageLength = isExclusive ?
-            FrameDescriptor.computeExclusiveMaxMessageLength(termLength) :
-            FrameDescriptor.computeMaxMessageLength(termLength);
+        final int maxMessageLength = FrameDescriptor.computeMaxMessageLength(termLength);
 
         if (params.mtuLength > maxMessageLength)
         {
@@ -72,8 +143,26 @@ class PublicationParams
         }
     }
 
+    static void validateTermLength(final PublicationParams params, final int explicitTermLength)
+    {
+        if (params.isSessionIdTagged && explicitTermLength != params.termLength)
+        {
+            throw new IllegalArgumentException(
+                TERM_LENGTH_PARAM_NAME + "=" + explicitTermLength + " does not match session-id tag value");
+        }
+    }
+
+    static void validateMtuLength(final PublicationParams params, final int explicitMtuLength)
+    {
+        if (params.isSessionIdTagged && explicitMtuLength != params.mtuLength)
+        {
+            throw new IllegalArgumentException(
+                MTU_LENGTH_PARAM_NAME + "=" + explicitMtuLength + " does not match session-id tag value");
+        }
+    }
+
     static void confirmMatch(
-        final ChannelUri uri, final PublicationParams params, final RawLog rawLog)
+        final ChannelUri uri, final PublicationParams params, final RawLog rawLog, final int existingSessionId)
     {
         final int mtuLength = LogBufferDescriptor.mtuLength(rawLog.metaData());
         if (uri.containsKey(MTU_LENGTH_PARAM_NAME) && mtuLength != params.mtuLength)
@@ -87,21 +176,44 @@ class PublicationParams
             throw new IllegalStateException("Existing publication has different term length: existing=" +
                 rawLog.termLength() + " requested=" + params.termLength);
         }
+
+        if (uri.containsKey(SESSION_ID_PARAM_NAME) && params.sessionId != existingSessionId)
+        {
+            throw new IllegalStateException("Existing publication has different session id: existing=" +
+                existingSessionId + " requested=" + params.sessionId);
+        }
+    }
+
+    private static void validateTag(final long tag, final DriverConductor driverConductor)
+    {
+        if (INVALID_TAG == tag)
+        {
+            throw new IllegalArgumentException(INVALID_TAG + " tag is reserved");
+        }
+
+        if (null != driverConductor.findNetworkPublicationByTag(tag) ||
+            null != driverConductor.findIpcPublicationByTag(tag))
+        {
+            throw new IllegalArgumentException(tag + " tag already in use");
+        }
     }
 
     @SuppressWarnings("ConstantConditions")
     static PublicationParams getPublicationParams(
         final MediaDriver.Context context,
         final ChannelUri channelUri,
+        final DriverConductor driverConductor,
         final boolean isExclusive,
         final boolean isIpc)
     {
-        final PublicationParams params = new PublicationParams();
+        final PublicationParams params = new PublicationParams(context, isIpc);
 
-        params.termLength = getTermBufferLength(
-            channelUri, isIpc ? context.ipcTermBufferLength() : context.publicationTermBufferLength());
-
-        params.mtuLength = getMtuLength(channelUri, isIpc ? context.ipcMtuLength() : context.mtuLength());
+        params.getTag(channelUri, driverConductor);
+        params.getSessionId(channelUri, driverConductor);
+        params.getTermBufferLength(channelUri);
+        params.getMtuLength(channelUri);
+        params.getLingerTimeoutNs(channelUri);
+        params.getSparse(channelUri);
 
         if (isExclusive)
         {

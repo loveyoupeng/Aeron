@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,13 +20,13 @@ package io.aeron;
  */
 interface DriverEventsListener
 {
-    void onError(long correlationId, ErrorCode errorCode, String message);
+    void onError(long correlationId, int codeValue, ErrorCode errorCode, String message);
 
     void onAvailableImage(
         long correlationId,
         int streamId,
         int sessionId,
-        long subscriberRegistrationId,
+        long subscriptionRegistrationId,
         int subscriberPositionId,
         String logFileName,
         String sourceIdentity);
@@ -37,9 +37,17 @@ interface DriverEventsListener
         int streamId,
         int sessionId,
         int publicationLimitId,
+        int statusIndicatorId,
         String logFileName);
 
-    void onUnavailableImage(long correlationId, int streamId);
+    void onNewSubscription(
+        long correlationId,
+        int statusIndicatorId);
+
+    void onUnavailableImage(
+        long correlationId,
+        long subscriptionRegistrationId,
+        int streamId);
 
     void onNewExclusivePublication(
         long correlationId,
@@ -47,5 +55,22 @@ interface DriverEventsListener
         int streamId,
         int sessionId,
         int publicationLimitId,
+        int statusIndicatorId,
         String logFileName);
+
+    void onChannelEndpointError(
+        int statusIndicatorId,
+        String message);
+
+    void onNewCounter(
+        long correlationId,
+        int counterId);
+
+    void onAvailableCounter(
+        long correlationId,
+        int counterId);
+
+    void onUnavailableCounter(
+        long correlationId,
+        int counterId);
 }

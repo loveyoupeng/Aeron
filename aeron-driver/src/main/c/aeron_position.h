@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 - 2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -34,6 +34,12 @@ int32_t aeron_channel_endpoint_status_allocate(
     const char *name,
     int32_t type_id,
     const char *channel);
+
+int32_t aeron_heartbeat_status_allocate(
+    aeron_counters_manager_t *counters_manager,
+    const char *name,
+    int32_t type_id,
+    int64_t registration_id);
 
 #define AERON_COUNTER_PUBLISHER_LIMIT_NAME "pub-lmt"
 #define AERON_COUNTER_PUBLISHER_LIMIT_TYPE_ID (1)
@@ -113,6 +119,23 @@ int32_t aeron_counter_send_channel_status_allocate(
 
 int32_t aeron_counter_receive_channel_status_allocate(
     aeron_counters_manager_t *counters_manager,
+    const char *channel);
+
+#define AERON_COUNTER_CLIENT_HEARTBEAT_STATUS_NAME "client-heartbeat"
+#define AERON_COUNTER_CLIENT_HEARTBEAT_STATUS_TYPE_ID (11)
+
+int32_t aeron_counter_client_heartbeat_status_allocate(
+    aeron_counters_manager_t *counters_manager,
+    int64_t client_id);
+
+#define AERON_COUNTER_PUBLISHER_POSITION_NAME "pub-pos"
+#define AERON_COUNTER_PUBLISHER_POSITION_TYPE_ID (12)
+
+int32_t aeron_counter_publisher_position_allocate(
+    aeron_counters_manager_t *counters_manager,
+    int64_t registration_id,
+    int32_t session_id,
+    int32_t stream_id,
     const char *channel);
 
 #endif //AERON_AERON_POSITION_H

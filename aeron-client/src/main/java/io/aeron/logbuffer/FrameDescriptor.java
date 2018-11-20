@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -115,17 +115,6 @@ public class FrameDescriptor
     public static int computeMaxMessageLength(final int termLength)
     {
         return Math.min(termLength / 8, MAX_MESSAGE_LENGTH);
-    }
-
-    /**
-     * Compute the maximum supported message length for a buffer of given termLength when the publication is exclusive.
-     *
-     * @param termLength of the log buffer.
-     * @return the maximum supported length for a message.
-     */
-    public static int computeExclusiveMaxMessageLength(final int termLength)
-    {
-        return Math.min(termLength / 4, MAX_MESSAGE_LENGTH);
     }
 
     /**

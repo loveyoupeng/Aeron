@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -33,7 +33,7 @@ public class TermRebuilder
      * @param termBuffer into which the packet should be inserted.
      * @param termOffset in the term at which the packet should be inserted.
      * @param packet     containing a sequence of frames.
-     * @param length     of the sequence of frames in bytes.
+     * @param length     of the packet of frames in bytes.
      */
     public static void insert(
         final UnsafeBuffer termBuffer, final int termOffset, final UnsafeBuffer packet, final int length)

@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 - 2017 Real Logic Ltd.
+ * Copyright 2014-2018 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -39,50 +39,50 @@ static aeron_system_counter_t system_counters[] =
         { "Invalid packets", AERON_SYSTEM_COUNTER_INVALID_PACKETS },
         { "Errors", AERON_SYSTEM_COUNTER_ERRORS },
         { "Short sends", AERON_SYSTEM_COUNTER_SHORT_SENDS },
-        { "Client keep-alives", AERON_SYSTEM_COUNTER_CLIENT_KEEP_ALIVES },
+        { "Failed attempt to free log buffers", AERON_SYSTEM_COUNTER_FREE_FAILS },
         { "Sender flow control limits applied", AERON_SYSTEM_COUNTER_SENDER_FLOW_CONTROL_LIMITS },
         { "Unblocked Publications", AERON_SYSTEM_COUNTER_UNBLOCKED_PUBLICATIONS },
         { "Unblocked Control Commands", AERON_SYSTEM_COUNTER_UNBLOCKED_COMMANDS },
         { "Possible TTL Asymmetry", AERON_SYSTEM_COUNTER_POSSIBLE_TTL_ASYMMETRY },
         { "ControllableIdleStrategy status", AERON_SYSTEM_COUNTER_CONTROLLABLE_IDLE_STRATEGY },
-        { "Loss gap fills", AERON_SYSTEM_COUNTER_LOSS_GAP_FILLS}
+        { "Loss gap fills", AERON_SYSTEM_COUNTER_LOSS_GAP_FILLS},
+        { "Client liveness timeouts", AERON_SYSTEM_COUNTER_CLIENT_TIMEOUTS}
     };
 
-static size_t num_system_counters = sizeof(system_counters)/sizeof(aeron_system_counter_t);
-
-static void system_counter_key_func(uint8_t *key, size_t key_max_length, void *clientd)
-{
-    int32_t key_value = *(int32_t *)(clientd);
-
-    *(int32_t *)key = key_value;
-}
+static size_t num_system_counters = sizeof(system_counters) / sizeof(aeron_system_counter_t);
 
 int aeron_system_counters_init(aeron_system_counters_t *counters, aeron_counters_manager_t *manager)
 {
     if (NULL == counters || NULL == manager)
     {
-        aeron_set_err(EINVAL, "%s", "invalid argument");
+        aeron_set_err(EINVAL, "%s:%d: %s", __FILE__, __LINE__, strerror(EINVAL));
         return -1;
     }
 
     counters->manager = manager;
     if (aeron_alloc((void **)&counters->counter_ids, sizeof(int32_t) * num_system_counters) < 0)
     {
+        int errcode = errno;
+
+        aeron_set_err(errcode, "%s:%d: %s", __FILE__, __LINE__, strerror(errcode));
         return -1;
     }
 
     for (int32_t i = 0; i < (int32_t)num_system_counters; i++)
     {
-        if ((counters->counter_ids[i] =
-            aeron_counters_manager_allocate(
-                manager,
-                system_counters[i].label,
-                strlen(system_counters[i].label),
-                AERON_SYSTEM_COUNTER_TYPE_ID,
-                system_counter_key_func,
-                &(system_counters[i].id))) < 0)
+        if (strncmp(system_counters[i].label, "RESERVED", sizeof("RESERVED")) != 0)
         {
-            return -1;
+            if ((counters->counter_ids[i] =
+                aeron_counters_manager_allocate(
+                    manager,
+                    AERON_SYSTEM_COUNTER_TYPE_ID,
+                    (const uint8_t *) &(system_counters[i].id),
+                    sizeof(system_counters[i].id),
+                    system_counters[i].label,
+                    strlen(system_counters[i].label))) < 0)
+            {
+                return -1;
+            }
         }
     }
 
