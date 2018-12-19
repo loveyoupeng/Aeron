@@ -58,14 +58,12 @@ public class DataPacketDispatcher
     static class StreamInterest
     {
         boolean isForAllSessions;
-        Int2ObjectHashMap<SessionInterest> sessionInterestByIdMap;
-        IntHashSet subscribedSessionIds;
+        final Int2ObjectHashMap<SessionInterest> sessionInterestByIdMap = new Int2ObjectHashMap<>();
+        final IntHashSet subscribedSessionIds = new IntHashSet();
 
         StreamInterest(final boolean isForAllSessions)
         {
             this.isForAllSessions = isForAllSessions;
-            sessionInterestByIdMap = new Int2ObjectHashMap<>();
-            subscribedSessionIds = new IntHashSet();
         }
     }
 
@@ -324,7 +322,7 @@ public class DataPacketDispatcher
                 }
                 else if (null != sessionInterest.image)
                 {
-                    sessionInterest.image.addControlAddressIfUnknown(transportIndex, srcAddress);
+                    sessionInterest.image.addDestinationConnectionIfUnknown(transportIndex, srcAddress);
                 }
             }
             else if (streamInterest.isForAllSessions || streamInterest.subscribedSessionIds.contains(sessionId))

@@ -94,7 +94,7 @@ std::shared_ptr<Publication> ClientConductor::findPublication(std::int64_t regis
                 if (m_epochClock() > (state.m_timeOfRegistration + m_driverTimeoutMs))
                 {
                     throw DriverTimeoutException(
-                        strPrintf("No response from driver in %d ms", m_driverTimeoutMs), SOURCEINFO);
+                        "No response from driver in " + std::to_string(m_driverTimeoutMs) +" ms", SOURCEINFO);
                 }
                 break;
 
@@ -175,7 +175,7 @@ std::shared_ptr<ExclusivePublication> ClientConductor::findExclusivePublication(
                 if (m_epochClock() > (state.m_timeOfRegistration + m_driverTimeoutMs))
                 {
                     throw DriverTimeoutException(
-                        strPrintf("No response from driver in %d ms", m_driverTimeoutMs), SOURCEINFO);
+                        "No response from driver in " + std::to_string(m_driverTimeoutMs) + " ms", SOURCEINFO);
                 }
                 break;
 
@@ -265,7 +265,7 @@ std::shared_ptr<Subscription> ClientConductor::findSubscription(std::int64_t reg
         if (m_epochClock() > (state.m_timeOfRegistration + m_driverTimeoutMs))
         {
             throw DriverTimeoutException(
-                strPrintf("No response from driver in %d ms", m_driverTimeoutMs), SOURCEINFO);
+                "No response from driver in " +  std::to_string(m_driverTimeoutMs) + " ms", SOURCEINFO);
         }
     }
     else if (!sub && RegistrationStatus::ERRORED_MEDIA_DRIVER == state.m_status)
@@ -315,12 +315,12 @@ std::int64_t ClientConductor::addCounter(
 
     if (keyLength > CountersManager::MAX_KEY_LENGTH)
     {
-        throw IllegalArgumentException(strPrintf("key length out of bounds: %d", keyLength), SOURCEINFO);
+        throw IllegalArgumentException("key length out of bounds: " + std::to_string(keyLength), SOURCEINFO);
     }
 
     if (label.length() > CountersManager::MAX_LABEL_LENGTH)
     {
-        throw IllegalArgumentException(strPrintf("label length out of bounds: %d", label.length()), SOURCEINFO);
+        throw IllegalArgumentException("label length out of bounds: " + std::to_string(label.length()), SOURCEINFO);
     }
 
     std::lock_guard<std::recursive_mutex> lock(m_adminLock);
@@ -362,7 +362,7 @@ std::shared_ptr<Counter> ClientConductor::findCounter(std::int64_t registrationI
         if (m_epochClock() > (state.m_timeOfRegistration + m_driverTimeoutMs))
         {
             throw DriverTimeoutException(
-                strPrintf("No response from driver in %d ms", m_driverTimeoutMs), SOURCEINFO);
+                "No response from driver in " + std::to_string(m_driverTimeoutMs) + " ms", SOURCEINFO);
         }
     }
     else if (!counter && RegistrationStatus::ERRORED_MEDIA_DRIVER == state.m_status)
@@ -504,9 +504,8 @@ void ClientConductor::onSubscriptionReady(
         SubscriptionStateDefn& state = (*subIt);
 
         state.m_status = RegistrationStatus::REGISTERED_MEDIA_DRIVER;
-        state.m_subscriptionCache =
-            std::make_shared<Subscription>(
-                *this, state.m_registrationId, state.m_channel, state.m_streamId, channelStatusId);
+        state.m_subscriptionCache = std::make_shared<Subscription>(
+            *this, state.m_registrationId, state.m_channel, state.m_streamId, channelStatusId);
         state.m_subscription = std::weak_ptr<Subscription>(state.m_subscriptionCache);
         m_onNewSubscriptionHandler(state.m_channel, state.m_streamId, registrationId);
         return;
@@ -531,8 +530,7 @@ void ClientConductor::onAvailableCounter(
 
         state.m_status = RegistrationStatus::REGISTERED_MEDIA_DRIVER;
         state.m_counterId = counterId;
-        state.m_counterCache =
-            std::make_shared<Counter>(this, m_counterValuesBuffer, state.m_registrationId, counterId);
+        state.m_counterCache = std::make_shared<Counter>(this, m_counterValuesBuffer, state.m_registrationId, counterId);
         state.m_counter = std::weak_ptr<Counter>(state.m_counterCache);
     }
 
@@ -551,7 +549,6 @@ void ClientConductor::onUnavailableCounter(
 void ClientConductor::onOperationSuccess(std::int64_t correlationId)
 {
     std::lock_guard<std::recursive_mutex> lock(m_adminLock);
-
 }
 
 void ClientConductor::onErrorResponse(
@@ -750,7 +747,6 @@ void ClientConductor::onCheckManagedResources(long long now)
 
     // erase-remove idiom
 
-    // check LogBuffers
     auto logIt = std::remove_if(m_lingeringLogBuffers.begin(), m_lingeringLogBuffers.end(),
         [now, this](const LogBuffersLingerDefn& entry)
         {
@@ -759,7 +755,6 @@ void ClientConductor::onCheckManagedResources(long long now)
 
     m_lingeringLogBuffers.erase(logIt, m_lingeringLogBuffers.end());
 
-    // check old arrays
     auto arrayIt = std::remove_if(m_lingeringImageLists.begin(), m_lingeringImageLists.end(),
         [now, this](ImageListLingerDefn & entry)
         {

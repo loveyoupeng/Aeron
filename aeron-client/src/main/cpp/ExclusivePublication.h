@@ -46,7 +46,7 @@ using namespace aeron::concurrent::status;
  * <b>Note:</b> ExclusivePublication instances are NOT threadsafe for offer and try claim methods but are for others.
  *
  * @see Aeron#addExclusivePublication(String, int)
- * @see ExclusiveBufferClaim
+ * @see BufferClaim
  */
 class ExclusivePublication
 {
@@ -62,7 +62,7 @@ public:
         std::int32_t sessionId,
         UnsafeBufferPosition& publicationLimit,
         std::int32_t channelStatusId,
-        std::shared_ptr<LogBuffers> buffers);
+        std::shared_ptr<LogBuffers> logBuffers);
     /// @endcond
 
     virtual ~ExclusivePublication();
@@ -212,11 +212,7 @@ public:
 
         if (!isClosed())
         {
-            const std::int64_t rawTail = LogBufferDescriptor::rawTailVolatile(m_logMetaDataBuffer);
-            const std::int32_t termOffset = LogBufferDescriptor::termOffset(rawTail, termBufferLength());
-
-            result = LogBufferDescriptor::computePosition(
-                LogBufferDescriptor::termId(rawTail), termOffset, m_positionBitsToShift, m_initialTermId);
+            result = m_termBeginPosition + m_termOffset;
         }
 
         return result;
@@ -249,6 +245,24 @@ public:
     inline std::int32_t publicationLimitId() const
     {
         return m_publicationLimit.id();
+    }
+
+    /**
+     * Available window for offering into a publication before the {@link #positionLimit()} is reached.
+     *
+     * @return  window for offering into a publication before the {@link #positionLimit()} is reached. If
+     * the publication is closed then {@link #CLOSED} will be returned.
+     */
+    inline std::int64_t availableWindow() const
+    {
+        std::int64_t result = PUBLICATION_CLOSED;
+
+        if (!isClosed())
+        {
+            result = m_publicationLimit.getVolatile() - position();
+        }
+
+        return result;
     }
 
     /**
@@ -487,6 +501,7 @@ public:
      * {@link #ADMIN_ACTION} or {@link #CLOSED}.
      * @throws IllegalArgumentException if the length is greater than max payload length within an MTU.
      * @see BufferClaim::commit
+     * @see BufferClaim::abort
      */
     inline std::int64_t tryClaim(util::index_t length, concurrent::logbuffer::BufferClaim& bufferClaim)
     {
@@ -566,7 +581,7 @@ private:
     std::int32_t m_channelStatusId;
     std::atomic<bool> m_isClosed = { false };
 
-    std::shared_ptr<LogBuffers> m_logbuffers;
+    std::shared_ptr<LogBuffers> m_logBuffers;
     std::unique_ptr<ExclusiveTermAppender> m_appenders[3];
     HeaderWriter m_headerWriter;
 
@@ -579,7 +594,8 @@ private:
             return m_termBeginPosition + resultingOffset;
         }
 
-        if ((m_termBeginPosition + termBufferLength()) >= m_maxPossiblePosition)
+        const std::int32_t termLength = termBufferLength();
+        if ((m_termBeginPosition + termLength) >= m_maxPossiblePosition)
         {
             return MAX_POSITION_EXCEEDED;
         }
@@ -590,8 +606,7 @@ private:
         m_activePartitionIndex = nextIndex;
         m_termOffset = 0;
         m_termId = nextTermId;
-        m_termBeginPosition = LogBufferDescriptor::computeTermBeginPosition(
-            nextTermId, m_positionBitsToShift, m_initialTermId);
+        m_termBeginPosition += termLength;
 
         const std::int32_t termCount = nextTermId - m_initialTermId;
 

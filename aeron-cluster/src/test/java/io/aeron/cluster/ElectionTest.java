@@ -34,8 +34,6 @@ import static io.aeron.archive.client.AeronArchive.NULL_POSITION;
 import static io.aeron.cluster.Election.NOMINATION_TIMEOUT_MULTIPLIER;
 import static org.hamcrest.CoreMatchers.is;
 import static org.junit.Assert.assertThat;
-import static org.mockito.ArgumentMatchers.anyInt;
-import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.*;
 
 @SuppressWarnings("MethodLength")
@@ -173,6 +171,7 @@ public class ElectionTest
             leadershipTermId,
             logPosition,
             candidateTermId,
+            logPosition,
             candidateMember.id(),
             logSessionId);
         verify(memberStatusPublisher).newLeadershipTerm(
@@ -180,6 +179,7 @@ public class ElectionTest
             leadershipTermId,
             logPosition,
             candidateTermId,
+            logPosition,
             candidateMember.id(),
             logSessionId);
         assertThat(election.state(), is(Election.State.LEADER_READY));
@@ -232,7 +232,8 @@ public class ElectionTest
         assertThat(election.state(), is(Election.State.FOLLOWER_BALLOT));
 
         final int logSessionId = -7;
-        election.onNewLeadershipTerm(leadershipTermId, logPosition, candidateTermId, candidateId, logSessionId);
+        election.onNewLeadershipTerm(
+            leadershipTermId, logPosition, candidateTermId, logPosition, candidateId, logSessionId);
         assertThat(election.state(), is(Election.State.FOLLOWER_REPLAY));
 
         when(consensusModuleAgent.createAndRecordLogSubscriptionAsFollower(anyString()))
@@ -240,7 +241,6 @@ public class ElectionTest
         when(memberStatusPublisher.catchupPosition(any(), anyLong(), anyLong(), anyInt())).thenReturn(Boolean.TRUE);
         when(consensusModuleAgent.hasAppendReachedLivePosition(any(), anyInt(), anyLong())).thenReturn(Boolean.TRUE);
         when(consensusModuleAgent.hasAppendReachedPosition(any(), anyInt(), anyLong())).thenReturn(Boolean.TRUE);
-        when(memberStatusPublisher.stopCatchup(any(), anyInt(), anyInt())).thenReturn(Boolean.TRUE);
         final long t3 = 3;
         election.doWork(t3);
         election.doWork(t3);

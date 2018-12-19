@@ -16,7 +16,6 @@
 package io.aeron;
 
 import io.aeron.logbuffer.BufferClaim;
-import io.aeron.logbuffer.ExclusiveBufferClaim;
 import io.aeron.logbuffer.ExclusiveTermAppender;
 import org.agrona.DirectBuffer;
 import org.agrona.concurrent.UnsafeBuffer;
@@ -40,7 +39,6 @@ import static io.aeron.logbuffer.LogBufferDescriptor.*;
  * <b>Note:</b> Instances are NOT threadsafe for offer and tryClaim methods but are for the others.
  *
  * @see Aeron#addExclusivePublication(String, int)
- * @see ExclusiveBufferClaim
  */
 public class ExclusivePublication extends Publication
 {
@@ -89,6 +87,26 @@ public class ExclusivePublication extends Publication
         termId = termId(rawTail);
         termOffset = termOffset(rawTail);
         termBeginPosition = computeTermBeginPosition(termId, positionBitsToShift, initialTermId);
+    }
+
+    public long position()
+    {
+        if (isClosed)
+        {
+            return CLOSED;
+        }
+
+        return termBeginPosition + termOffset;
+    }
+
+    public long availableWindow()
+    {
+        if (isClosed)
+        {
+            return CLOSED;
+        }
+
+        return positionLimit.getVolatile() - (termBeginPosition + termOffset);
     }
 
     /**
@@ -269,14 +287,14 @@ public class ExclusivePublication extends Publication
 
     /**
      * Try to claim a range in the publication log into which a message can be written with zero copy semantics.
-     * Once the message has been written then {@link ExclusiveBufferClaim#commit()} should be called thus making it
+     * Once the message has been written then {@link BufferClaim#commit()} should be called thus making it
      * available.
      * <p>
      * <b>Note:</b> This method can only be used for message lengths less than MTU length minus header.
      * If the claim is held after the publication is closed, or the client dies, then it will be unblocked to reach
      * end-of-stream (EOS).
      * <pre>{@code
-     *     final ExclusiveBufferClaim bufferClaim = new ExclusiveBufferClaim();
+     *     final BufferClaim bufferClaim = new BufferClaim();
      *
      *     if (publication.tryClaim(messageLength, bufferClaim) > 0L)
      *     {
@@ -381,7 +399,7 @@ public class ExclusivePublication extends Publication
         activePartitionIndex = nextIndex;
         termOffset = 0;
         termId = nextTermId;
-        termBeginPosition = computeTermBeginPosition(nextTermId, positionBitsToShift, initialTermId);
+        termBeginPosition += termBufferLength;
 
         final int termCount = nextTermId - initialTermId;
 

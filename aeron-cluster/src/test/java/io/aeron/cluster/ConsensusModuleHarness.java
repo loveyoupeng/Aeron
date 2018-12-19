@@ -21,7 +21,6 @@ import io.aeron.archive.ArchiveThreadingMode;
 import io.aeron.archive.ArchivingMediaDriver;
 import io.aeron.archive.client.AeronArchive;
 import io.aeron.cluster.client.AeronCluster;
-import io.aeron.cluster.client.IngressSessionDecorator;
 import io.aeron.cluster.codecs.CloseReason;
 import io.aeron.cluster.codecs.SnapshotRecordingsDecoder;
 import io.aeron.cluster.service.ClientSession;
@@ -36,6 +35,7 @@ import org.agrona.collections.Long2LongHashMap;
 import org.agrona.concurrent.EpochClock;
 import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.SleepingMillisIdleStrategy;
+import org.agrona.concurrent.status.CountersReader;
 
 import java.io.File;
 import java.io.IOException;
@@ -49,6 +49,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.IntSupplier;
 
+import static io.aeron.Aeron.NULL_VALUE;
 import static io.aeron.CommonContext.*;
 import static java.util.stream.Collectors.toList;
 
@@ -64,11 +65,11 @@ public class ConsensusModuleHarness implements AutoCloseable, ClusteredService
     private static final long MAX_CATALOG_ENTRIES = 1024;
 
     private static final PrintStream NULL_PRINT_STREAM = new PrintStream(new OutputStream()
+    {
+        public void write(final int b)
         {
-            public void write(final int b)
-            {
-            }
-        });
+        }
+    });
 
     private final ClusteredMediaDriver clusteredMediaDriver;
     private final ClusteredServiceContainer clusteredServiceContainer;
@@ -79,7 +80,6 @@ public class ConsensusModuleHarness implements AutoCloseable, ClusteredService
     private final AtomicInteger serviceOnMessageCounter = new AtomicInteger(0);
     private final IdleStrategy idleStrategy = new SleepingMillisIdleStrategy(1);
     private final ClusterMember[] members;
-    private final Subscription[] memberStatusSubscriptions;
     private final MemberStatusAdapter[] memberStatusAdapters;
     private final Publication[] memberStatusPublications;
     private final MemberStatusPublisher memberStatusPublisher = new MemberStatusPublisher();
@@ -89,7 +89,7 @@ public class ConsensusModuleHarness implements AutoCloseable, ClusteredService
     private final MemberStatusCounters[] memberStatusCounters;
     private final AeronArchive.Context aeronArchiveContext;
 
-    private int thisMemberIndex;
+    private final int thisMemberIndex;
 
     ConsensusModuleHarness(
         final ConsensusModule.Context consensusModuleContext,
@@ -189,7 +189,7 @@ public class ConsensusModuleHarness implements AutoCloseable, ClusteredService
         this.aeronArchiveContext = aeronArchiveContext.clone();
         aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(mediaDriverPath));
 
-        memberStatusSubscriptions = new Subscription[members.length];
+        final Subscription[] memberStatusSubscriptions = new Subscription[members.length];
         memberStatusAdapters = new MemberStatusAdapter[members.length];
         memberStatusPublications = new Publication[members.length];
         memberStatusCounters = new MemberStatusCounters[members.length];
@@ -210,11 +210,9 @@ public class ConsensusModuleHarness implements AutoCloseable, ClusteredService
 
                 final int statusStreamId = consensusModuleContext.memberStatusStreamId();
 
-                memberStatusSubscriptions[i] =
-                    aeron.addSubscription(memberStatusUri.toString(), statusStreamId);
+                memberStatusSubscriptions[i] = aeron.addSubscription(memberStatusUri.toString(), statusStreamId);
 
-                memberStatusAdapters[i] = new MemberStatusAdapter(
-                    memberStatusSubscriptions[i], listener);
+                memberStatusAdapters[i] = new MemberStatusAdapter(memberStatusSubscriptions[i], listener);
                 memberStatusPublications[i] = aeron.addExclusivePublication(
                     consensusModuleContext.memberStatusChannel(), consensusModuleContext.memberStatusStreamId());
 
@@ -316,22 +314,28 @@ public class ConsensusModuleHarness implements AutoCloseable, ClusteredService
         return 0;
     }
 
-    void awaitMemberStatusMessage(final int index)
+    void awaitMemberStatusMessage(final int index, final IntSupplier counterValue, final int initialCounterValue)
     {
         idleStrategy.reset();
-        while (memberStatusAdapters[index].poll(1) == 0)
+
+        while (counterValue.getAsInt() <= initialCounterValue)
         {
-            idleStrategy.idle();
+            idleStrategy.idle(memberStatusAdapters[index].poll());
         }
     }
 
-    void awaitMemberStatusMessage(final int index, final IntSupplier counterValue, final int initialCounterValue)
+    void awaitAllMemberStatusMessages(final int index)
     {
-        do
+        idleStrategy.reset();
+
+        while (memberStatusAdapters[index].poll() == 0)
         {
-            awaitMemberStatusMessage(index);
+            idleStrategy.idle();
         }
-        while (counterValue.getAsInt() == initialCounterValue);
+
+        while (memberStatusAdapters[index].poll() > 0)
+        {
+        }
     }
 
     void awaitMemberStatusMessage(final int index, final IntSupplier counterValue)
@@ -366,6 +370,33 @@ public class ConsensusModuleHarness implements AutoCloseable, ClusteredService
     MemberStatusPublisher memberStatusPublisher()
     {
         return memberStatusPublisher;
+    }
+
+    long electionState()
+    {
+        final CountersReader counters = clusteredMediaDriver.mediaDriver().context().countersManager();
+
+        final long[] electionState = {NULL_VALUE};
+
+        counters.forEach(
+            (counterId, typeId, keyBuffer, label) ->
+            {
+                if (typeId == Election.ELECTION_STATE_TYPE_ID)
+                {
+                    electionState[0] = counters.getCounterValue(counterId);
+                }
+            });
+
+        return electionState[0];
+    }
+
+    void awaitEndOfElection()
+    {
+        idleStrategy.reset();
+        while (electionState() != (long)NULL_VALUE)
+        {
+            idleStrategy.idle();
+        }
     }
 
     Publication createLogPublication(
@@ -523,16 +554,21 @@ public class ConsensusModuleHarness implements AutoCloseable, ClusteredService
         final int numMessages,
         final int maxMessageLength,
         final Random random,
-        final Long2LongHashMap positionMap,
+        final Long2LongHashMap positionByMessageIndexMap,
         final ConsensusModule.Context context)
     {
+        final AtomicBoolean sessionClosed = new AtomicBoolean();
+        final ClusteredService service = new StubClusteredService()
+        {
+            public void onSessionClose(
+                final ClientSession session, final long timestampMs, final CloseReason closeReason)
+            {
+                sessionClosed.set(true);
+            }
+        };
+
         try (ConsensusModuleHarness harness = new ConsensusModuleHarness(
-            context,
-            new StubClusteredService(),
-            null,
-            true,
-            false,
-            false))
+            context, service, null, true, false, false))
         {
             harness.awaitServiceOnStart();
 
@@ -541,11 +577,6 @@ public class ConsensusModuleHarness implements AutoCloseable, ClusteredService
 
             try (AeronCluster aeronCluster = AeronCluster.connect(clusterContext))
             {
-                final IngressSessionDecorator ingressSessionDecorator = new IngressSessionDecorator()
-                    .clusterSessionId(aeronCluster.clusterSessionId())
-                    .leadershipTermId(aeronCluster.leadershipTermId());
-
-                final Publication publication = aeronCluster.ingressPublication();
                 final ExpandableArrayBuffer msgBuffer = new ExpandableArrayBuffer(maxMessageLength);
 
                 for (int i = 0; i < numMessages; i++)
@@ -555,13 +586,12 @@ public class ConsensusModuleHarness implements AutoCloseable, ClusteredService
 
                     while (true)
                     {
-                        final long result = ingressSessionDecorator.offer(
-                            publication, msgBuffer, 0, length);
+                        final long result = aeronCluster.offer(msgBuffer, 0, length);
                         if (result > 0)
                         {
-                            if (null != positionMap)
+                            if (null != positionByMessageIndexMap)
                             {
-                                positionMap.put(i, result);
+                                positionByMessageIndexMap.put(i, result);
                             }
 
                             break;
@@ -569,32 +599,33 @@ public class ConsensusModuleHarness implements AutoCloseable, ClusteredService
 
                         checkOfferResult(result);
                         TestUtil.checkInterruptedStatus();
-
                         Thread.yield();
                     }
                 }
-
-                harness.awaitServiceOnMessageCounter(numMessages);
-
-                // must account for additional events in the log
-                return publication.position() + 64;
             }
+
+            while (!sessionClosed.get())
+            {
+                TestUtil.checkInterruptedStatus();
+                Thread.yield();
+            }
+
+            return harness.clusteredMediaDriver.consensusModule().context().commitPositionCounter().get();
         }
     }
 
     static long makeTruncatedRecordingLog(
-        final int numTotalMessages,
-        final int truncateAtNumMessage,
+        final int totalMessageCount,
+        final int truncateAtMessageCount,
         final int maxMessageLength,
         final Random random,
         final ConsensusModule.Context context)
     {
-        final Long2LongHashMap positionMap = new Long2LongHashMap(-1);
+        final Long2LongHashMap positionByMessageIndexMap = new Long2LongHashMap(-1);
         final File harnessDir = harnessDirectory(context.clusterMemberId());
 
-        makeRecordingLog(numTotalMessages, maxMessageLength, random, positionMap, context);
-
-        final long truncatePosition = positionMap.get(truncateAtNumMessage);
+        makeRecordingLog(totalMessageCount, maxMessageLength, random, positionByMessageIndexMap, context);
+        final long truncatePosition = positionByMessageIndexMap.get(truncateAtMessageCount);
 
         return truncateRecordingLog(harnessDir, 0, truncatePosition);
     }
@@ -674,14 +705,21 @@ public class ConsensusModuleHarness implements AutoCloseable, ClusteredService
                 final long logLeadershipTermId,
                 final long logPosition,
                 final long leadershipTermId,
+                final long maxLogPosition,
                 final int leaderMemberId,
                 final int logSessionId)
             {
                 counters.onNewLeadershipTermCounter++;
-                stream.format("onNewLeadershipTerm[%d] %d %d %d %d %d%n",
-                    index, logLeadershipTermId, logPosition, leadershipTermId, leaderMemberId, logSessionId);
+                stream.format("onNewLeadershipTerm[%d] %d %d %d %d %d %d%n",
+                    index,
+                    logLeadershipTermId,
+                    logPosition,
+                    leadershipTermId,
+                    maxLogPosition,
+                    leaderMemberId,
+                    logSessionId);
                 nextListener.onNewLeadershipTerm(
-                    logLeadershipTermId, logPosition, leadershipTermId, leaderMemberId, logSessionId);
+                    logLeadershipTermId, logPosition, leadershipTermId, maxLogPosition, leaderMemberId, logSessionId);
             }
 
             public void onAppendedPosition(
@@ -710,12 +748,12 @@ public class ConsensusModuleHarness implements AutoCloseable, ClusteredService
                 nextListener.onCatchupPosition(leadershipTermId, logPosition, followerMemberId);
             }
 
-            public void onStopCatchup(final int replaySessionId, final int followerMemberId)
+            public void onStopCatchup(final long leadershipTermId, final long logPosition, final int followerMemberId)
             {
                 counters.onStopCatchupCounter++;
-                stream.format("onStopCatchup[%d] %d %d%n",
-                    index, replaySessionId, followerMemberId);
-                nextListener.onStopCatchup(replaySessionId, followerMemberId);
+                stream.format("onStopCatchup[%d] %d %d %d%n",
+                    index, leadershipTermId, logPosition, followerMemberId);
+                nextListener.onStopCatchup(leadershipTermId, logPosition, followerMemberId);
             }
 
             public void onAddPassiveMember(final long correlationId, final String memberEndpoints)

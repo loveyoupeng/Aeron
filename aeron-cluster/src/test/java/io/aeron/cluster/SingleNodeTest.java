@@ -20,16 +20,12 @@ import io.aeron.cluster.service.Cluster;
 import io.aeron.cluster.service.ClusteredService;
 import org.junit.Test;
 
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyInt;
-import static org.mockito.ArgumentMatchers.anyLong;
-import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 public class SingleNodeTest
 {
     @Test(timeout = 10_000L)
-    public void shouldBeAbleToComeUpInDefaultConfig()
+    public void shouldBeAbleStartWithDefaultConfig()
     {
         final ClusteredService mockService = mock(ClusteredService.class);
 
@@ -42,7 +38,7 @@ public class SingleNodeTest
     }
 
     @Test(timeout = 15_000L)
-    public void shouldBeAbleToLoadUpFromPreviousLog()
+    public void shouldBeAbleToStartFromPreviousLog()
     {
         final int count = 150_000;
         final int length = 100;

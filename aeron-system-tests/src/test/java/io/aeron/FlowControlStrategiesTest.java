@@ -18,6 +18,7 @@ package io.aeron;
 import io.aeron.driver.*;
 import io.aeron.logbuffer.FragmentHandler;
 import io.aeron.logbuffer.Header;
+import io.aeron.logbuffer.LogBufferDescriptor;
 import io.aeron.protocol.DataHeaderFlyweight;
 import org.agrona.DirectBuffer;
 import org.agrona.IoUtil;
@@ -28,7 +29,6 @@ import org.junit.Test;
 
 import java.io.File;
 import java.util.UUID;
-import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 import static org.mockito.Mockito.*;
@@ -42,7 +42,7 @@ public class FlowControlStrategiesTest
 
     private static final int STREAM_ID = 1;
 
-    private static final int TERM_BUFFER_LENGTH = 64 * 1024;
+    private static final int TERM_BUFFER_LENGTH = LogBufferDescriptor.TERM_MIN_LENGTH;
     private static final int NUM_MESSAGES_PER_TERM = 64;
     private static final int MESSAGE_LENGTH =
         (TERM_BUFFER_LENGTH / NUM_MESSAGES_PER_TERM) - DataHeaderFlyweight.HEADER_LENGTH;
@@ -60,9 +60,9 @@ public class FlowControlStrategiesTest
     private Subscription subscriptionA;
     private Subscription subscriptionB;
 
-    private UnsafeBuffer buffer = new UnsafeBuffer(new byte[MESSAGE_LENGTH]);
-    private FragmentHandler fragmentHandlerA = mock(FragmentHandler.class);
-    private FragmentHandler fragmentHandlerB = mock(FragmentHandler.class);
+    private final UnsafeBuffer buffer = new UnsafeBuffer(new byte[MESSAGE_LENGTH]);
+    private final FragmentHandler fragmentHandlerA = mock(FragmentHandler.class);
+    private final FragmentHandler fragmentHandlerB = mock(FragmentHandler.class);
 
     private void launch()
     {
@@ -73,11 +73,13 @@ public class FlowControlStrategiesTest
 
         driverAContext.publicationTermBufferLength(TERM_BUFFER_LENGTH)
             .aeronDirectoryName(baseDirA)
+            .timerIntervalNs(TimeUnit.MILLISECONDS.toNanos(100))
             .errorHandler(Throwable::printStackTrace)
             .threadingMode(ThreadingMode.SHARED);
 
         driverBContext.publicationTermBufferLength(TERM_BUFFER_LENGTH)
             .aeronDirectoryName(baseDirB)
+            .timerIntervalNs(TimeUnit.MILLISECONDS.toNanos(100))
             .errorHandler(Throwable::printStackTrace)
             .threadingMode(ThreadingMode.SHARED);
 
@@ -115,11 +117,9 @@ public class FlowControlStrategiesTest
     }
 
     @Test(timeout = 10_000)
-    public void shouldTimeoutImageWhenBehindForTooLongWithMaxMulticastFlowControlStrategy() throws Exception
+    public void shouldTimeoutImageWhenBehindForTooLongWithMaxMulticastFlowControlStrategy()
     {
         final int numMessagesToSend = NUM_MESSAGES_PER_TERM * 3;
-        final CountDownLatch unavailableCountDownLatch = new CountDownLatch(1);
-        final CountDownLatch availableCountDownLatch = new CountDownLatch(2);
 
         driverBContext.imageLivenessTimeoutNs(TimeUnit.MILLISECONDS.toNanos(500));
         driverAContext.multicastFlowControlSupplier(
@@ -128,11 +128,7 @@ public class FlowControlStrategiesTest
         launch();
 
         subscriptionA = clientA.addSubscription(MULTICAST_URI, STREAM_ID);
-        subscriptionB = clientB.addSubscription(
-            MULTICAST_URI,
-            STREAM_ID,
-            (image) -> availableCountDownLatch.countDown(),
-            (image) -> unavailableCountDownLatch.countDown());
+        subscriptionB = clientB.addSubscription(MULTICAST_URI, STREAM_ID);
         publication = clientA.addPublication(MULTICAST_URI, STREAM_ID);
 
         while (!subscriptionA.isConnected() || !subscriptionB.isConnected())
@@ -177,9 +173,6 @@ public class FlowControlStrategiesTest
                     TimeUnit.MILLISECONDS.toNanos(500));
             }
         }
-
-        unavailableCountDownLatch.await();
-        availableCountDownLatch.await();
 
         verify(fragmentHandlerA, times(numMessagesToSend)).onFragment(
             any(DirectBuffer.class),

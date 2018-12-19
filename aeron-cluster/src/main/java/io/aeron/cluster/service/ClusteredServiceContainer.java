@@ -506,10 +506,7 @@ public final class ClusteredServiceContainer implements AutoCloseable
             {
                 markFile = new ClusterMarkFile(
                     new File(clusterDir, ClusterMarkFile.markFilenameForService(serviceId)),
-                    ClusterComponentType.CONTAINER,
-                    errorBufferLength,
-                    epochClock,
-                    0);
+                    ClusterComponentType.CONTAINER, errorBufferLength, epochClock, 0);
             }
 
             if (null == errorLog)
@@ -558,6 +555,7 @@ public final class ClusteredServiceContainer implements AutoCloseable
             archiveContext
                 .aeron(aeron)
                 .ownsAeronClient(false)
+                .errorHandler(countedErrorHandler)
                 .lock(new NoOpLock());
 
             if (null == shutdownSignalBarrier)
@@ -575,8 +573,7 @@ public final class ClusteredServiceContainer implements AutoCloseable
                 final String className = System.getProperty(Configuration.SERVICE_CLASS_NAME_PROP_NAME);
                 if (null == className)
                 {
-                    throw new ClusterException(
-                        "either a ClusteredService instance or class name for the service must be provided");
+                    throw new ClusterException("either a instance or class name for the service must be provided");
                 }
 
                 try
@@ -1164,7 +1161,7 @@ public final class ClusteredServiceContainer implements AutoCloseable
          * {@link io.aeron.cluster.codecs.ClusterAction#SHUTDOWN} or {@link io.aeron.cluster.codecs.ClusterAction#ABORT}
          * <p>
          * The default action is to call signal on the {@link #shutdownSignalBarrier()}.
-
+         *
          * @return the {@link Runnable} that can be used to terminate a service container.
          */
         public Runnable terminationHook()

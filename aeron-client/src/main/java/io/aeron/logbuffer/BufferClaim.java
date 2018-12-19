@@ -15,19 +15,15 @@
  */
 package io.aeron.logbuffer;
 
-import io.aeron.protocol.DataHeaderFlyweight;
+import org.agrona.DirectBuffer;
 import org.agrona.MutableDirectBuffer;
 import org.agrona.concurrent.AtomicBuffer;
 import org.agrona.concurrent.UnsafeBuffer;
 
 import java.nio.ByteOrder;
 
-import static io.aeron.protocol.DataHeaderFlyweight.HEADER_LENGTH;
-import static io.aeron.protocol.DataHeaderFlyweight.RESERVED_VALUE_OFFSET;
+import static io.aeron.protocol.DataHeaderFlyweight.*;
 import static java.nio.ByteOrder.LITTLE_ENDIAN;
-import static io.aeron.protocol.HeaderFlyweight.FRAME_LENGTH_FIELD_OFFSET;
-import static io.aeron.protocol.HeaderFlyweight.HDR_TYPE_PAD;
-import static io.aeron.protocol.HeaderFlyweight.TYPE_FIELD_OFFSET;
 
 /**
  * Represents a claimed range in a buffer to be used for recording a message without copy semantics for later commit.
@@ -86,12 +82,60 @@ public class BufferClaim
     }
 
     /**
+     * Get the value of the header type field. The lower 16 bits are valid.
+     *
+     * @return the value of the header type field.
+     * @see io.aeron.protocol.DataHeaderFlyweight
+     */
+    public final int headerType()
+    {
+        return buffer.getShort(TYPE_FIELD_OFFSET, LITTLE_ENDIAN) & 0xFFFF;
+    }
+
+    /**
+     * Get the value of the flags field.
+     *
+     * @return the value of the header flags field.
+     * @see io.aeron.protocol.DataHeaderFlyweight
+     */
+    public final byte flags()
+    {
+        return buffer.getByte(FLAGS_FIELD_OFFSET);
+    }
+
+    /**
+     * Set the value of the header flags field.
+     *
+     * @param flags value to be set in the header.
+     * @return this for a fluent API.
+     * @see io.aeron.protocol.DataHeaderFlyweight
+     */
+    public BufferClaim flags(final byte flags)
+    {
+        buffer.putByte(FLAGS_FIELD_OFFSET, flags);
+        return this;
+    }
+
+    /**
+     * Set the value of the header type field. The lower 16 bits are valid.
+     *
+     * @param type value to be set in the header.
+     * @return this for a fluent API.
+     * @see io.aeron.protocol.DataHeaderFlyweight
+     */
+    public BufferClaim headerType(final int type)
+    {
+        buffer.putShort(TYPE_FIELD_OFFSET, (short)type, LITTLE_ENDIAN);
+        return this;
+    }
+
+    /**
      * Get the value stored in the reserve space at the end of a data frame header.
      * <p>
      * Note: The value is in {@link ByteOrder#LITTLE_ENDIAN} format.
      *
      * @return the value stored in the reserve space at the end of a data frame header.
-     * @see DataHeaderFlyweight
+     * @see io.aeron.protocol.DataHeaderFlyweight
      */
     public final long reservedValue()
     {
@@ -105,11 +149,26 @@ public class BufferClaim
      *
      * @param value to be stored in the reserve space at the end of a data frame header.
      * @return this for fluent API semantics.
-     * @see DataHeaderFlyweight
+     * @see io.aeron.protocol.DataHeaderFlyweight
      */
     public BufferClaim reservedValue(final long value)
     {
         buffer.putLong(RESERVED_VALUE_OFFSET, value, LITTLE_ENDIAN);
+        return this;
+    }
+
+    /**
+     * Put bytes into the claimed buffer space for a message. To write multiple parts then use {@link #buffer()}
+     * and {@link #offset()}.
+     *
+     * @param srcBuffer to copy into the claimed space.
+     * @param srcIndex  in the source buffer from which to copy.
+     * @param length    of the source buffer to copy.
+     * @return this for a fluent API.
+     */
+    public final BufferClaim putBytes(final DirectBuffer srcBuffer, final int srcIndex, final int length)
+    {
+        buffer.putBytes(HEADER_LENGTH, srcBuffer, srcIndex, length);
         return this;
     }
 

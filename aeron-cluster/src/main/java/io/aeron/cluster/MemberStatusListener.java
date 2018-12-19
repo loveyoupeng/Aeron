@@ -32,7 +32,12 @@ interface MemberStatusListener
         boolean vote);
 
     void onNewLeadershipTerm(
-        long logLeadershipTermId, long logPosition, long leadershipTermId, int leaderMemberId, int logSessionId);
+        long logLeadershipTermId,
+        long logPosition,
+        long leadershipTermId,
+        long maxLogPosition,
+        int leaderMemberId,
+        int logSessionId);
 
     void onAppendedPosition(long leadershipTermId, long logPosition, int followerMemberId);
 
@@ -40,7 +45,7 @@ interface MemberStatusListener
 
     void onCatchupPosition(long leadershipTermId, long logPosition, int followerMemberId);
 
-    void onStopCatchup(int replaySessionId, int followerMemberId);
+    void onStopCatchup(long leadershiptTermId, long logPosition, int followerMemberId);
 
     void onAddPassiveMember(long correlationId, String memberEndpoints);
 

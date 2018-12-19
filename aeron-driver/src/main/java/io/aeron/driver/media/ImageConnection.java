@@ -17,14 +17,15 @@ package io.aeron.driver.media;
 
 import java.net.InetSocketAddress;
 
-public class DestinationImageControlAddress
+public class ImageConnection
 {
     public long timeOfLastFrameNs;
-    public InetSocketAddress address;
+    public boolean isEos;
+    public final InetSocketAddress controlAddress;
 
-    public DestinationImageControlAddress(final long timeOfLastFrameNs, final InetSocketAddress address)
+    public ImageConnection(final long timeOfLastFrameNs, final InetSocketAddress controlAddress)
     {
         this.timeOfLastFrameNs = timeOfLastFrameNs;
-        this.address = address;
+        this.controlAddress = controlAddress;
     }
 }

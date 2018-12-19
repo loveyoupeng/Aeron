@@ -38,18 +38,17 @@ public class MinMulticastFlowControl implements FlowControl
     /**
      * Property name to set timeout, in nanoseconds, for a receiver to be tracked.
      */
-    private static final String RECEIVER_TIMEOUT_PROP_NAME = "aeron.MinMulticastFlowControl.receiverTimeout";
+    public static final String RECEIVER_TIMEOUT_PROP_NAME = "aeron.MinMulticastFlowControl.receiverTimeout";
 
     /**
      * Default timeout, in nanoseconds, until a receiver is no longer tracked and considered for minimum.
      */
-    private static final long RECEIVER_TIMEOUT_DEFAULT = TimeUnit.SECONDS.toNanos(2);
+    public static final long RECEIVER_TIMEOUT_DEFAULT = TimeUnit.SECONDS.toNanos(2);
 
-    private static final long RECEIVER_TIMEOUT = getDurationInNanos(
+    public static final long RECEIVER_TIMEOUT = getDurationInNanos(
         RECEIVER_TIMEOUT_PROP_NAME, RECEIVER_TIMEOUT_DEFAULT);
 
     private final ArrayList<Receiver> receiverList = new ArrayList<>();
-
     private volatile boolean shouldLinger = true;
 
     /**
@@ -110,8 +109,7 @@ public class MinMulticastFlowControl implements FlowControl
     /**
      * {@inheritDoc}
      */
-    public long onIdle(
-        final long timeNs, final long senderLimit, final long senderPosition, final boolean isEndOfStream)
+    public long onIdle(final long timeNs, final long senderLimit, final long senderPosition, final boolean isEos)
     {
         long minPosition = Long.MAX_VALUE;
         long minLimitPosition = Long.MAX_VALUE;
@@ -131,7 +129,7 @@ public class MinMulticastFlowControl implements FlowControl
             }
         }
 
-        if (isEndOfStream && shouldLinger)
+        if (isEos && shouldLinger)
         {
             if (0 == receiverList.size() || minPosition >= senderPosition)
             {
@@ -155,8 +153,8 @@ public class MinMulticastFlowControl implements FlowControl
         long lastPosition;
         long lastPositionPlusWindow;
         long timeOfLastStatusMessageNs;
-        long receiverId;
-        InetSocketAddress address;
+        final long receiverId;
+        final InetSocketAddress address;
 
         Receiver(
             final long lastPosition,

@@ -487,7 +487,7 @@ public class Aeron implements AutoCloseable
          * There is no need to call it from a client application. It is responsible for providing default
          * values for options that are not individually changed through field setters.
          *
-         * @return this Aeron.Context for method chaining.
+         * @return this for a fluent API.
          */
         public Context conclude()
         {
@@ -649,7 +649,7 @@ public class Aeron implements AutoCloseable
          * Set the {@link EpochClock} to be used for tracking wall clock time when interacting with the driver.
          *
          * @param clock {@link EpochClock} to be used for tracking wall clock time when interacting with the driver.
-         * @return this Aeron.Context for method chaining
+         * @return this for a fluent API.
          */
         public Context epochClock(final EpochClock clock)
         {
@@ -671,7 +671,7 @@ public class Aeron implements AutoCloseable
          * Set the {@link NanoClock} to be used for tracking high resolution time.
          *
          * @param clock {@link NanoClock} to be used for tracking high resolution time.
-         * @return this Aeron.Context for method chaining
+         * @return this for a fluent API.
          */
         public Context nanoClock(final NanoClock clock)
         {
@@ -693,7 +693,7 @@ public class Aeron implements AutoCloseable
          * Provides an IdleStrategy for the thread responsible for communicating with the Aeron Media Driver.
          *
          * @param idleStrategy Thread idle strategy for communication with the Media Driver.
-         * @return this Aeron.Context for method chaining.
+         * @return this for a fluent API.
          */
         public Context idleStrategy(final IdleStrategy idleStrategy)
         {
@@ -715,7 +715,7 @@ public class Aeron implements AutoCloseable
          * This method is used for testing and debugging.
          *
          * @param toClientBuffer Injected CopyBroadcastReceiver
-         * @return this Aeron.Context for method chaining.
+         * @return this for a fluent API.
          */
         Context toClientBuffer(final CopyBroadcastReceiver toClientBuffer)
         {
@@ -737,7 +737,7 @@ public class Aeron implements AutoCloseable
          * This method is used for testing and debugging.
          *
          * @param toDriverBuffer Injected RingBuffer.
-         * @return this Aeron.Context for method chaining.
+         * @return this for a fluent API.
          */
         Context toDriverBuffer(final RingBuffer toDriverBuffer)
         {
@@ -759,7 +759,7 @@ public class Aeron implements AutoCloseable
          * Set the proxy for communicating with the media driver.
          *
          * @param driverProxy for communicating with the media driver.
-         * @return this Aeron.Context for method chaining.
+         * @return this for a fluent API.
          */
         Context driverProxy(final DriverProxy driverProxy)
         {
@@ -781,7 +781,7 @@ public class Aeron implements AutoCloseable
          * This method is used for testing and debugging.
          *
          * @param logBuffersFactory Injected LogBuffersFactory
-         * @return this Aeron.Context for method chaining.
+         * @return this for a fluent API.
          */
         Context logBuffersFactory(final LogBuffersFactory logBuffersFactory)
         {
@@ -809,7 +809,7 @@ public class Aeron implements AutoCloseable
          * {@link CountedErrorHandler}.
          *
          * @param errorHandler Method to handle objects of type Throwable.
-         * @return this Aeron.Context for method chaining.
+         * @return this for a fluent API.
          * @see io.aeron.exceptions.DriverTimeoutException
          * @see io.aeron.exceptions.RegistrationException
          */
@@ -833,7 +833,7 @@ public class Aeron implements AutoCloseable
          * Setup a default callback for when an {@link Image} is available.
          *
          * @param handler Callback method for handling available image notifications.
-         * @return this Aeron.Context for method chaining.
+         * @return this for a fluent API.
          */
         public Context availableImageHandler(final AvailableImageHandler handler)
         {
@@ -855,7 +855,7 @@ public class Aeron implements AutoCloseable
          * Setup a default callback for when an {@link Image} is unavailable.
          *
          * @param handler Callback method for handling unavailable image notifications.
-         * @return this Aeron.Context for method chaining.
+         * @return this for a fluent API.
          */
         public Context unavailableImageHandler(final UnavailableImageHandler handler)
         {
@@ -877,7 +877,7 @@ public class Aeron implements AutoCloseable
          * Setup a callback for when a counter is available.
          *
          * @param handler to be called for handling available counter notifications.
-         * @return this Aeron.Context for fluent API.
+         * @return this for a fluent API.
          */
         public Context availableCounterHandler(final AvailableCounterHandler handler)
         {
@@ -899,7 +899,7 @@ public class Aeron implements AutoCloseable
          * Setup a callback for when a counter is unavailable.
          *
          * @param handler to be called for handling unavailable counter notifications.
-         * @return this Aeron.Context for fluent API.
+         * @return this for a fluent API.
          */
         public Context unavailableCounterHandler(final UnavailableCounterHandler handler)
         {
@@ -921,7 +921,7 @@ public class Aeron implements AutoCloseable
          * Set the interval in nanoseconds for which the client will perform keep-alive operations.
          *
          * @param value the interval in nanoseconds for which the client will perform keep-alive operations.
-         * @return this Aeron.Context for method chaining.
+         * @return this for a fluent API.
          */
         public Context keepAliveInterval(final long value)
         {
@@ -945,7 +945,7 @@ public class Aeron implements AutoCloseable
          * {@link io.aeron.exceptions.DriverTimeoutException} will be generated for the error handler.
          *
          * @param value Number of milliseconds.
-         * @return this Aeron.Context for method chaining.
+         * @return this for a fluent API.
          * @see #errorHandler(ErrorHandler)
          */
         public Context driverTimeoutMs(final long value)
@@ -958,7 +958,7 @@ public class Aeron implements AutoCloseable
          * Set the timeout between service calls the to {@link ClientConductor} duty cycles in nanoseconds.
          *
          * @param interServiceTimeout the timeout (ns) between service calls the to {@link ClientConductor} duty cycle.
-         * @return this Aeron.Context for method chaining.
+         * @return this for a fluent API.
          */
         Context interServiceTimeout(final long interServiceTimeout)
         {

@@ -77,9 +77,9 @@ public class PubAndSubTest
     private Subscription subscription;
     private Publication publication;
 
-    private UnsafeBuffer buffer = new UnsafeBuffer(new byte[8192]);
-    private FragmentHandler fragmentHandler = mock(FragmentHandler.class);
-    private RawBlockHandler rawBlockHandler = mock(RawBlockHandler.class);
+    private final UnsafeBuffer buffer = new UnsafeBuffer(new byte[8192]);
+    private final FragmentHandler fragmentHandler = mock(FragmentHandler.class);
+    private final RawBlockHandler rawBlockHandler = mock(RawBlockHandler.class);
 
     private void launch(final String channel)
     {
@@ -785,8 +785,7 @@ public class PubAndSubTest
         final int numMessagesToSend = 2;
         final int numFramesToExpect = numMessagesToSend * numFragmentsPerMessage;
 
-        context.publicationTermBufferLength(termBufferLength)
-            .mtuLength(mtuLength);
+        context.publicationTermBufferLength(termBufferLength);
 
         launch(channel);
 

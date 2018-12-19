@@ -186,9 +186,19 @@ public class CommonContext implements AutoCloseable, Cloneable
     public static final String TAGS_PARAM_NAME = "tags";
 
     /**
+     * Qualifier for a value which is a tag for reference. This prefix is use in the param value.
+     */
+    public static final String TAG_PREFIX = "tag:";
+
+    /**
      * Parameter name for channel URI param to indicate if term buffers should be sparse. Value is boolean.
      */
     public static final String SPARSE_PARAM_NAME = "sparse";
+
+    /**
+     * Parameter name for channel URI param to indicate an alias for the given URI. Value not interpreted by Aeron.
+     */
+    public static final String ALIAS_PARAM_NAME = "alias";
 
     private long driverTimeoutMs = DRIVER_TIMEOUT_MS;
     private String aeronDirectoryName = getAeronDirectoryName();

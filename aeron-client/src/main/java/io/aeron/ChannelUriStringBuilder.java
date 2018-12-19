@@ -33,7 +33,7 @@ public class ChannelUriStringBuilder
 {
     public static final String TAG_PREFIX = "tag:";
 
-    private StringBuilder sb = new StringBuilder(64);
+    private final StringBuilder sb = new StringBuilder(64);
 
     private String prefix;
     private String media;
@@ -42,6 +42,7 @@ public class ChannelUriStringBuilder
     private String controlEndpoint;
     private String controlMode;
     private String tags;
+    private String alias;
     private Boolean reliable;
     private Boolean sparse;
     private Integer ttl;
@@ -51,7 +52,7 @@ public class ChannelUriStringBuilder
     private Integer termId;
     private Integer termOffset;
     private Integer sessionId;
-    private Integer linger;
+    private Long linger;
     private boolean isSessionIdTagged;
 
     /**
@@ -68,6 +69,7 @@ public class ChannelUriStringBuilder
         controlEndpoint = null;
         controlMode = null;
         tags = null;
+        alias = null;
         reliable = null;
         ttl = null;
         mtu = null;
@@ -542,14 +544,14 @@ public class ChannelUriStringBuilder
     }
 
     /**
-     * Set the time a publication will linger in nanoseconds after being drained. This time is so that tail loss
+     * Set the time a network publication will linger in nanoseconds after being drained. This time is so that tail loss
      * can be recovered.
      *
      * @param lingerNs time for the publication after it is drained.
      * @return this for a fluent API.
      * @see CommonContext#LINGER_PARAM_NAME
      */
-    public ChannelUriStringBuilder linger(final Integer lingerNs)
+    public ChannelUriStringBuilder linger(final Long lingerNs)
     {
         if (null != lingerNs && lingerNs < 0)
         {
@@ -561,23 +563,25 @@ public class ChannelUriStringBuilder
     }
 
     /**
-     * Get the time a publication will linger in nanoseconds after being drained. This time is so that tail loss
+     * Get the time a network publication will linger in nanoseconds after being drained. This time is so that tail loss
      * can be recovered.
      *
      * @return the linger time in nanoseconds a publication will wait around after being drained.
      * @see CommonContext#LINGER_PARAM_NAME
      */
-    public Integer linger()
+    public Long linger()
     {
         return linger;
     }
 
     /**
-     * Set the tags for a channel, and/or publication or subscription.
+     * Set the tags for a channel used by a publication or subscription. Tags can be used to identify or tag a
+     * channel so that a configuration can be referenced and reused.
      *
      * @param tags for the channel, publication or subscription.
      * @return this for a fluent API.
      * @see CommonContext#TAGS_PARAM_NAME
+     * @see CommonContext#TAG_PREFIX
      */
     public ChannelUriStringBuilder tags(final String tags)
     {
@@ -586,10 +590,12 @@ public class ChannelUriStringBuilder
     }
 
     /**
-     * Get the tags for a channel, and/or publication or subscription.
+     * Get the tags for a channel used by a publication or subscription. Tags can be used to identify or tag a
+     * channel so that a configuration can be referenced and reused.
      *
      * @return the tags for a channel, publication or subscription.
      * @see CommonContext#TAGS_PARAM_NAME
+     * @see CommonContext#TAG_PREFIX
      */
     public String tags()
     {
@@ -601,6 +607,8 @@ public class ChannelUriStringBuilder
      *
      * @param isSessionIdTagged for session id
      * @return this for a fluent API.
+     * @see CommonContext#TAGS_PARAM_NAME
+     * @see CommonContext#TAG_PREFIX
      */
     public ChannelUriStringBuilder isSessionIdTagged(final boolean isSessionIdTagged)
     {
@@ -612,10 +620,36 @@ public class ChannelUriStringBuilder
      * Is the value for {@link #sessionId()} a tagged.
      *
      * @return whether the value for {@link #sessionId()} a tag reference or not.
+     * @see CommonContext#TAGS_PARAM_NAME
+     * @see CommonContext#TAG_PREFIX
      */
     public boolean isSessionIdTagged()
     {
         return isSessionIdTagged;
+    }
+
+    /**
+     * Set the alias for a URI. Alias's are not interpreted by Aeron and are to be used by the application
+     *
+     * @param alias for the URI.
+     * @return this for a fluent API.
+     * @see CommonContext#ALIAS_PARAM_NAME
+     */
+    public ChannelUriStringBuilder alias(final String alias)
+    {
+        this.alias = alias;
+        return this;
+    }
+
+    /**
+     * Get the alias present in the URI.
+     *
+     * @return alias for the URI.
+     * @see CommonContext#ALIAS_PARAM_NAME
+     */
+    public String alias()
+    {
+        return alias;
     }
 
     /**
@@ -727,6 +761,11 @@ public class ChannelUriStringBuilder
         if (null != linger)
         {
             sb.append(LINGER_PARAM_NAME).append('=').append(linger.intValue()).append('|');
+        }
+
+        if (null != alias)
+        {
+            sb.append(ALIAS_PARAM_NAME).append('=').append(alias).append('|');
         }
 
         final char lastChar = sb.charAt(sb.length() - 1);

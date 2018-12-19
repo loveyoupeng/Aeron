@@ -64,7 +64,7 @@ public class ChannelUri
     private String prefix;
     private String media;
     private final Map<String, String> params;
-    private String[] tags;
+    private final String[] tags;
 
     /**
      * Construct with the components provided to avoid parsing.
@@ -78,7 +78,6 @@ public class ChannelUri
         this.prefix = prefix;
         this.media = media;
         this.params = params;
-
         this.tags = splitTags(params.get(TAGS_PARAM_NAME));
     }
 
@@ -211,23 +210,27 @@ public class ChannelUri
     }
 
     /**
-     * Get the channel tag.
+     * Get the channel tag, if it exists, that refers to an another channel.
      *
-     * @return channel tag.
+     * @return channel tag if it exists or null if not in this URI.
+     * @see CommonContext#TAGS_PARAM_NAME
+     * @see CommonContext#TAG_PREFIX
      */
     public String channelTag()
     {
-        return (tags.length > CHANNEL_TAG_INDEX) ? tags[CHANNEL_TAG_INDEX] : null;
+        return (null != tags && tags.length > CHANNEL_TAG_INDEX) ? tags[CHANNEL_TAG_INDEX] : null;
     }
 
     /**
-     * Get the entity tag.
+     * Get the entity tag, if it exists, that refers to an entity such as subscription or publication.
      *
-     * @return entity tag.
+     * @return entity tag if it exists or null if not in this URI.
+     * @see CommonContext#TAGS_PARAM_NAME
+     * @see CommonContext#TAG_PREFIX
      */
     public String entityTag()
     {
-        return (tags.length > ENTITY_TAG_INDEX) ? tags[ENTITY_TAG_INDEX] : null;
+        return (null != tags && tags.length > ENTITY_TAG_INDEX) ? tags[ENTITY_TAG_INDEX] : null;
     }
 
     /**
@@ -241,7 +244,6 @@ public class ChannelUri
         if (prefix == null || "".equals(prefix))
         {
             sb = new StringBuilder((params.size() * 20) + 10);
-
         }
         else
         {
@@ -299,7 +301,7 @@ public class ChannelUri
     {
         int position = 0;
         final String prefix;
-        if (startsWith(cs, SPY_PREFIX))
+        if (startsWith(cs, 0, SPY_PREFIX))
         {
             prefix = SPY_QUALIFIER;
             position = SPY_PREFIX.length();
@@ -348,30 +350,28 @@ public class ChannelUri
                     break;
 
                 case PARAMS_KEY:
-                    switch (c)
+                    if (c == '=')
                     {
-                        case '=':
-                            key = builder.toString();
-                            builder.setLength(0);
-                            state = State.PARAMS_VALUE;
-                            break;
-
-                        default:
-                            builder.append(c);
+                        key = builder.toString();
+                        builder.setLength(0);
+                        state = State.PARAMS_VALUE;
+                    }
+                    else
+                    {
+                        builder.append(c);
                     }
                     break;
 
                 case PARAMS_VALUE:
-                    switch (c)
+                    if (c == '|')
                     {
-                        case '|':
-                            params.put(key, builder.toString());
-                            builder.setLength(0);
-                            state = State.PARAMS_KEY;
-                            break;
-
-                        default:
-                            builder.append(c);
+                        params.put(key, builder.toString());
+                        builder.setLength(0);
+                        state = State.PARAMS_KEY;
+                    }
+                    else
+                    {
+                        builder.append(c);
                     }
                     break;
 
@@ -413,21 +413,25 @@ public class ChannelUri
     }
 
     /**
-     * Is the param tagged? (starts with the "tag:" prefix)
+     * Is the param value tagged? (starts with the "tag:" prefix)
      *
      * @param paramValue to check if tagged.
      * @return true if tagged or false if not.
+     * @see CommonContext#TAGS_PARAM_NAME
+     * @see CommonContext#TAG_PREFIX
      */
     public static boolean isTagged(final String paramValue)
     {
-        return startsWith(paramValue, "tag:");
+        return startsWith(paramValue, 0, TAG_PREFIX);
     }
 
     /**
-     * Get the value of the tag from a given parameter.
+     * Get the value of the tag from a given parameter value.
      *
      * @param paramValue to extract the tag value from.
      * @return the value of the tag or {@link #INVALID_TAG} if not tagged.
+     * @see CommonContext#TAGS_PARAM_NAME
+     * @see CommonContext#TAG_PREFIX
      */
     public static long getTag(final String paramValue)
     {
@@ -453,47 +457,54 @@ public class ChannelUri
         return true;
     }
 
-    private static boolean startsWith(final CharSequence input, final CharSequence prefix)
+    private static String[] splitTags(final String tagsValue)
     {
-        return startsWith(input, 0, prefix);
-    }
+        String[] tags = ArrayUtil.EMPTY_STRING_ARRAY;
 
-    private static String[] splitTags(final CharSequence tags)
-    {
-        String[] stringArray = ArrayUtil.EMPTY_STRING_ARRAY;
-
-        if (null != tags)
+        if (null != tagsValue)
         {
-            int currentStartIndex = 0;
-            int tagIndex = 0;
-            stringArray = new String[2];
-            final int length = tags.length();
-
-            for (int i = 0; i < length; i++)
+            final int tagCount = countTags(tagsValue);
+            if (tagCount == 1)
             {
-                if (tags.charAt(i) == ',')
-                {
-                    String tag = null;
-
-                    if ((i - currentStartIndex) > 0)
-                    {
-                        tag = tags.subSequence(currentStartIndex, i).toString();
-                        currentStartIndex = i + 1;
-                    }
-
-                    stringArray = ArrayUtil.ensureCapacity(stringArray, tagIndex + 1);
-                    stringArray[tagIndex] = tag;
-                    tagIndex++;
-                }
+                tags = new String[]{ tagsValue };
             }
-
-            if ((length - currentStartIndex) > 0)
+            else
             {
-                stringArray = ArrayUtil.ensureCapacity(stringArray, tagIndex + 1);
-                stringArray[tagIndex] = tags.subSequence(currentStartIndex, length).toString();
+                int tagStartPosition = 0;
+                int tagIndex = 0;
+                tags = new String[tagCount];
+
+                for (int i = 0, length = tagsValue.length(); i < length; i++)
+                {
+                    if (tagsValue.charAt(i) == ',')
+                    {
+                        tags[tagIndex++] = tagsValue.substring(tagStartPosition, i);
+                        tagStartPosition = i + 1;
+
+                        if (tagIndex >= (tagCount - 1))
+                        {
+                            tags[tagIndex] = tagsValue.substring(tagStartPosition, length);
+                        }
+                    }
+                }
             }
         }
 
-        return stringArray;
+        return tags;
+    }
+
+    private static int countTags(final String tags)
+    {
+        int count = 1;
+
+        for (int i = 0, length = tags.length(); i < length; i++)
+        {
+            if (tags.charAt(i) == ',')
+            {
+                ++count;
+            }
+        }
+
+        return count;
     }
 }

@@ -35,9 +35,6 @@ import java.util.concurrent.TimeUnit;
 
 import static org.hamcrest.CoreMatchers.is;
 import static org.junit.Assert.assertThat;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyInt;
-import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 public class MultiDestinationSubscriptionTest
@@ -54,7 +51,7 @@ public class MultiDestinationSubscriptionTest
 
     private static final int STREAM_ID = 1;
 
-    private static final int TERM_BUFFER_LENGTH = 64 * 1024;
+    private static final int TERM_BUFFER_LENGTH = LogBufferDescriptor.TERM_MIN_LENGTH;
     private static final int NUM_MESSAGES_PER_TERM = 64;
     private static final int MESSAGE_LENGTH =
         (TERM_BUFFER_LENGTH / NUM_MESSAGES_PER_TERM) - DataHeaderFlyweight.HEADER_LENGTH;
@@ -69,8 +66,8 @@ public class MultiDestinationSubscriptionTest
     private Publication publicationB;
     private Subscription subscription;
 
-    private UnsafeBuffer buffer = new UnsafeBuffer(new byte[MESSAGE_LENGTH]);
-    private FragmentHandler fragmentHandler = mock(FragmentHandler.class);
+    private final UnsafeBuffer buffer = new UnsafeBuffer(new byte[MESSAGE_LENGTH]);
+    private final FragmentHandler fragmentHandler = mock(FragmentHandler.class);
 
     private void launch()
     {

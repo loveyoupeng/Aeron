@@ -23,6 +23,7 @@ import io.aeron.driver.exceptions.InvalidChannelException;
 import org.agrona.BitUtil;
 
 import java.net.*;
+import java.util.Objects;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static io.aeron.driver.media.NetworkUtil.*;
@@ -47,7 +48,6 @@ public final class UdpChannel
     private final boolean hasExplicitControl;
     private final boolean isMulticast;
     private final boolean hasTag;
-    private final boolean hasNoDistinguishingCharacteristic;
     private final long tag;
     private final int multicastTtl;
     private final InetSocketAddress remoteData;
@@ -65,7 +65,6 @@ public final class UdpChannel
         hasExplicitControl = context.hasExplicitControl;
         isMulticast = context.isMulticast;
         hasTag = context.hasTagId;
-        hasNoDistinguishingCharacteristic = context.hasNoDistinguishingCharacteristic;
         tag = context.tagId;
         multicastTtl = context.multicastTtl;
         remoteData = context.remoteData;
@@ -171,7 +170,7 @@ public final class UdpChannel
                     resolveToAddressOfInterface(findInterface(searchAddress), searchAddress);
 
                 final String uniqueCanonicalFormSuffix = hasNoDistinguishingCharacteristic ?
-                    ("-" + Integer.toString(UNIQUE_CANONICAL_FORM_VALUE.getAndAdd(1))) : "";
+                    ("-" + UNIQUE_CANONICAL_FORM_VALUE.getAndAdd(1)) : "";
 
                 context
                     .remoteControlAddress(endpointAddress)
@@ -323,7 +322,7 @@ public final class UdpChannel
 
         final UdpChannel that = (UdpChannel)o;
 
-        return !(canonicalForm != null ? !canonicalForm.equals(that.canonicalForm) : that.canonicalForm != null);
+        return Objects.equals(canonicalForm, that.canonicalForm);
     }
 
     public int hashCode()

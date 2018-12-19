@@ -362,6 +362,14 @@ public abstract class Publication implements AutoCloseable
     }
 
     /**
+     * Available window for offering into a publication before the {@link #positionLimit()} is reached.
+     *
+     * @return  window for offering into a publication before the {@link #positionLimit()} is reached. If
+     * the publication is closed then {@link #CLOSED} will be returned.
+     */
+    public abstract long availableWindow();
+
+    /**
      * Non-blocking publish of a buffer containing a message.
      *
      * @param buffer containing message.

@@ -132,7 +132,6 @@ class Election implements AutoCloseable
     private State state = State.INIT;
     private Counter stateCounter;
     private Subscription logSubscription;
-    private String replayDestination;
     private String liveLogDestination;
     private LogReplay logReplay = null;
 
@@ -170,12 +169,6 @@ class Election implements AutoCloseable
     public void close()
     {
         CloseHelper.close(stateCounter);
-
-        if (null != logSubscription && null != replayDestination)
-        {
-            logSubscription.removeDestination(replayDestination);
-            replayDestination = null;
-        }
     }
 
     int doWork(final long nowMs)
@@ -263,6 +256,7 @@ class Election implements AutoCloseable
                     logLeadershipTermId,
                     consensusModuleAgent.logStopPosition(logLeadershipTermId),
                     logLeadershipTermId + 1,
+                    this.logPosition,
                     thisMember.id(),
                     logSessionId);
             }
@@ -321,10 +315,12 @@ class Election implements AutoCloseable
         }
     }
 
+    @SuppressWarnings("unused")
     void onNewLeadershipTerm(
         final long logLeadershipTermId,
         final long logPosition,
         final long leadershipTermId,
+        final long maxLogPosition,
         final int leaderMemberId,
         final int logSessionId)
     {
@@ -396,6 +392,7 @@ class Election implements AutoCloseable
             follower
                 .logPosition(logPosition)
                 .leadershipTermId(leadershipTermId);
+            consensusModuleAgent.checkCatchupStop(follower);
         }
     }
 
@@ -740,12 +737,13 @@ class Election implements AutoCloseable
             logSubscription = consensusModuleAgent.createAndRecordLogSubscriptionAsFollower(logChannelUri.toString());
             consensusModuleAgent.awaitServicesReady(logChannelUri, logSessionId, logPosition);
 
-            replayDestination = new ChannelUriStringBuilder()
+            final String replayDestination = new ChannelUriStringBuilder()
                 .media(CommonContext.UDP_MEDIA)
                 .endpoint(thisMember.transferEndpoint())
                 .build();
 
             logSubscription.addDestination(replayDestination);
+            consensusModuleAgent.replayLogDestination(replayDestination);
         }
 
         if (catchupPosition(leadershipTermId, logPosition))
@@ -771,11 +769,8 @@ class Election implements AutoCloseable
         if (consensusModuleAgent.hasAppendReachedPosition(logSubscription, logSessionId, catchupLogPosition))
         {
             logPosition = catchupLogPosition;
-            if (memberStatusPublisher.stopCatchup(leaderMember.publication(), logSessionId, thisMember.id()))
-            {
-                state(State.FOLLOWER_TRANSITION, nowMs);
-                workCount += 1;
-            }
+            state(State.FOLLOWER_TRANSITION, nowMs);
+            workCount += 1;
         }
 
         return workCount;
@@ -816,12 +811,6 @@ class Election implements AutoCloseable
         {
             if (consensusModuleAgent.electionComplete(nowMs))
             {
-                if (null != replayDestination)
-                {
-                    logSubscription.removeDestination(replayDestination);
-                    replayDestination = null;
-                }
-
                 consensusModuleAgent.updateMemberDetails(this);
                 close();
             }
@@ -865,6 +854,7 @@ class Election implements AutoCloseable
             logLeadershipTermId,
             logPosition,
             leadershipTermId,
+            logPosition,
             thisMember.id(),
             logSessionId);
     }

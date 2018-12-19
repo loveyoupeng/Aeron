@@ -19,6 +19,7 @@ import io.aeron.driver.MediaDriver;
 import io.aeron.driver.ThreadingMode;
 import io.aeron.logbuffer.FragmentHandler;
 import io.aeron.logbuffer.Header;
+import io.aeron.logbuffer.LogBufferDescriptor;
 import io.aeron.protocol.DataHeaderFlyweight;
 import org.agrona.CloseHelper;
 import org.agrona.DirectBuffer;
@@ -49,7 +50,7 @@ public class MultiDestinationCastTest
 
     private static final int STREAM_ID = 1;
 
-    private static final int TERM_BUFFER_LENGTH = 64 * 1024;
+    private static final int TERM_BUFFER_LENGTH = LogBufferDescriptor.TERM_MIN_LENGTH;
     private static final int NUM_MESSAGES_PER_TERM = 64;
     private static final int MESSAGE_LENGTH =
         (TERM_BUFFER_LENGTH / NUM_MESSAGES_PER_TERM) - DataHeaderFlyweight.HEADER_LENGTH;
@@ -67,10 +68,10 @@ public class MultiDestinationCastTest
     private Subscription subscriptionB;
     private Subscription subscriptionC;
 
-    private UnsafeBuffer buffer = new UnsafeBuffer(new byte[MESSAGE_LENGTH]);
-    private FragmentHandler fragmentHandlerA = mock(FragmentHandler.class);
-    private FragmentHandler fragmentHandlerB = mock(FragmentHandler.class);
-    private FragmentHandler fragmentHandlerC = mock(FragmentHandler.class);
+    private final UnsafeBuffer buffer = new UnsafeBuffer(new byte[MESSAGE_LENGTH]);
+    private final FragmentHandler fragmentHandlerA = mock(FragmentHandler.class);
+    private final FragmentHandler fragmentHandlerB = mock(FragmentHandler.class);
+    private final FragmentHandler fragmentHandlerC = mock(FragmentHandler.class);
 
     private void launch()
     {

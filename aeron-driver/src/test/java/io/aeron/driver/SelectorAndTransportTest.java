@@ -65,12 +65,12 @@ public class SelectorAndTransportTest
     private final DataPacketDispatcher mockDispatcher = mock(DataPacketDispatcher.class);
     private final NetworkPublication mockPublication = mock(NetworkPublication.class);
 
-    private DataTransportPoller dataTransportPoller = new DataTransportPoller();
-    private ControlTransportPoller controlTransportPoller = new ControlTransportPoller();
+    private final DataTransportPoller dataTransportPoller = new DataTransportPoller();
+    private final ControlTransportPoller controlTransportPoller = new ControlTransportPoller();
     private SendChannelEndpoint sendChannelEndpoint;
     private ReceiveChannelEndpoint receiveChannelEndpoint;
 
-    private MediaDriver.Context context = new MediaDriver.Context();
+    private final MediaDriver.Context context = new MediaDriver.Context();
 
     @Before
     public void setup()
@@ -100,11 +100,8 @@ public class SelectorAndTransportTest
                 processLoop(dataTransportPoller, 5);
             }
 
-            if (null != dataTransportPoller)
-            {
-                dataTransportPoller.close();
-                controlTransportPoller.close();
-            }
+            dataTransportPoller.close();
+            controlTransportPoller.close();
         }
         catch (final Exception ex)
         {

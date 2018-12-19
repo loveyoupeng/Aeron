@@ -21,7 +21,7 @@ buildscript {
 
 plugins {
     id 'java'
-    id 'com.github.johnrengelman.shadow' version '4.0.2' apply false
+    id 'com.github.johnrengelman.shadow' version '4.0.3' apply false
 }
 
 defaultTasks 'clean', 'build', 'shadowJar', 'install'
@@ -30,8 +30,8 @@ def aeronGroup = 'io.aeron'
 def aeronVersion = file('version.txt').text.trim()
 def aeronJavaVersion = '1.8'
 
-def agronaVersion = '0.9.26'
-def sbeVersion = '1.9.0'
+def agronaVersion = '0.9.28'
+def sbeVersion = '1.10.1'
 
 group = aeronGroup
 version = aeronVersion
@@ -124,17 +124,17 @@ subprojects {
     jar.enabled = true
 
     dependencies {
-        checkstyle 'com.puppycrawl.tools:checkstyle:8.14'
+        checkstyle 'com.puppycrawl.tools:checkstyle:8.15'
 
         compile "org.agrona:agrona:${agronaVersion}"
 
         testCompile 'junit:junit:4.12'
-        testCompile 'org.mockito:mockito-core:2.23.0'
+        testCompile 'org.mockito:mockito-core:2.23.4'
         testCompile 'org.hamcrest:hamcrest-library:1.3'
     }
 
     checkstyle {
-        toolVersion = '8.14'
+        toolVersion = '8.15'
     }
 
     compileJava {
@@ -161,7 +161,7 @@ subprojects {
     javadoc {
         title = '<h1>Aeron Message Transport</h1>'
         options.bottom = '<i>Copyright &#169; 2014-2018 Real Logic Ltd. All Rights Reserved.</i>'
-        if (JavaVersion.current() == JavaVersion.VERSION_11) {
+        if (JavaVersion.current().ordinal() >= JavaVersion.VERSION_1_10.ordinal()) {
             options.addBooleanOption 'html5', true
         }
     }
@@ -302,7 +302,7 @@ project(':aeron-agent') {
     dependencies {
         compile project(':aeron-client')
         compile project(':aeron-driver')
-        compile "net.bytebuddy:byte-buddy:1.9.0"
+        compile "net.bytebuddy:byte-buddy:1.9.3"
     }
 
     jar {
@@ -837,6 +837,6 @@ task uploadToMavenCentral {
 }
 
 wrapper {
-    gradleVersion = '4.10.1'
+    gradleVersion = '4.10.3'
     distributionType = 'ALL'
 }

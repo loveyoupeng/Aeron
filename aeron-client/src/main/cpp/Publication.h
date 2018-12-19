@@ -67,7 +67,7 @@ public:
         std::int32_t sessionId,
         UnsafeBufferPosition& publicationLimit,
         std::int32_t channelStatusId,
-        std::shared_ptr<LogBuffers> buffers);
+        std::shared_ptr<LogBuffers> logBuffers);
     /// @endcond
 
     virtual ~Publication();
@@ -252,6 +252,24 @@ public:
     inline std::int32_t publicationLimitId() const
     {
         return m_publicationLimit.id();
+    }
+
+    /**
+     * Available window for offering into a publication before the {@link #positionLimit()} is reached.
+     *
+     * @return  window for offering into a publication before the {@link #positionLimit()} is reached. If
+     * the publication is closed then {@link #CLOSED} will be returned.
+     */
+    inline std::int64_t availableWindow() const
+    {
+        std::int64_t result = PUBLICATION_CLOSED;
+
+        if (!isClosed())
+        {
+            result = m_publicationLimit.getVolatile() - position();
+        }
+
+        return result;
     }
 
     /**
@@ -570,7 +588,7 @@ private:
     std::int32_t m_channelStatusId;
     std::atomic<bool> m_isClosed = { false };
 
-    std::shared_ptr<LogBuffers> m_logbuffers;
+    std::shared_ptr<LogBuffers> m_logBuffers;
     std::unique_ptr<TermAppender> m_appenders[3];
     HeaderWriter m_headerWriter;
 

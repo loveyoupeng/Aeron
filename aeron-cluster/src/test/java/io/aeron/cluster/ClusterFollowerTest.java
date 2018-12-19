@@ -16,6 +16,7 @@
 package io.aeron.cluster;
 
 import io.aeron.CommonContext;
+import io.aeron.Counter;
 import io.aeron.archive.Archive;
 import io.aeron.archive.ArchiveThreadingMode;
 import io.aeron.archive.client.AeronArchive;
@@ -27,12 +28,14 @@ import io.aeron.cluster.service.ClusteredServiceContainer;
 import io.aeron.driver.MediaDriver;
 import io.aeron.driver.MinMulticastFlowControlSupplier;
 import io.aeron.driver.ThreadingMode;
+import io.aeron.driver.status.SystemCounterDescriptor;
 import io.aeron.logbuffer.Header;
 import org.agrona.CloseHelper;
 import org.agrona.DirectBuffer;
 import org.agrona.ExpandableArrayBuffer;
 import org.agrona.collections.MutableInteger;
 import org.agrona.concurrent.EpochClock;
+import org.agrona.concurrent.status.AtomicCounter;
 import org.agrona.concurrent.status.CountersReader;
 import org.junit.After;
 import org.junit.Before;
@@ -41,14 +44,20 @@ import org.junit.Test;
 
 import java.io.File;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.LockSupport;
 
 import static io.aeron.Aeron.NULL_VALUE;
 import static io.aeron.cluster.service.CommitPos.COMMIT_POSITION_TYPE_ID;
 import static org.hamcrest.CoreMatchers.not;
 import static org.hamcrest.core.Is.is;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertThat;
+import static org.junit.Assert.assertTrue;
 
 @Ignore
 public class ClusterFollowerTest
@@ -60,7 +69,7 @@ public class ClusterFollowerTest
 
     private static final String CLUSTER_MEMBERS = clusterMembersString();
     private static final String LOG_CHANNEL =
-        "aeron:udp?term-length=64k|control-mode=manual|control=localhost:55550";
+        "aeron:udp?term-length=256k|control-mode=manual|control=localhost:55550";
     private static final String ARCHIVE_CONTROL_REQUEST_CHANNEL =
         "aeron:udp?term-length=64k|endpoint=localhost:8010";
     private static final String ARCHIVE_CONTROL_RESPONSE_CHANNEL =
@@ -73,14 +82,15 @@ public class ClusterFollowerTest
     private final CountDownLatch latchTwo = new CountDownLatch(MEMBER_COUNT - 1);
 
     private final EchoService[] echoServices = new EchoService[MEMBER_COUNT];
-    private ClusteredMediaDriver[] clusteredMediaDrivers = new ClusteredMediaDriver[MEMBER_COUNT];
-    private ClusteredServiceContainer[] containers = new ClusteredServiceContainer[MEMBER_COUNT];
+    private final ClusteredMediaDriver[] clusteredMediaDrivers = new ClusteredMediaDriver[MEMBER_COUNT];
+    private final ClusteredServiceContainer[] containers = new ClusteredServiceContainer[MEMBER_COUNT];
     private MediaDriver clientMediaDriver;
     private AeronCluster client;
 
     private final MutableInteger responseCount = new MutableInteger();
     private final EgressListener egressMessageListener =
         (clusterSessionId, timestamp, buffer, offset, length, header) -> responseCount.value++;
+    private final ExecutorService executor = Executors.newFixedThreadPool(1);
 
     @Before
     public void before()
@@ -92,8 +102,10 @@ public class ClusterFollowerTest
     }
 
     @After
-    public void after()
+    public void after() throws InterruptedException
     {
+        executor.shutdownNow();
+
         CloseHelper.close(client);
         CloseHelper.close(clientMediaDriver);
 
@@ -105,6 +117,11 @@ public class ClusterFollowerTest
         for (final ClusteredServiceContainer container : containers)
         {
             CloseHelper.close(container);
+
+            if (null != container)
+            {
+                container.context().deleteDirectory();
+            }
         }
 
         for (final ClusteredMediaDriver driver : clusteredMediaDrivers)
@@ -117,6 +134,11 @@ public class ClusterFollowerTest
                 driver.consensusModule().context().deleteDirectory();
                 driver.archive().context().deleteArchiveDirectory();
             }
+        }
+
+        if (!executor.awaitTermination(5, TimeUnit.SECONDS))
+        {
+            System.out.println("Warning: not all tasks completed promptly");
         }
     }
 
@@ -141,6 +163,49 @@ public class ClusterFollowerTest
         Thread.sleep(1000);
 
         assertThat(roleOf(followerMemberId), is(Cluster.Role.FOLLOWER));
+    }
+
+    @Test(timeout = 30_000)
+    public void shouldStopAleaderAndFollowerSAndRestartAllWithSnapshot() throws Exception
+    {
+        int leaderMemberId;
+        while (NULL_VALUE == (leaderMemberId = findLeaderId(NULL_VALUE)))
+        {
+            TestUtil.checkInterruptedStatus();
+            Thread.sleep(1000);
+        }
+
+        int followerMemberIdA = (leaderMemberId + 1) >= MEMBER_COUNT ? 0 : (leaderMemberId + 1);
+        int followerMemberIdB = (followerMemberIdA + 1) >= MEMBER_COUNT ? 0 : (followerMemberIdA + 1);
+
+        takeSnapshot(leaderMemberId);
+        awaitsSnapshotCounter(leaderMemberId, 1);
+        awaitsSnapshotCounter(followerMemberIdA, 1);
+        awaitsSnapshotCounter(followerMemberIdB, 1);
+
+        stopNode(leaderMemberId);
+        stopNode(followerMemberIdA);
+        stopNode(followerMemberIdB);
+
+        Thread.sleep(1000);
+
+        startNode(leaderMemberId, false);
+        startNode(followerMemberIdA, false);
+        startNode(followerMemberIdB, false);
+
+        while (NULL_VALUE == (leaderMemberId = findLeaderId(NULL_VALUE)))
+        {
+            TestUtil.checkInterruptedStatus();
+            Thread.sleep(1000);
+        }
+
+        followerMemberIdA = (leaderMemberId + 1) >= MEMBER_COUNT ? 0 : (leaderMemberId + 1);
+        followerMemberIdB = (followerMemberIdA + 1) >= MEMBER_COUNT ? 0 : (followerMemberIdA + 1);
+
+        Thread.sleep(1000);
+
+        assertThat(roleOf(followerMemberIdA), is(Cluster.Role.FOLLOWER));
+        assertThat(roleOf(followerMemberIdB), is(Cluster.Role.FOLLOWER));
     }
 
     @Test(timeout = 30_000)
@@ -385,6 +450,41 @@ public class ClusterFollowerTest
         assertThat(countersOfType(followerMemberIdB, COMMIT_POSITION_TYPE_ID), is(1));
     }
 
+    @Test(timeout = 60_000)
+    public void followerShouldRecoverWhileMessagesContinue() throws Exception
+    {
+        int leaderMemberId;
+        while (NULL_VALUE == (leaderMemberId = findLeaderId(NULL_VALUE)))
+        {
+            TestUtil.checkInterruptedStatus();
+            Thread.sleep(1000);
+        }
+
+        final ExpandableArrayBuffer msgBuffer = new ExpandableArrayBuffer();
+        msgBuffer.putStringWithoutLengthAscii(0, MSG);
+
+        startClient();
+
+        startMessageThread(msgBuffer, TimeUnit.MICROSECONDS.toNanos(500));
+
+        final int followerMemberIdA = (leaderMemberId + 1) >= MEMBER_COUNT ? 0 : (leaderMemberId + 1);
+        final int followerMemberIdB = (followerMemberIdA + 1) >= MEMBER_COUNT ? 0 : (followerMemberIdA + 1);
+
+        //stopNode(followerMemberIdA);
+        stopNode(followerMemberIdB);
+
+        Thread.sleep(10_000);
+
+        startNode(followerMemberIdB, false);
+
+        Thread.sleep(30_000);
+
+        assertThat(errors(leaderMemberId), is(0L));
+        assertThat(errors(followerMemberIdA), is(0L));
+        assertThat(errors(followerMemberIdB), is(0L));
+        assertThat(electionCounterOf(followerMemberIdB), is((long)NULL_VALUE));
+    }
+
     private void startNode(final int index, final boolean cleanStart)
     {
         echoServices[index] = new EchoService(index, latchOne, latchTwo);
@@ -444,6 +544,7 @@ public class ClusterFollowerTest
         containers[index].close();
         containers[index] = null;
         clusteredMediaDrivers[index].close();
+        clusteredMediaDrivers[index].mediaDriver().context().deleteAeronDirectory();
         clusteredMediaDrivers[index] = null;
     }
 
@@ -632,5 +733,60 @@ public class ClusterFollowerTest
             });
 
         return count.get();
+    }
+
+    private long errors(final int index)
+    {
+        final ClusteredMediaDriver driver = clusteredMediaDrivers[index];
+        final CountersReader counters = driver.mediaDriver().context().countersManager();
+
+        return counters.getCounterValue(SystemCounterDescriptor.ERRORS.id());
+    }
+
+    private void startMessageThread(final ExpandableArrayBuffer msgBuffer, final long intervalNs)
+    {
+        executor.submit(() ->
+        {
+            //final IdleStrategy idleStrategy = new YieldingIdleStrategy();
+
+            while (true)
+            {
+                while (client.offer(msgBuffer, 0, MSG.length()) < 0)
+                {
+                    if (Thread.interrupted())
+                    {
+                        return;
+                    }
+
+                    client.pollEgress();
+                    LockSupport.parkNanos(intervalNs);
+                }
+
+                client.pollEgress();
+                //idleStrategy.idle();
+            }
+        });
+    }
+
+    private void takeSnapshot(final int index)
+    {
+        final ClusteredMediaDriver driver = clusteredMediaDrivers[index];
+
+        final CountersReader countersReader = driver.consensusModule().context().aeron().countersReader();
+        final AtomicCounter controlToggle = ClusterControl.findControlToggle(countersReader);
+        assertNotNull(controlToggle);
+        assertTrue(ClusterControl.ToggleState.SNAPSHOT.toggle(controlToggle));
+    }
+
+    private void awaitsSnapshotCounter(final int index, final long value)
+    {
+        final ClusteredMediaDriver driver = clusteredMediaDrivers[index];
+        final Counter snapshotCounter = driver.consensusModule().context().snapshotCounter();
+
+        while (snapshotCounter.getWeak() != value)
+        {
+            TestUtil.checkInterruptedStatus();
+            Thread.yield();
+        }
     }
 }
