@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2018 Real Logic Ltd.
+ * Copyright 2014-2019 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
-#ifndef AERON_AERON_FILEUTIL_H
-#define AERON_AERON_FILEUTIL_H
+#ifndef AERON_FILEUTIL_H
+#define AERON_FILEUTIL_H
 
 #include <stddef.h>
 #include <stdbool.h>
@@ -97,4 +97,4 @@ int aeron_map_raw_log(
 
 int aeron_map_raw_log_close(aeron_mapped_raw_log_t *mapped_raw_log, const char *filename);
 
-#endif //AERON_AERON_FILEUTIL_H
+#endif //AERON_FILEUTIL_H

@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2018 Real Logic Ltd.
+ * Copyright 2014-2019 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -37,6 +37,7 @@ public final class ClusterMember
     private boolean isBallotSent;
     private boolean isLeader;
     private boolean hasRequestedJoin;
+    private boolean hasSentTerminationAck;
     private int id;
     private long leadershipTermId = Aeron.NULL_VALUE;
     private long logPosition = NULL_POSITION;
@@ -90,6 +91,7 @@ public final class ClusterMember
         isBallotSent = false;
         isLeader = false;
         hasRequestedJoin = false;
+        hasSentTerminationAck = false;
         vote = null;
         candidateTermId = Aeron.NULL_VALUE;
         leadershipTermId = Aeron.NULL_VALUE;
@@ -160,6 +162,28 @@ public final class ClusterMember
     public boolean hasRequestedJoin()
     {
         return hasRequestedJoin;
+    }
+
+    /**
+     * Set if this member has sent a termination ack.
+     *
+     * @param hasSentTerminationAck to the leader.
+     * @return this for a fluent API.
+     */
+    public ClusterMember hasSentTerminationAck(final boolean hasSentTerminationAck)
+    {
+        this.hasSentTerminationAck = hasSentTerminationAck;
+        return this;
+    }
+
+    /**
+     * Has this member sent a termination ack?
+     *
+     * @return has this member sent a termiantion ack?
+     */
+    public boolean hasSentTerminationAck()
+    {
+        return hasSentTerminationAck;
     }
 
     /**

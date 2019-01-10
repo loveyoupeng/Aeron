@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2018 Real Logic Ltd.
+ * Copyright 2014-2019 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
-#ifndef INCLUDED_AERON_PUBLICATION__
-#define INCLUDED_AERON_PUBLICATION__
+#ifndef AERON_PUBLICATION_H
+#define AERON_PUBLICATION_H
 
 #include <iostream>
 #include <array>
@@ -388,10 +388,8 @@ public:
             if (AERON_COND_EXPECT(length + it->capacity() < 0, false))
             {
                 throw aeron::util::IllegalStateException(
-                    aeron::util::strPrintf("length overflow: %d + %d -> %d",
-                        length,
-                        it->capacity(),
-                        length + it->capacity()),
+                    "length overflow: " + std::to_string(length) + " + " + std::to_string(it->capacity()) +
+                    " > " + std::to_string(length + it->capacity()),
                     SOURCEINFO);
             }
 
@@ -634,21 +632,20 @@ private:
         if (length > m_maxMessageLength)
         {
             throw util::IllegalArgumentException(
-                util::strPrintf("Encoded message exceeds maxMessageLength of %d, length=%d",
-                    m_maxMessageLength, length), SOURCEINFO);
+                "encoded message exceeds maxMessageLength of " + std::to_string(m_maxMessageLength) +
+                ", length=" + std::to_string(length), SOURCEINFO);
         }
     }
 
     inline void checkPayloadLength(const util::index_t length) const
     {
-        if (length > m_maxPayloadLength)
+        if (AERON_COND_EXPECT((length > m_maxPayloadLength), false))
         {
             throw util::IllegalArgumentException(
-                util::strPrintf("Encoded message exceeds maxPayloadLength of %d, length=%d",
-                    m_maxPayloadLength, length), SOURCEINFO);
+                "encoded message exceeds maxPayloadLength of " + std::to_string(m_maxPayloadLength) +
+                ", length=" + std::to_string(length), SOURCEINFO);
         }
     }
-
 };
 
 }

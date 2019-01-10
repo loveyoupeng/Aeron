@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2018 Real Logic Ltd.
+ * Copyright 2014-2019 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -201,8 +201,6 @@ public class Aeron implements AutoCloseable
      * <p>
      * This will close all currently open {@link Publication}s, {@link Subscription}s, and {@link Counter}s created
      * from this client.
-     * @throws AeronException if the client conductor does not close cleanly. If this happens then
-     * {@link Context#close()} will not be called so that the CnC file is not unmapped to avoid segfaults.
      */
     public void close()
     {
@@ -211,20 +209,13 @@ public class Aeron implements AutoCloseable
             if (null != conductorRunner)
             {
                 conductorRunner.close();
-                if (!conductorRunner.isClosed())
-                {
-                    throw new AeronException("failed to close Aeron client");
-                }
             }
             else
             {
                 conductorInvoker.close();
-                if (!conductorInvoker.isClosed())
-                {
-                    throw new AeronException("failed to close Aeron client");
-                }
             }
 
+            conductor.clientClose();
             ctx.close();
         }
     }

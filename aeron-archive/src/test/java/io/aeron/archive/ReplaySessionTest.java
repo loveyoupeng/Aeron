@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2018 Real Logic Ltd.
+ * Copyright 2014-2019 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -67,7 +67,7 @@ public class ReplaySessionTest
     private final ArchiveConductor mockArchiveConductor = mock(ArchiveConductor.class);
     private final Counter recordingPositionCounter = mock(Counter.class);
     private final UnsafeBuffer replayBuffer = new UnsafeBuffer(
-        allocateDirectAligned(ReplaySession.REPLAY_BLOCK_LENGTH, 128));
+        allocateDirectAligned(Archive.Configuration.MAX_BLOCK_LENGTH, 128));
 
     private int messageCounter = 0;
 

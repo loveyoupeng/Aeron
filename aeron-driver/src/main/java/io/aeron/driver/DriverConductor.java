@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2018 Real Logic Ltd.
+ * Copyright 2014-2019 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -139,9 +139,9 @@ public class DriverConductor implements Agent
 
     public void onClose()
     {
-        publicationImages.forEach(PublicationImage::close);
-        networkPublications.forEach(NetworkPublication::close);
-        ipcPublications.forEach(IpcPublication::close);
+        publicationImages.forEach(PublicationImage::free);
+        networkPublications.forEach(NetworkPublication::free);
+        ipcPublications.forEach(IpcPublication::free);
     }
 
     public String roleName()
@@ -225,7 +225,7 @@ public class DriverConductor implements Agent
                 streamId,
                 initialTermId,
                 termBufferLength,
-                isOldestSparse(subscriberPositions),
+                isOldestSubscriptionSparse(subscriberPositions),
                 senderMtuLength,
                 udpChannel,
                 registrationId);
@@ -563,7 +563,7 @@ public class DriverConductor implements Agent
 
         if (null == publicationLink)
         {
-            throw new ControlProtocolException(UNKNOWN_PUBLICATION, "Unknown publication: " + registrationId);
+            throw new ControlProtocolException(UNKNOWN_PUBLICATION, "unknown publication: " + registrationId);
         }
 
         publicationLink.close();
@@ -588,7 +588,7 @@ public class DriverConductor implements Agent
 
         if (null == sendChannelEndpoint)
         {
-            throw new ControlProtocolException(UNKNOWN_PUBLICATION, "Unknown publication: " + registrationId);
+            throw new ControlProtocolException(UNKNOWN_PUBLICATION, "unknown publication: " + registrationId);
         }
 
         sendChannelEndpoint.validateAllowsManualControl();
@@ -616,7 +616,7 @@ public class DriverConductor implements Agent
 
         if (null == sendChannelEndpoint)
         {
-            throw new ControlProtocolException(UNKNOWN_PUBLICATION, "Unknown publication: " + registrationId);
+            throw new ControlProtocolException(UNKNOWN_PUBLICATION, "unknown publication: " + registrationId);
         }
 
         sendChannelEndpoint.validateAllowsManualControl();
@@ -744,7 +744,7 @@ public class DriverConductor implements Agent
         final SubscriptionLink subscription = removeSubscriptionLink(subscriptionLinks, registrationId);
         if (null == subscription)
         {
-            throw new ControlProtocolException(UNKNOWN_SUBSCRIPTION, "Unknown Subscription: " + registrationId);
+            throw new ControlProtocolException(UNKNOWN_SUBSCRIPTION, "unknown subscription: " + registrationId);
         }
 
         subscription.close();
@@ -825,7 +825,7 @@ public class DriverConductor implements Agent
 
         if (null == counterLink)
         {
-            throw new ControlProtocolException(UNKNOWN_COUNTER, "Unknown counter: " + registrationId);
+            throw new ControlProtocolException(UNKNOWN_COUNTER, "unknown counter: " + registrationId);
         }
 
         clientProxy.operationSucceeded(correlationId);
@@ -834,13 +834,12 @@ public class DriverConductor implements Agent
         counterLink.close();
     }
 
-    void onClientClose(final long clientId, final long correlationId)
+    void onClientClose(final long clientId)
     {
         final AeronClient client = findClient(clients, clientId);
         if (null != client)
         {
             client.timeOfLastKeepaliveMs(0);
-            clientProxy.operationSucceeded(correlationId);
         }
     }
 
@@ -861,7 +860,7 @@ public class DriverConductor implements Agent
 
         if (null == receiveChannelEndpoint)
         {
-            throw new ControlProtocolException(UNKNOWN_SUBSCRIPTION, "Unknown subscription: " + registrationId);
+            throw new ControlProtocolException(UNKNOWN_SUBSCRIPTION, "unknown subscription: " + registrationId);
         }
 
         receiveChannelEndpoint.validateAllowsDestinationControl();
@@ -892,7 +891,7 @@ public class DriverConductor implements Agent
 
         if (null == receiveChannelEndpoint)
         {
-            throw new ControlProtocolException(UNKNOWN_SUBSCRIPTION, "Unknown subscription: " + registrationId);
+            throw new ControlProtocolException(UNKNOWN_SUBSCRIPTION, "unknown subscription: " + registrationId);
         }
 
         receiveChannelEndpoint.validateAllowsDestinationControl();
@@ -1006,8 +1005,8 @@ public class DriverConductor implements Agent
         {
             final int bits = LogBufferDescriptor.positionBitsToShift(params.termLength);
             final long position = computePosition(params.termId, params.termOffset, bits, initialTermId);
-            senderLimit.setOrdered(position);
             senderPosition.setOrdered(position);
+            senderLimit.setOrdered(position);
         }
 
         final RetransmitHandler retransmitHandler = new RetransmitHandler(
@@ -1022,7 +1021,7 @@ public class DriverConductor implements Agent
 
         final NetworkPublication publication = new NetworkPublication(
             registrationId,
-            params.tag,
+            params.entityTag,
             channelEndpoint,
             cachedNanoClock,
             newNetworkPublicationLog(sessionId, streamId, initialTermId, udpChannel, registrationId, params),
@@ -1213,7 +1212,7 @@ public class DriverConductor implements Agent
                     params.isReliable != subscription.isReliable())
                 {
                     throw new IllegalStateException(
-                        "Option conflicts with existing subscriptions: reliable=" + params.isReliable);
+                        "option conflicts with existing subscriptions: reliable=" + params.isReliable);
                 }
             }
         }
@@ -1415,7 +1414,7 @@ public class DriverConductor implements Agent
 
         final IpcPublication publication = new IpcPublication(
             registrationId,
-            params.tag,
+            params.entityTag,
             sessionId,
             streamId,
             PublisherPos.allocate(tempBuffer, countersManager, registrationId, sessionId, streamId, channel),
@@ -1493,7 +1492,7 @@ public class DriverConductor implements Agent
     {
         if (activeSessionIds.contains(sessionId))
         {
-            throw new IllegalStateException("Existing publication has same session id: " + sessionId);
+            throw new IllegalStateException("existing publication has same session id: " + sessionId);
         }
     }
 
@@ -1592,7 +1591,7 @@ public class DriverConductor implements Agent
         return address.getHostString() + ':' + address.getPort();
     }
 
-    private static boolean isOldestSparse(final ArrayList<SubscriberPosition> subscriberPositions)
+    private static boolean isOldestSubscriptionSparse(final ArrayList<SubscriberPosition> subscriberPositions)
     {
         final SubscriberPosition subscriberPosition = subscriberPositions.get(0);
         long regId = subscriberPosition.subscription().registrationId();

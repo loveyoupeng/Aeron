@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2018 Real Logic Ltd.
+ * Copyright 2014-2019 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -53,6 +53,7 @@ import static io.aeron.Aeron.NULL_VALUE;
 import static io.aeron.ChannelUri.SPY_QUALIFIER;
 import static io.aeron.CommonContext.*;
 import static io.aeron.archive.client.AeronArchive.NULL_LENGTH;
+import static io.aeron.archive.client.AeronArchive.NULL_POSITION;
 import static io.aeron.archive.codecs.SourceLocation.LOCAL;
 import static io.aeron.cluster.ClusterSession.State.*;
 import static io.aeron.cluster.ConsensusModule.Configuration.*;
@@ -69,6 +70,7 @@ class ConsensusModuleAgent implements Agent, MemberStatusListener
     private long serviceAckId = 0;
     private long lastAppendedPosition = 0;
     private long followerCommitPosition = 0;
+    private long terminationPosition = NULL_POSITION;
     private long timeOfLastLogUpdateMs = 0;
     private long cachedTimeMs;
     private long clusterTimeMs = NULL_VALUE;
@@ -123,6 +125,7 @@ class ConsensusModuleAgent implements Agent, MemberStatusListener
     private RecordingLog.RecoveryPlan recoveryPlan;
     private Election election;
     private DynamicJoin dynamicJoin;
+    private ClusterTermination clusterTermination;
     private String logRecordingChannel;
     private String liveLogDestination;
     private String replayLogDestination;
@@ -624,6 +627,34 @@ class ConsensusModuleAgent implements Agent, MemberStatusListener
         }
     }
 
+    public void onTerminationPosition(final long logPosition)
+    {
+        if (Cluster.Role.FOLLOWER == role)
+        {
+            terminationPosition = logPosition;
+        }
+    }
+
+    public void onTerminationAck(final long logPosition, final int memberId)
+    {
+        if (Cluster.Role.LEADER == role && logPosition == terminationPosition)
+        {
+            final ClusterMember member = clusterMemberByIdMap.get(memberId);
+
+            if (null != member)
+            {
+                member.hasSentTerminationAck(true);
+
+                if (clusterTermination.canTerminate(clusterMembers, terminationPosition, cachedTimeMs))
+                {
+                    recordingLog.commitLogPosition(leadershipTermId, logPosition);
+                    state(ConsensusModule.State.CLOSED);
+                    ctx.terminationHook().run();
+                }
+            }
+        }
+    }
+
     void state(final ConsensusModule.State state)
     {
         this.state = state;
@@ -771,31 +802,55 @@ class ConsensusModuleAgent implements Agent, MemberStatusListener
                 case SNAPSHOT:
                     ++serviceAckId;
                     takeSnapshot(clusterTimeMs, logPosition);
-                    state(ConsensusModule.State.ACTIVE);
-                    ClusterControl.ToggleState.reset(controlToggle);
-                    for (final ClusterSession session : sessionByIdMap.values())
+
+                    if (NULL_POSITION == terminationPosition)
                     {
-                        session.timeOfLastActivityMs(clusterTimeMs);
+                        state(ConsensusModule.State.ACTIVE);
+                        ClusterControl.ToggleState.reset(controlToggle);
+                        for (final ClusterSession session : sessionByIdMap.values())
+                        {
+                            session.timeOfLastActivityMs(clusterTimeMs);
+                        }
                     }
-                    break;
+                    else
+                    {
+                        serviceProxy.terminationPosition(terminationPosition);
+                        if (null != clusterTermination)
+                        {
+                            clusterTermination.deadlineMs(
+                                cachedTimeMs + TimeUnit.NANOSECONDS.toMillis(ctx.terminationTimeoutNs()));
+                        }
 
-                case SHUTDOWN:
-                    takeSnapshot(clusterTimeMs, logPosition);
-                    recordingLog.commitLogPosition(leadershipTermId, logPosition);
-                    state(ConsensusModule.State.CLOSED);
-                    ctx.terminationHook().run();
-                    break;
-
-                case ABORT:
-                    recordingLog.commitLogPosition(leadershipTermId, logPosition);
-                    state(ConsensusModule.State.CLOSED);
-                    ctx.terminationHook().run();
+                        state(ConsensusModule.State.TERMINATING);
+                    }
                     break;
 
                 case LEAVING:
                     recordingLog.commitLogPosition(leadershipTermId, logPosition);
                     state(ConsensusModule.State.CLOSED);
                     ctx.terminationHook().run();
+                    break;
+
+                case TERMINATING:
+                    final boolean canTerminate;
+                    if (null == clusterTermination)
+                    {
+                        memberStatusPublisher.terminationAck(leaderMember.publication(), logPosition, memberId);
+                        canTerminate = true;
+                    }
+                    else
+                    {
+                        clusterTermination.hasServiceTerminated(true);
+                        canTerminate = clusterTermination.canTerminate(
+                            clusterMembers, terminationPosition, cachedTimeMs);
+                    }
+
+                    if (canTerminate)
+                    {
+                        recordingLog.commitLogPosition(leadershipTermId, logPosition);
+                        state(ConsensusModule.State.CLOSED);
+                        ctx.terminationHook().run();
+                    }
                     break;
             }
         }
@@ -945,14 +1000,6 @@ class ConsensusModuleAgent implements Agent, MemberStatusListener
 
             case SNAPSHOT:
                 replayClusterAction(leadershipTermId, logPosition, ConsensusModule.State.SNAPSHOT);
-                break;
-
-            case SHUTDOWN:
-                replayClusterAction(leadershipTermId, logPosition, ConsensusModule.State.SHUTDOWN);
-                break;
-
-            case ABORT:
-                replayClusterAction(leadershipTermId, logPosition, ConsensusModule.State.ABORT);
                 break;
         }
     }
@@ -1557,6 +1604,15 @@ class ConsensusModuleAgent implements Agent, MemberStatusListener
                 workCount += checkSessions(sessionByIdMap, nowMs);
                 workCount += processPassiveMembers(passiveMembers);
             }
+            else if (ConsensusModule.State.TERMINATING == state)
+            {
+                if (clusterTermination.canTerminate(clusterMembers, terminationPosition, cachedTimeMs))
+                {
+                    recordingLog.commitLogPosition(leadershipTermId, terminationPosition);
+                    state(ConsensusModule.State.CLOSED);
+                    ctx.terminationHook().run();
+                }
+            }
         }
         else
         {
@@ -1593,6 +1649,16 @@ class ConsensusModuleAgent implements Agent, MemberStatusListener
             }
 
             workCount += count;
+
+            if (NULL_POSITION != terminationPosition)
+            {
+                if (logAdapter.position() >= terminationPosition && ConsensusModule.State.SNAPSHOT != state)
+                {
+                    serviceProxy.terminationPosition(terminationPosition);
+                    expectedAckPosition = terminationPosition;
+                    state(ConsensusModule.State.TERMINATING);
+                }
+            }
         }
 
         workCount += memberStatusAdapter.poll();
@@ -1650,18 +1716,33 @@ class ConsensusModuleAgent implements Agent, MemberStatusListener
                 break;
 
             case SHUTDOWN:
-                if (ConsensusModule.State.ACTIVE == state && appendAction(ClusterAction.SHUTDOWN, nowMs))
+                if (ConsensusModule.State.ACTIVE == state && appendAction(ClusterAction.SNAPSHOT, nowMs))
                 {
-                    expectedAckPosition = logPosition();
-                    state(ConsensusModule.State.SHUTDOWN);
+                    final long position = logPosition();
+
+                    clusterTermination = new ClusterTermination(
+                        memberStatusPublisher,
+                        cachedTimeMs + TimeUnit.NANOSECONDS.toMillis(ctx.terminationTimeoutNs()));
+                    clusterTermination.terminationPosition(clusterMembers, thisMember, position);
+                    terminationPosition = position;
+                    expectedAckPosition = position;
+                    state(ConsensusModule.State.SNAPSHOT);
                 }
                 break;
 
             case ABORT:
-                if (ConsensusModule.State.ACTIVE == state && appendAction(ClusterAction.ABORT, nowMs))
+                if (ConsensusModule.State.ACTIVE == state)
                 {
-                    expectedAckPosition = logPosition();
-                    state(ConsensusModule.State.ABORT);
+                    final long position = logPosition();
+
+                    clusterTermination = new ClusterTermination(
+                        memberStatusPublisher,
+                        cachedTimeMs + TimeUnit.NANOSECONDS.toMillis(ctx.terminationTimeoutNs()));
+                    clusterTermination.terminationPosition(clusterMembers, thisMember, position);
+                    terminationPosition = position;
+                    expectedAckPosition = position;
+                    serviceProxy.terminationPosition(terminationPosition);
+                    state(ConsensusModule.State.TERMINATING);
                 }
                 break;
 
@@ -2337,12 +2418,9 @@ class ConsensusModuleAgent implements Agent, MemberStatusListener
     private void replayClusterAction(
         final long leadershipTermId, final long logPosition, final ConsensusModule.State newState)
     {
-        if (null == election || election.notReplaying())
-        {
-            this.leadershipTermId = leadershipTermId;
-            expectedAckPosition = logPosition;
-            state(newState);
-        }
+        this.leadershipTermId = leadershipTermId;
+        expectedAckPosition = logPosition;
+        state(newState);
     }
 
     private void clusterMemberJoined(final int memberId, final ClusterMember[] newMembers)

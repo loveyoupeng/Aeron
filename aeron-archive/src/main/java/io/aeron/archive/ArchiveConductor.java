@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2018 Real Logic Ltd.
+ * Copyright 2014-2019 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -43,7 +43,6 @@ import java.util.Map;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 
-import static io.aeron.ChannelUriStringBuilder.integerValueOf;
 import static io.aeron.CommonContext.SPY_PREFIX;
 import static io.aeron.CommonContext.UDP_MEDIA;
 import static io.aeron.archive.Archive.segmentFileIndex;
@@ -74,7 +73,7 @@ abstract class ArchiveConductor extends SessionWorker<Session> implements Availa
     private final UnsafeBuffer dataHeaderBuffer = new UnsafeBuffer(
         allocateDirectAligned(DataHeaderFlyweight.HEADER_LENGTH, 128));
     private final UnsafeBuffer replayBuffer = new UnsafeBuffer(
-        allocateDirectAligned(ReplaySession.REPLAY_BLOCK_LENGTH, 128));
+        allocateDirectAligned(Archive.Configuration.MAX_BLOCK_LENGTH, 128));
 
     private final Aeron aeron;
     private final AgentInvoker aeronAgentInvoker;
@@ -215,7 +214,7 @@ abstract class ArchiveConductor extends SessionWorker<Session> implements Availa
         {
             final ChannelUri channelUri = ChannelUri.parse(originalChannel);
             final String strippedChannel = strippedChannelBuilder(channelUri).build();
-            final String key = makeKey(streamId, strippedChannel);
+            final String key = makeKey(streamId, channelUri);
             final Subscription oldSubscription = recordingSubscriptionMap.get(key);
 
             if (oldSubscription == null)
@@ -233,7 +232,7 @@ abstract class ArchiveConductor extends SessionWorker<Session> implements Availa
             }
             else
             {
-                final String msg = "recording already started for subscription " + key;
+                final String msg = "recording exists for streamId=" + streamId + " channel=" + originalChannel;
                 controlSession.sendErrorResponse(correlationId, ACTIVE_SUBSCRIPTION, msg, controlResponseProxy);
             }
         }
@@ -249,7 +248,7 @@ abstract class ArchiveConductor extends SessionWorker<Session> implements Availa
     {
         try
         {
-            final String key = makeKey(streamId, strippedChannelBuilder(ChannelUri.parse(channel)).build());
+            final String key = makeKey(streamId, ChannelUri.parse(channel));
             final Subscription oldSubscription = recordingSubscriptionMap.remove(key);
 
             if (oldSubscription != null)
@@ -259,7 +258,7 @@ abstract class ArchiveConductor extends SessionWorker<Session> implements Availa
             }
             else
             {
-                final String msg = "no recording subscription found for " + key;
+                final String msg = "no recording found for streamId=" + streamId + " channel=" + channel;
                 controlSession.sendErrorResponse(correlationId, UNKNOWN_SUBSCRIPTION, msg, controlResponseProxy);
             }
         }
@@ -506,7 +505,7 @@ abstract class ArchiveConductor extends SessionWorker<Session> implements Availa
         {
             final ChannelUri channelUri = ChannelUri.parse(originalChannel);
             final String strippedChannel = strippedChannelBuilder(channelUri).build();
-            final String key = makeKey(streamId, strippedChannel);
+            final String key = makeKey(streamId, channelUri);
             final Subscription oldSubscription = recordingSubscriptionMap.get(key);
 
             if (oldSubscription == null)
@@ -524,7 +523,7 @@ abstract class ArchiveConductor extends SessionWorker<Session> implements Availa
             }
             else
             {
-                final String msg = "recording already setup for subscription to " + key;
+                final String msg = "recording exists for streamId=" + streamId + " channel=" + originalChannel;
                 controlSession.sendErrorResponse(correlationId, ACTIVE_SUBSCRIPTION, msg, controlResponseProxy);
             }
         }
@@ -701,19 +700,57 @@ abstract class ArchiveConductor extends SessionWorker<Session> implements Availa
             .endpoint(channelUri.get(CommonContext.ENDPOINT_PARAM_NAME))
             .networkInterface(channelUri.get(CommonContext.INTERFACE_PARAM_NAME))
             .controlEndpoint(channelUri.get(CommonContext.MDC_CONTROL_PARAM_NAME))
-            .alias(channelUri.get(CommonContext.ALIAS_PARAM_NAME))
-            .tags(channelUri.get(CommonContext.TAGS_PARAM_NAME));
+            .tags(channelUri.get(CommonContext.TAGS_PARAM_NAME))
+            .alias(channelUri.get(CommonContext.ALIAS_PARAM_NAME));
 
-        if (null != sessionIdStr && ChannelUri.isTagged(sessionIdStr))
+        if (null != sessionIdStr)
         {
-            channelBuilder.isSessionIdTagged(true).sessionId((int)ChannelUri.getTag(sessionIdStr));
-        }
-        else
-        {
-            channelBuilder.sessionId(integerValueOf(sessionIdStr));
+            if (ChannelUri.isTagged(sessionIdStr))
+            {
+                channelBuilder.isSessionIdTagged(true).sessionId((int)ChannelUri.getTag(sessionIdStr));
+            }
+            else
+            {
+                channelBuilder.sessionId(Integer.valueOf(sessionIdStr));
+            }
         }
 
         return channelBuilder;
+    }
+
+    private static String makeKey(final int streamId, final ChannelUri channelUri)
+    {
+        final StringBuilder sb = new StringBuilder();
+
+        sb.append(streamId).append(':').append(channelUri.media()).append('?');
+
+        final String endpointStr = channelUri.get(CommonContext.ENDPOINT_PARAM_NAME);
+        if (null != endpointStr)
+        {
+            sb.append(CommonContext.ENDPOINT_PARAM_NAME).append('=').append(endpointStr).append('|');
+        }
+
+        final String interfaceStr = channelUri.get(CommonContext.INTERFACE_PARAM_NAME);
+        if (null != interfaceStr)
+        {
+            sb.append(CommonContext.INTERFACE_PARAM_NAME).append('=').append(interfaceStr).append('|');
+        }
+
+        final String controlStr = channelUri.get(CommonContext.MDC_CONTROL_PARAM_NAME);
+        if (null != controlStr)
+        {
+            sb.append(CommonContext.MDC_CONTROL_PARAM_NAME).append('=').append(controlStr).append('|');
+        }
+
+        final String tagsStr = channelUri.get(CommonContext.TAGS_PARAM_NAME);
+        if (null != tagsStr)
+        {
+            sb.append(CommonContext.TAGS_PARAM_NAME).append('=').append(tagsStr).append('|');
+        }
+
+        sb.setLength(sb.length() - 1);
+
+        return sb.toString();
     }
 
     private void startRecordingSession(
@@ -891,11 +928,6 @@ abstract class ArchiveConductor extends SessionWorker<Session> implements Availa
             controlSession.attemptErrorResponse(correlationId, msg, controlResponseProxy);
             throw new ArchiveException(msg);
         }
-    }
-
-    private static String makeKey(final int streamId, final String strippedChannel)
-    {
-        return streamId + ":" + strippedChannel;
     }
 
     private RecordingSummary validateFramePosition(

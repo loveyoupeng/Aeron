@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2018 Real Logic Ltd.
+ * Copyright 2014-2019 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -32,6 +32,7 @@ import org.agrona.concurrent.status.CountersReader;
 import java.util.Collection;
 
 import static io.aeron.Aeron.NULL_VALUE;
+import static io.aeron.archive.client.AeronArchive.NULL_POSITION;
 import static io.aeron.archive.codecs.SourceLocation.LOCAL;
 import static java.util.Collections.unmodifiableCollection;
 import static org.agrona.concurrent.status.CountersReader.NULL_COUNTER_ID;
@@ -42,7 +43,6 @@ class ClusteredServiceAgent implements Agent, Cluster
         MessageHeaderDecoder.ENCODED_LENGTH + SessionHeaderDecoder.BLOCK_LENGTH;
 
     private final int serviceId;
-    private boolean isRecovering;
     private final AeronArchive.Context archiveCtx;
     private final ClusteredServiceContainer.Context ctx;
     private final Aeron aeron;
@@ -60,6 +60,7 @@ class ClusteredServiceAgent implements Agent, Cluster
     private long ackId = 0;
     private long clusterTimeMs;
     private long cachedTimeMs;
+    private long terminationPosition = NULL_POSITION;
     private int memberId = NULL_VALUE;
     private BoundedLogAdapter logAdapter;
     private AtomicCounter heartbeatCounter;
@@ -97,28 +98,24 @@ class ClusteredServiceAgent implements Agent, Cluster
 
         service.onStart(this);
 
-        isRecovering = true;
-
         final int recoveryCounterId = awaitRecoveryCounter(counters);
         heartbeatCounter.setOrdered(epochClock.time());
         checkForSnapshot(counters, recoveryCounterId);
         checkForReplay(counters, recoveryCounterId);
-
-        isRecovering = false;
     }
 
     public void onClose()
     {
         if (!ctx.ownsAeronClient())
         {
-            CloseHelper.close(logAdapter);
-            CloseHelper.close(consensusModuleProxy);
-            CloseHelper.close(serviceAdapter);
-
             for (final ClientSession session : sessionByIdMap.values())
             {
                 session.disconnect();
             }
+
+            CloseHelper.close(logAdapter);
+            CloseHelper.close(serviceAdapter);
+            CloseHelper.close(consensusModuleProxy);
         }
     }
 
@@ -168,6 +165,11 @@ class ClusteredServiceAgent implements Agent, Cluster
     public Aeron aeron()
     {
         return aeron;
+    }
+
+    public ClusteredServiceContainer.Context context()
+    {
+        return ctx;
     }
 
     public ClientSession getClientSession(final long clusterSessionId)
@@ -274,6 +276,11 @@ class ClusteredServiceAgent implements Agent, Cluster
             leadershipTermId, logPosition, maxLogPosition, memberId, logSessionId, logStreamId, logChannel);
     }
 
+    public void onServiceTerminationPosition(final long logPosition)
+    {
+        terminationPosition = logPosition;
+    }
+
     void onSessionMessage(
         final long clusterSessionId,
         final long timestampMs,
@@ -356,6 +363,7 @@ class ClusteredServiceAgent implements Agent, Cluster
 
         if (memberId == this.memberId && changeType == ChangeType.QUIT)
         {
+            service.onTerminate(this);
             consensusModuleProxy.ack(logPosition, ackId++, serviceId);
             ctx.terminationHook().run();
         }
@@ -403,7 +411,6 @@ class ClusteredServiceAgent implements Agent, Cluster
             try (Subscription subscription = aeron.addSubscription(activeLogEvent.channel, activeLogEvent.streamId))
             {
                 consensusModuleProxy.ack(activeLogEvent.logPosition, ackId++, serviceId);
-
 
                 final Image image = awaitImage(activeLogEvent.sessionId, subscription);
                 final BoundedLogAdapter adapter = new BoundedLogAdapter(image, commitPosition, this);
@@ -669,26 +676,9 @@ class ClusteredServiceAgent implements Agent, Cluster
 
     private void executeAction(final ClusterAction action, final long position, final long leadershipTermId)
     {
-        if (isRecovering)
+        if (ClusterAction.SNAPSHOT == action)
         {
-            return;
-        }
-
-        switch (action)
-        {
-            case SNAPSHOT:
-                consensusModuleProxy.ack(position, ackId++, onTakeSnapshot(position, leadershipTermId), serviceId);
-                break;
-
-            case SHUTDOWN:
-                consensusModuleProxy.ack(position, ackId++, onTakeSnapshot(position, leadershipTermId), serviceId);
-                ctx.terminationHook().run();
-                break;
-
-            case ABORT:
-                consensusModuleProxy.ack(position, ackId++, serviceId);
-                ctx.terminationHook().run();
-                break;
+            consensusModuleProxy.ack(position, ackId++, onTakeSnapshot(position, leadershipTermId), serviceId);
         }
     }
 
@@ -729,6 +719,7 @@ class ClusteredServiceAgent implements Agent, Cluster
             }
             else
             {
+                service.onTerminate(this);
                 ctx.errorHandler().onError(new ClusterException("Consensus Module not connected"));
                 ctx.terminationHook().run();
             }
@@ -746,6 +737,22 @@ class ClusteredServiceAgent implements Agent, Cluster
         if (null != activeLogEvent && null == logAdapter)
         {
             joinActiveLog();
+        }
+
+        if (NULL_POSITION != terminationPosition)
+        {
+            checkForTermination();
+        }
+    }
+
+    private void checkForTermination()
+    {
+        if (null != logAdapter && logAdapter.position() >= terminationPosition)
+        {
+            service.onTerminate(this);
+            consensusModuleProxy.ack(terminationPosition, ackId++, serviceId);
+            terminationPosition = NULL_VALUE;
+            ctx.terminationHook().run();
         }
     }
 }

@@ -14,7 +14,7 @@ Efficient reliable UDP unicast, UDP multicast, and IPC message transport. Java a
 repository, and a [.NET client](https://github.com/AdaptiveConsulting/Aeron.NET) is available from a 3rd party. All
 three clients can exchange messages across machines, or on the same machine via IPC, very efficiently. Message streams
 can be recorded by the [Archive](https://github.com/real-logic/aeron/tree/master/aeron-archive) module to persistent
-storage for later or real-time replay.
+storage for later, or real-time, replay.
 
 Performance is the key focus. Aeron is designed to be the highest throughput with the lowest and most predictable
 latency possible of any messaging system. Aeron integrates with
@@ -119,25 +119,8 @@ If you are comfortable with using CMake, then a full clean, build, and test look
 
 #### C Media Driver
 
-By default, the C Media Driver is not built as part of the C++ Build. However, it can be enabled via the CMake
-option `BUILD_AERON_DRIVER` being set to `ON`.
-
-For convenience, a script is provided that does a full clean, build, and test of all targets as a Release build of the
-C++ API and the C Media Driver.
-
-```shell
-    $ ./cppbuild/cppbuild -b
-```
-
-If you are comfortable with using CMake, then a full clean, build, and test looks like:
-
-```shell
-    $ mkdir -p cppbuild/Debug
-    $ cd cppbuild/Debug
-    $ cmake -DBUILD_AERON_DRIVER=ON ../..
-    $ cmake --build . --clean-first
-    $ ctest
-```
+By default, the C Media Driver is built as part of the C++ Build. However, it can be disabled via the CMake
+option `BUILD_AERON_DRIVER` being set to `OFF`.
 
 __Note__: C Media Driver is currently only supported on Mac and Linux.
 
@@ -231,7 +214,7 @@ Troubleshooting
 
 License (See LICENSE file for full license)
 -------------------------------------------
-Copyright 2014-2018 Real Logic Limited
+Copyright 2014-2019 Real Logic Limited
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.

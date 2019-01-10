@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2018 Real Logic Ltd.
+ * Copyright 2014-2019 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -60,7 +60,7 @@ class SubscriptionParams
         {
             if (count < 3)
             {
-                throw new IllegalArgumentException("Params must be used as a complete set: " +
+                throw new IllegalArgumentException("params must be used as a complete set: " +
                     INITIAL_TERM_ID_PARAM_NAME + " " +
                     TERM_ID_PARAM_NAME + " " +
                     TERM_OFFSET_PARAM_NAME);

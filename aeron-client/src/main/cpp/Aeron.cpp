@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2018 Real Logic Ltd.
+ * Copyright 2014-2019 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -136,7 +136,7 @@ inline MemoryMappedFile::ptr_t Aeron::mapCncFile(Context &context)
         {
             if (currentTimeMillis() > (startMs + context.m_mediaDriverTimeout))
             {
-                throw DriverTimeoutException(std::string("No driver heartbeat detected"), SOURCEINFO);
+                throw DriverTimeoutException(std::string("no driver heartbeat detected"), SOURCEINFO);
             }
 
             std::this_thread::sleep_for(IDLE_SLEEP_MS_1);
@@ -147,7 +147,7 @@ inline MemoryMappedFile::ptr_t Aeron::mapCncFile(Context &context)
         {
             if (timeMs > (startMs + context.m_mediaDriverTimeout))
             {
-                throw DriverTimeoutException(std::string("No driver heartbeat detected"), SOURCEINFO);
+                throw DriverTimeoutException(std::string("no driver heartbeat detected"), SOURCEINFO);
             }
 
             cncBuffer = nullptr;

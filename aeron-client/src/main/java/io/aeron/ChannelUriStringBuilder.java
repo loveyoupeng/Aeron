@@ -1,5 +1,5 @@
 /*
- *  Copyright 2014-2018 Real Logic Ltd.
+ *  Copyright 2014-2019 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,7 +15,6 @@
  */
 package io.aeron;
 
-import io.aeron.logbuffer.FrameDescriptor;
 import io.aeron.logbuffer.LogBufferDescriptor;
 
 import static io.aeron.ChannelUri.SPY_QUALIFIER;
@@ -44,7 +43,6 @@ public class ChannelUriStringBuilder
     private String tags;
     private String alias;
     private Boolean reliable;
-    private Boolean sparse;
     private Integer ttl;
     private Integer mtu;
     private Integer termLength;
@@ -53,6 +51,7 @@ public class ChannelUriStringBuilder
     private Integer termOffset;
     private Integer sessionId;
     private Long linger;
+    private Boolean sparse;
     private boolean isSessionIdTagged;
 
     /**
@@ -71,6 +70,7 @@ public class ChannelUriStringBuilder
         tags = null;
         alias = null;
         reliable = null;
+        sparse = null;
         ttl = null;
         mtu = null;
         termLength = null;
@@ -78,6 +78,7 @@ public class ChannelUriStringBuilder
         termId = null;
         termOffset = null;
         sessionId = null;
+        linger = null;
         isSessionIdTagged = false;
 
         return this;
@@ -310,31 +311,6 @@ public class ChannelUriStringBuilder
     }
 
     /**
-     * Set to indicate if a term log buffer should be sparse on disk or not. Sparse saves space at the potential
-     * expense of latency.
-     *
-     * @param isSparse true if the term buffer log is sparse on disk.
-     * @return this for a fluent API.
-     * @see CommonContext#SPARSE_PARAM_NAME
-     */
-    public ChannelUriStringBuilder sparse(final Boolean isSparse)
-    {
-        this.sparse = isSparse;
-        return this;
-    }
-
-    /**
-     * Get if a term log buffer should be sparse on disk or not. Sparse saves space at the potential expense of latency.
-     *
-     * @return true if the term buffer log is sparse on disk.
-     * @see CommonContext#SPARSE_PARAM_NAME
-     */
-    public Boolean sparse()
-    {
-        return sparse;
-    }
-
-    /**
      * Set the Time To Live (TTL) for a multicast datagram. Valid values are 0-255 for the number of hops the datagram
      * can progress along.
      *
@@ -498,7 +474,7 @@ public class ChannelUriStringBuilder
                 throw new IllegalArgumentException("term offset not in range 0-1g: " + termOffset);
             }
 
-            if (0 != (termOffset & (FrameDescriptor.FRAME_ALIGNMENT - 1)))
+            if (0 != (termOffset & (FRAME_ALIGNMENT - 1)))
             {
                 throw new IllegalArgumentException("term offset not multiple of FRAME_ALIGNMENT: " + termOffset);
             }
@@ -572,6 +548,31 @@ public class ChannelUriStringBuilder
     public Long linger()
     {
         return linger;
+    }
+
+    /**
+     * Set to indicate if a term log buffer should be sparse on disk or not. Sparse saves space at the potential
+     * expense of latency.
+     *
+     * @param isSparse true if the term buffer log is sparse on disk.
+     * @return this for a fluent API.
+     * @see CommonContext#SPARSE_PARAM_NAME
+     */
+    public ChannelUriStringBuilder sparse(final Boolean isSparse)
+    {
+        this.sparse = isSparse;
+        return this;
+    }
+
+    /**
+     * Get if a term log buffer should be sparse on disk or not. Sparse saves space at the potential expense of latency.
+     *
+     * @return true if the term buffer log is sparse on disk.
+     * @see CommonContext#SPARSE_PARAM_NAME
+     */
+    public Boolean sparse()
+    {
+        return sparse;
     }
 
     /**
@@ -662,6 +663,11 @@ public class ChannelUriStringBuilder
      */
     public ChannelUriStringBuilder initialPosition(final long position, final int initialTermId, final int termLength)
     {
+        if (position < 0 || 0 != (position & (FRAME_ALIGNMENT - 1)))
+        {
+            throw new IllegalArgumentException("invalid position: " + position);
+        }
+
         final int bitsToShift = LogBufferDescriptor.positionBitsToShift(termLength);
 
         this.initialTermId = initialTermId;
@@ -713,21 +719,6 @@ public class ChannelUriStringBuilder
             sb.append(MDC_CONTROL_MODE_PARAM_NAME).append('=').append(controlMode).append('|');
         }
 
-        if (null != reliable)
-        {
-            sb.append(RELIABLE_STREAM_PARAM_NAME).append('=').append(reliable).append('|');
-        }
-
-        if (null != sparse)
-        {
-            sb.append(SPARSE_PARAM_NAME).append('=').append(sparse).append('|');
-        }
-
-        if (null != ttl)
-        {
-            sb.append(TTL_PARAM_NAME).append('=').append(ttl.intValue()).append('|');
-        }
-
         if (null != mtu)
         {
             sb.append(MTU_LENGTH_PARAM_NAME).append('=').append(mtu.intValue()).append('|');
@@ -758,6 +749,16 @@ public class ChannelUriStringBuilder
             sb.append(SESSION_ID_PARAM_NAME).append('=').append(prefixTag(isSessionIdTagged, sessionId)).append('|');
         }
 
+        if (null != ttl)
+        {
+            sb.append(TTL_PARAM_NAME).append('=').append(ttl.intValue()).append('|');
+        }
+
+        if (null != reliable)
+        {
+            sb.append(RELIABLE_STREAM_PARAM_NAME).append('=').append(reliable).append('|');
+        }
+
         if (null != linger)
         {
             sb.append(LINGER_PARAM_NAME).append('=').append(linger.intValue()).append('|');
@@ -768,6 +769,11 @@ public class ChannelUriStringBuilder
             sb.append(ALIAS_PARAM_NAME).append('=').append(alias).append('|');
         }
 
+        if (null != sparse)
+        {
+            sb.append(SPARSE_PARAM_NAME).append('=').append(sparse).append('|');
+        }
+
         final char lastChar = sb.charAt(sb.length() - 1);
         if (lastChar == '|' || lastChar == '?')
         {
@@ -775,18 +781,6 @@ public class ChannelUriStringBuilder
         }
 
         return sb.toString();
-    }
-
-    /**
-     * Call {@link Integer#valueOf(String)} only if the value param is not null. Else pass null on.
-     *
-     * @param value to check for null and convert if not null.
-     * @return null if value param is null or result of {@link Integer#valueOf(String)}.
-     * @see Integer#valueOf(String)
-     */
-    public static Integer integerValueOf(final String value)
-    {
-        return null == value ? null : Integer.valueOf(value);
     }
 
     private static String prefixTag(final boolean isTagged, final Integer value)

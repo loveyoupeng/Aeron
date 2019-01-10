@@ -1,5 +1,5 @@
 #
-# Copyright 2014-2018 Real Logic Ltd.
+# Copyright 2014-2019 Real Logic Ltd.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -28,7 +28,7 @@ if (${CMAKE_SOURCE_DIR} STREQUAL ${CMAKE_CURRENT_SOURCE_DIR})
    set(STANDALONE_BUILD TRUE)
 endif()
 
-option(BUILD_AERON_DRIVER "Build Aeron driver" OFF)
+option(BUILD_AERON_DRIVER "Build Aeron driver" ON)
 
 option(C_WARNINGS_AS_ERRORS "Enable warnings as errors for C" OFF)
 option(CXX_WARNINGS_AS_ERRORS "Enable warnings as errors for C++" OFF)
@@ -115,8 +115,8 @@ endif()
 if(AERON_TESTS)
     ExternalProject_Add(
         google_benchmark
-        URL ${CMAKE_CURRENT_SOURCE_DIR}/cppbuild/benchmark-1.4.0.tar.gz
-        URL_MD5 ccfaf2cd93ae20191b94f730b945423e
+        URL ${CMAKE_CURRENT_SOURCE_DIR}/cppbuild/benchmark-1.4.1.zip
+        URL_MD5 619674faa0d878e239eaf6766259718b
         CMAKE_ARGS -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER};-DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER};
             -DBENCHMARK_ENABLE_GTEST_TESTS=OFF;-DBENCHMARK_ENABLE_ASSEMBLY_TESTS=OFF
         PREFIX "${AERON_THIRDPARTY_BINARY_DIR}/google_benchmark"

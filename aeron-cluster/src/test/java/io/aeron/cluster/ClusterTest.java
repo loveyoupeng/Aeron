@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2018 Real Logic Ltd.
+ * Copyright 2014-2019 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,6 +16,9 @@
 package io.aeron.cluster;
 
 import io.aeron.CommonContext;
+import io.aeron.Counter;
+import io.aeron.Image;
+import io.aeron.Publication;
 import io.aeron.archive.Archive;
 import io.aeron.archive.ArchiveThreadingMode;
 import io.aeron.archive.client.AeronArchive;
@@ -27,12 +30,15 @@ import io.aeron.cluster.service.ClusteredServiceContainer;
 import io.aeron.driver.MediaDriver;
 import io.aeron.driver.MinMulticastFlowControlSupplier;
 import io.aeron.driver.ThreadingMode;
+import io.aeron.driver.status.SystemCounterDescriptor;
 import io.aeron.logbuffer.Header;
 import org.agrona.CloseHelper;
 import org.agrona.DirectBuffer;
 import org.agrona.ExpandableArrayBuffer;
 import org.agrona.collections.MutableInteger;
 import org.agrona.concurrent.EpochClock;
+import org.agrona.concurrent.status.AtomicCounter;
+import org.agrona.concurrent.status.CountersReader;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Ignore;
@@ -40,13 +46,23 @@ import org.junit.Test;
 
 import java.io.File;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.LockSupport;
 
 import static io.aeron.Aeron.NULL_VALUE;
+import static io.aeron.cluster.service.CommitPos.COMMIT_POSITION_TYPE_ID;
+import static org.agrona.BitUtil.SIZE_OF_INT;
 import static org.hamcrest.CoreMatchers.not;
 import static org.hamcrest.core.Is.is;
-import static org.junit.Assert.assertThat;
+import static org.junit.Assert.*;
 
+@Ignore
 public class ClusterTest
 {
     private static final long MAX_CATALOG_ENTRIES = 1024;
@@ -56,7 +72,7 @@ public class ClusterTest
 
     private static final String CLUSTER_MEMBERS = clusterMembersString();
     private static final String LOG_CHANNEL =
-        "aeron:udp?term-length=64k|control-mode=manual|control=localhost:55550";
+        "aeron:udp?term-length=256k|control-mode=manual|control=localhost:55550";
     private static final String ARCHIVE_CONTROL_REQUEST_CHANNEL =
         "aeron:udp?term-length=64k|endpoint=localhost:8010";
     private static final String ARCHIVE_CONTROL_RESPONSE_CHANNEL =
@@ -69,90 +85,33 @@ public class ClusterTest
     private final CountDownLatch latchTwo = new CountDownLatch(MEMBER_COUNT - 1);
 
     private final EchoService[] echoServices = new EchoService[MEMBER_COUNT];
+    private final AtomicBoolean[] terminationExpected = new AtomicBoolean[MEMBER_COUNT];
+    private final AtomicBoolean[] serviceWasTerminated = new AtomicBoolean[MEMBER_COUNT];
+    private final AtomicBoolean[] memberWasTerminated = new AtomicBoolean[MEMBER_COUNT];
     private final ClusteredMediaDriver[] clusteredMediaDrivers = new ClusteredMediaDriver[MEMBER_COUNT];
     private final ClusteredServiceContainer[] containers = new ClusteredServiceContainer[MEMBER_COUNT];
     private MediaDriver clientMediaDriver;
     private AeronCluster client;
 
     private final MutableInteger responseCount = new MutableInteger();
-    private final EgressListener egressListener =
+    private final EgressListener egressMessageListener =
         (clusterSessionId, timestamp, buffer, offset, length, header) -> responseCount.value++;
+    private final ExecutorService executor = Executors.newFixedThreadPool(1);
 
     @Before
     public void before()
     {
-        final String aeronDirName = CommonContext.getAeronDirectoryName();
-
         for (int i = 0; i < MEMBER_COUNT; i++)
         {
-            echoServices[i] = new EchoService(i, latchOne, latchTwo);
-
-            final String baseDirName = aeronDirName + "-" + i;
-
-            final AeronArchive.Context archiveCtx = new AeronArchive.Context()
-                .controlRequestChannel(memberSpecificPort(ARCHIVE_CONTROL_REQUEST_CHANNEL, i))
-                .controlRequestStreamId(100 + i)
-                .controlResponseChannel(memberSpecificPort(ARCHIVE_CONTROL_RESPONSE_CHANNEL, i))
-                .controlResponseStreamId(110 + i)
-                .aeronDirectoryName(baseDirName);
-
-            clusteredMediaDrivers[i] = ClusteredMediaDriver.launch(
-                new MediaDriver.Context()
-                    .aeronDirectoryName(baseDirName)
-                    .threadingMode(ThreadingMode.SHARED)
-                    .termBufferSparseFile(true)
-                    .multicastFlowControlSupplier(new MinMulticastFlowControlSupplier())
-                    .errorHandler(Throwable::printStackTrace)
-                    .dirDeleteOnStart(true),
-                new Archive.Context()
-                    .maxCatalogEntries(MAX_CATALOG_ENTRIES)
-                    .aeronDirectoryName(baseDirName)
-                    .archiveDir(new File(baseDirName, "archive"))
-                    .controlChannel(archiveCtx.controlRequestChannel())
-                    .controlStreamId(archiveCtx.controlRequestStreamId())
-                    .localControlChannel("aeron:ipc?term-length=64k")
-                    .localControlStreamId(archiveCtx.controlRequestStreamId())
-                    .threadingMode(ArchiveThreadingMode.SHARED)
-                    .deleteArchiveOnStart(true),
-                new ConsensusModule.Context()
-                    .epochClock(epochClock)
-                    .errorHandler(Throwable::printStackTrace)
-                    .clusterMemberId(i)
-                    .clusterMembers(CLUSTER_MEMBERS)
-                    .aeronDirectoryName(baseDirName)
-                    .clusterDir(new File(baseDirName, "consensus-module"))
-                    .ingressChannel("aeron:udp?term-length=64k")
-                    .logChannel(memberSpecificPort(LOG_CHANNEL, i))
-                    .terminationHook(TestUtil.TERMINATION_HOOK)
-                    .archiveContext(archiveCtx.clone())
-                    .deleteDirOnStart(true));
-
-            containers[i] = ClusteredServiceContainer.launch(
-                new ClusteredServiceContainer.Context()
-                    .aeronDirectoryName(baseDirName)
-                    .archiveContext(archiveCtx.clone())
-                    .clusterDir(new File(baseDirName, "service"))
-                    .clusteredService(echoServices[i])
-                    .terminationHook(TestUtil.TERMINATION_HOOK)
-                    .errorHandler(Throwable::printStackTrace));
+            startNode(i, true);
         }
-
-        clientMediaDriver = MediaDriver.launch(
-            new MediaDriver.Context()
-                .threadingMode(ThreadingMode.SHARED)
-                .aeronDirectoryName(aeronDirName));
-
-        client = AeronCluster.connect(
-            new AeronCluster.Context()
-                .egressListener(egressListener)
-                .aeronDirectoryName(aeronDirName)
-                .ingressChannel("aeron:udp")
-                .clusterMemberEndpoints("0=localhost:20110,1=localhost:20111,2=localhost:20112"));
     }
 
     @After
-    public void after()
+    public void after() throws InterruptedException
     {
+        executor.shutdownNow();
+
         CloseHelper.close(client);
         CloseHelper.close(clientMediaDriver);
 
@@ -164,6 +123,11 @@ public class ClusterTest
         for (final ClusteredServiceContainer container : containers)
         {
             CloseHelper.close(container);
+
+            if (null != container)
+            {
+                container.context().deleteDirectory();
+            }
         }
 
         for (final ClusteredMediaDriver driver : clusteredMediaDrivers)
@@ -173,14 +137,236 @@ public class ClusterTest
             if (null != driver)
             {
                 driver.mediaDriver().context().deleteAeronDirectory();
+                driver.consensusModule().context().deleteDirectory();
+                driver.archive().context().deleteArchiveDirectory();
             }
+        }
+
+        if (!executor.awaitTermination(5, TimeUnit.SECONDS))
+        {
+            System.out.println("Warning: not all tasks completed promptly");
         }
     }
 
-    @Ignore
+    @Test(timeout = 30_000)
+    public void shouldStopFollowerAndRestartFollower() throws Exception
+    {
+        int leaderMemberId;
+        while (NULL_VALUE == (leaderMemberId = findLeaderId(NULL_VALUE)))
+        {
+            TestUtil.checkInterruptedStatus();
+            Thread.sleep(1000);
+        }
+
+        final int followerMemberId = (leaderMemberId + 1) >= MEMBER_COUNT ? 0 : (leaderMemberId + 1);
+
+        stopNode(followerMemberId);
+
+        Thread.sleep(1000);
+
+        startNode(followerMemberId, false);
+
+        Thread.sleep(1000);
+
+        assertThat(roleOf(followerMemberId), is(Cluster.Role.FOLLOWER));
+    }
+
+    @Test(timeout = 30_000)
+    public void shouldStopAleaderAndFollowersAndRestartAllWithSnapshot() throws Exception
+    {
+        int leaderMemberId;
+        while (NULL_VALUE == (leaderMemberId = findLeaderId(NULL_VALUE)))
+        {
+            TestUtil.checkInterruptedStatus();
+            Thread.sleep(1000);
+        }
+
+        int followerMemberIdA = (leaderMemberId + 1) >= MEMBER_COUNT ? 0 : (leaderMemberId + 1);
+        int followerMemberIdB = (followerMemberIdA + 1) >= MEMBER_COUNT ? 0 : (followerMemberIdA + 1);
+
+        takeSnapshot(leaderMemberId);
+        awaitsSnapshotCounter(leaderMemberId, 1);
+        awaitsSnapshotCounter(followerMemberIdA, 1);
+        awaitsSnapshotCounter(followerMemberIdB, 1);
+
+        stopNode(leaderMemberId);
+        stopNode(followerMemberIdA);
+        stopNode(followerMemberIdB);
+
+        Thread.sleep(1000);
+
+        startNode(leaderMemberId, false);
+        startNode(followerMemberIdA, false);
+        startNode(followerMemberIdB, false);
+
+        while (NULL_VALUE == (leaderMemberId = findLeaderId(NULL_VALUE)))
+        {
+            TestUtil.checkInterruptedStatus();
+            Thread.sleep(1000);
+        }
+
+        followerMemberIdA = (leaderMemberId + 1) >= MEMBER_COUNT ? 0 : (leaderMemberId + 1);
+        followerMemberIdB = (followerMemberIdA + 1) >= MEMBER_COUNT ? 0 : (followerMemberIdA + 1);
+
+        Thread.sleep(1000);
+
+        assertThat(roleOf(followerMemberIdA), is(Cluster.Role.FOLLOWER));
+        assertThat(roleOf(followerMemberIdB), is(Cluster.Role.FOLLOWER));
+
+        awaitSnapshotLoadedForService(leaderMemberId);
+        awaitSnapshotLoadedForService(followerMemberIdA);
+        awaitSnapshotLoadedForService(followerMemberIdB);
+    }
+
+    @Test(timeout = 30_000)
+    public void shouldShutdownClusterAndRestartWithSnapshots() throws Exception
+    {
+        int leaderMemberId;
+        while (NULL_VALUE == (leaderMemberId = findLeaderId(NULL_VALUE)))
+        {
+            TestUtil.checkInterruptedStatus();
+            Thread.sleep(1000);
+        }
+
+        int followerMemberIdA = (leaderMemberId + 1) >= MEMBER_COUNT ? 0 : (leaderMemberId + 1);
+        int followerMemberIdB = (followerMemberIdA + 1) >= MEMBER_COUNT ? 0 : (followerMemberIdA + 1);
+
+        terminationExpected[leaderMemberId].lazySet(true);
+        terminationExpected[followerMemberIdA].lazySet(true);
+        terminationExpected[followerMemberIdB].lazySet(true);
+
+        shutdownCluster(leaderMemberId);
+        awaitNodeTermination(leaderMemberId);
+        awaitNodeTermination(followerMemberIdA);
+        awaitNodeTermination(followerMemberIdB);
+
+        assertTrue(echoServices[leaderMemberId].wasSnapshotTaken());
+        assertTrue(echoServices[followerMemberIdA].wasSnapshotTaken());
+        assertTrue(echoServices[followerMemberIdB].wasSnapshotTaken());
+
+        stopNode(leaderMemberId);
+        stopNode(followerMemberIdA);
+        stopNode(followerMemberIdB);
+
+        Thread.sleep(1000);
+
+        startNode(leaderMemberId, false);
+        startNode(followerMemberIdA, false);
+        startNode(followerMemberIdB, false);
+
+        while (NULL_VALUE == (leaderMemberId = findLeaderId(NULL_VALUE)))
+        {
+            TestUtil.checkInterruptedStatus();
+            Thread.sleep(1);
+        }
+
+        followerMemberIdA = (leaderMemberId + 1) >= MEMBER_COUNT ? 0 : (leaderMemberId + 1);
+        followerMemberIdB = (followerMemberIdA + 1) >= MEMBER_COUNT ? 0 : (followerMemberIdA + 1);
+
+        Thread.sleep(1000);
+
+        assertThat(roleOf(followerMemberIdA), is(Cluster.Role.FOLLOWER));
+        assertThat(roleOf(followerMemberIdB), is(Cluster.Role.FOLLOWER));
+
+        awaitSnapshotLoadedForService(leaderMemberId);
+        awaitSnapshotLoadedForService(followerMemberIdA);
+        awaitSnapshotLoadedForService(followerMemberIdB);
+    }
+
+    @Test(timeout = 30_000)
+    public void shouldAbortClusterAndRestart() throws Exception
+    {
+        int leaderMemberId;
+        while (NULL_VALUE == (leaderMemberId = findLeaderId(NULL_VALUE)))
+        {
+            TestUtil.checkInterruptedStatus();
+            Thread.sleep(1000);
+        }
+
+        int followerMemberIdA = (leaderMemberId + 1) >= MEMBER_COUNT ? 0 : (leaderMemberId + 1);
+        int followerMemberIdB = (followerMemberIdA + 1) >= MEMBER_COUNT ? 0 : (followerMemberIdA + 1);
+
+        terminationExpected[leaderMemberId].lazySet(true);
+        terminationExpected[followerMemberIdA].lazySet(true);
+        terminationExpected[followerMemberIdB].lazySet(true);
+
+        abortCluster(leaderMemberId);
+        awaitNodeTermination(leaderMemberId);
+        awaitNodeTermination(followerMemberIdA);
+        awaitNodeTermination(followerMemberIdB);
+
+        assertFalse(echoServices[leaderMemberId].wasSnapshotTaken());
+        assertFalse(echoServices[followerMemberIdA].wasSnapshotTaken());
+        assertFalse(echoServices[followerMemberIdB].wasSnapshotTaken());
+
+        stopNode(leaderMemberId);
+        stopNode(followerMemberIdA);
+        stopNode(followerMemberIdB);
+
+        Thread.sleep(1000);
+
+        startNode(leaderMemberId, false);
+        startNode(followerMemberIdA, false);
+        startNode(followerMemberIdB, false);
+
+        while (NULL_VALUE == (leaderMemberId = findLeaderId(NULL_VALUE)))
+        {
+            TestUtil.checkInterruptedStatus();
+            Thread.sleep(1);
+        }
+
+        followerMemberIdA = (leaderMemberId + 1) >= MEMBER_COUNT ? 0 : (leaderMemberId + 1);
+        followerMemberIdB = (followerMemberIdA + 1) >= MEMBER_COUNT ? 0 : (followerMemberIdA + 1);
+
+        Thread.sleep(1000);
+
+        assertThat(roleOf(followerMemberIdA), is(Cluster.Role.FOLLOWER));
+        assertThat(roleOf(followerMemberIdB), is(Cluster.Role.FOLLOWER));
+
+        assertFalse(echoServices[leaderMemberId].wasSnapshotLoaded());
+        assertFalse(echoServices[followerMemberIdA].wasSnapshotLoaded());
+        assertFalse(echoServices[followerMemberIdB].wasSnapshotLoaded());
+    }
+
+    @Test(timeout = 30_000)
+    public void shouldAbortClusterOnTerminationTimeout() throws Exception
+    {
+        int leaderMemberId;
+        while (NULL_VALUE == (leaderMemberId = findLeaderId(NULL_VALUE)))
+        {
+            TestUtil.checkInterruptedStatus();
+            Thread.sleep(1000);
+        }
+
+        final int followerMemberIdA = (leaderMemberId + 1) >= MEMBER_COUNT ? 0 : (leaderMemberId + 1);
+        final int followerMemberIdB = (followerMemberIdA + 1) >= MEMBER_COUNT ? 0 : (followerMemberIdA + 1);
+
+        terminationExpected[leaderMemberId].lazySet(true);
+        terminationExpected[followerMemberIdA].lazySet(true);
+
+        stopNode(followerMemberIdB);
+
+        startClient();
+
+        final ExpandableArrayBuffer msgBuffer = new ExpandableArrayBuffer();
+        msgBuffer.putStringWithoutLengthAscii(0, MSG);
+
+        sendMessages(msgBuffer);
+        awaitResponses(MESSAGE_COUNT);
+
+        abortCluster(leaderMemberId);
+        awaitNodeTermination(followerMemberIdA);
+        awaitNodeTermination(leaderMemberId);
+
+        stopNode(leaderMemberId);
+        stopNode(followerMemberIdA);
+    }
+
     @Test(timeout = 30_000)
     public void shouldEchoMessagesThenContinueOnNewLeader() throws Exception
     {
+        startClient();
+
         final int leaderMemberId = findLeaderId(NULL_VALUE);
         assertThat(leaderMemberId, not(NULL_VALUE));
 
@@ -199,14 +385,13 @@ public class ClusterTest
             assertThat(service.messageCount(), is(MESSAGE_COUNT));
         }
 
-        containers[leaderMemberId].close();
-        clusteredMediaDrivers[leaderMemberId].close();
+        stopNode(leaderMemberId);
 
         int newLeaderMemberId;
         while (NULL_VALUE == (newLeaderMemberId = findLeaderId(leaderMemberId)))
         {
             TestUtil.checkInterruptedStatus();
-            Thread.sleep(100);
+            Thread.sleep(1000);
         }
 
         assertThat(newLeaderMemberId, not(leaderMemberId));
@@ -226,14 +411,442 @@ public class ClusterTest
         }
     }
 
+    @Test(timeout = 30_000)
+    public void shouldStopLeaderAndRestartAfterElectionAsFollower() throws Exception
+    {
+        int leaderMemberId;
+        while (NULL_VALUE == (leaderMemberId = findLeaderId(NULL_VALUE)))
+        {
+            TestUtil.checkInterruptedStatus();
+            Thread.sleep(1000);
+        }
+
+        stopNode(leaderMemberId);
+
+        while (NULL_VALUE == findLeaderId(leaderMemberId))
+        {
+            TestUtil.checkInterruptedStatus();
+            Thread.sleep(1000);
+        }
+
+        startNode(leaderMemberId, false);
+
+        Thread.sleep(5000);
+
+        assertThat(roleOf(leaderMemberId), is(Cluster.Role.FOLLOWER));
+        assertThat(electionCounterOf(leaderMemberId), is((long)NULL_VALUE));
+    }
+
+    @Test(timeout = 30_000)
+    public void shouldStopLeaderAndRestartAfterElectionAsFollowerWithSendingAfter() throws Exception
+    {
+        int leaderMemberId;
+        while (NULL_VALUE == (leaderMemberId = findLeaderId(NULL_VALUE)))
+        {
+            TestUtil.checkInterruptedStatus();
+            Thread.sleep(1000);
+        }
+
+        stopNode(leaderMemberId);
+
+        while (NULL_VALUE == findLeaderId(leaderMemberId))
+        {
+            TestUtil.checkInterruptedStatus();
+            Thread.sleep(1000);
+        }
+
+        startNode(leaderMemberId, false);
+
+        Thread.sleep(5000);
+
+        assertThat(roleOf(leaderMemberId), is(Cluster.Role.FOLLOWER));
+        assertThat(electionCounterOf(leaderMemberId), is((long)NULL_VALUE));
+
+        startClient();
+
+        final ExpandableArrayBuffer msgBuffer = new ExpandableArrayBuffer();
+        msgBuffer.putStringWithoutLengthAscii(0, MSG);
+
+        sendMessages(msgBuffer);
+        awaitResponses(MESSAGE_COUNT);
+    }
+
+    @Test(timeout = 60_000)
+    public void shouldStopLeaderAndRestartAfterElectionAsFollowerWithSendingAfterThenStopLeader() throws Exception
+    {
+        int leaderMemberId;
+        while (NULL_VALUE == (leaderMemberId = findLeaderId(NULL_VALUE)))
+        {
+            TestUtil.checkInterruptedStatus();
+            Thread.sleep(1000);
+        }
+
+        stopNode(leaderMemberId);
+
+        while (NULL_VALUE == findLeaderId(leaderMemberId))
+        {
+            TestUtil.checkInterruptedStatus();
+            Thread.sleep(1000);
+        }
+
+        startNode(leaderMemberId, false);
+
+        Thread.sleep(5000);
+
+        assertThat(roleOf(leaderMemberId), is(Cluster.Role.FOLLOWER));
+        assertThat(electionCounterOf(leaderMemberId), is((long)NULL_VALUE));
+
+        startClient();
+
+        final ExpandableArrayBuffer msgBuffer = new ExpandableArrayBuffer();
+        msgBuffer.putStringWithoutLengthAscii(0, MSG);
+
+        sendMessages(msgBuffer);
+        awaitResponses(MESSAGE_COUNT);
+
+        final int newLeaderId = findLeaderId(NULL_VALUE);
+
+        stopNode(newLeaderId);
+
+        while (NULL_VALUE == findLeaderId(newLeaderId))
+        {
+            TestUtil.checkInterruptedStatus();
+            Thread.sleep(1000);
+        }
+    }
+
+    @Test(timeout = 30_000)
+    public void shouldAcceptMessagesAfterSingleNodeGoDownAndComeBackUpClean() throws Exception
+    {
+        int leaderMemberId;
+        while (NULL_VALUE == (leaderMemberId = findLeaderId(NULL_VALUE)))
+        {
+            TestUtil.checkInterruptedStatus();
+            Thread.sleep(1000);
+        }
+
+        final int followerMemberId = (leaderMemberId + 1) >= MEMBER_COUNT ? 0 : (leaderMemberId + 1);
+
+        stopNode(followerMemberId);
+
+        Thread.sleep(10000);
+
+        startNode(followerMemberId, true);
+
+        Thread.sleep(1000);
+
+        assertThat(roleOf(followerMemberId), is(Cluster.Role.FOLLOWER));
+
+        startClient();
+
+        final ExpandableArrayBuffer msgBuffer = new ExpandableArrayBuffer();
+        msgBuffer.putStringWithoutLengthAscii(0, MSG);
+
+        sendMessages(msgBuffer);
+        awaitResponses(MESSAGE_COUNT);
+    }
+
+    @Test(timeout = 30_000)
+    public void shouldAcceptMessagesAfterTwoNodesGoDownAndComeBackUpClean() throws Exception
+    {
+        int leaderMemberId;
+        while (NULL_VALUE == (leaderMemberId = findLeaderId(NULL_VALUE)))
+        {
+            TestUtil.checkInterruptedStatus();
+            Thread.sleep(1000);
+        }
+
+        final int followerMemberIdA = (leaderMemberId + 1) >= MEMBER_COUNT ? 0 : (leaderMemberId + 1);
+        final int followerMemberIdB = (followerMemberIdA + 1) >= MEMBER_COUNT ? 0 : (followerMemberIdA + 1);
+
+        stopNode(followerMemberIdA);
+        stopNode(followerMemberIdB);
+
+        Thread.sleep(10000);
+
+        startNode(followerMemberIdA, true);
+        startNode(followerMemberIdB, true);
+
+        Thread.sleep(1000);
+
+        startClient();
+
+        final ExpandableArrayBuffer msgBuffer = new ExpandableArrayBuffer();
+        msgBuffer.putStringWithoutLengthAscii(0, MSG);
+
+        sendMessages(msgBuffer);
+        awaitResponses(MESSAGE_COUNT);
+    }
+
+    @Test(timeout = 30_000)
+    public void membersShouldHaveOneCommitPositionCounter() throws Exception
+    {
+        int leaderMemberId;
+        while (NULL_VALUE == (leaderMemberId = findLeaderId(NULL_VALUE)))
+        {
+            TestUtil.checkInterruptedStatus();
+            Thread.sleep(1000);
+        }
+
+        final int followerMemberIdA = (leaderMemberId + 1) >= MEMBER_COUNT ? 0 : (leaderMemberId + 1);
+        final int followerMemberIdB = (followerMemberIdA + 1) >= MEMBER_COUNT ? 0 : (followerMemberIdA + 1);
+
+        stopNode(leaderMemberId);
+
+        while (NULL_VALUE == findLeaderId(leaderMemberId))
+        {
+            TestUtil.checkInterruptedStatus();
+            Thread.sleep(1000);
+        }
+
+        assertThat(countersOfType(followerMemberIdA, COMMIT_POSITION_TYPE_ID), is(1));
+        assertThat(countersOfType(followerMemberIdB, COMMIT_POSITION_TYPE_ID), is(1));
+    }
+
+    @Test(timeout = 60_000)
+    public void followerShouldRecoverWhileMessagesContinue() throws Exception
+    {
+        int leaderMemberId;
+        while (NULL_VALUE == (leaderMemberId = findLeaderId(NULL_VALUE)))
+        {
+            TestUtil.checkInterruptedStatus();
+            Thread.sleep(1000);
+        }
+
+        final ExpandableArrayBuffer msgBuffer = new ExpandableArrayBuffer();
+        msgBuffer.putStringWithoutLengthAscii(0, MSG);
+
+        startClient();
+
+        startMessageThread(msgBuffer, TimeUnit.MICROSECONDS.toNanos(500));
+
+        final int followerMemberIdA = (leaderMemberId + 1) >= MEMBER_COUNT ? 0 : (leaderMemberId + 1);
+        final int followerMemberIdB = (followerMemberIdA + 1) >= MEMBER_COUNT ? 0 : (followerMemberIdA + 1);
+
+        //stopNode(followerMemberIdA);
+        stopNode(followerMemberIdB);
+
+        Thread.sleep(10_000);
+
+        startNode(followerMemberIdB, false);
+
+        Thread.sleep(30_000);
+
+        assertThat(errors(leaderMemberId), is(0L));
+        assertThat(errors(followerMemberIdA), is(0L));
+        assertThat(errors(followerMemberIdB), is(0L));
+        assertThat(electionCounterOf(followerMemberIdB), is((long)NULL_VALUE));
+    }
+
+    @Test(timeout = 30_000)
+    public void shouldCatchupFromEmptyLog() throws Exception
+    {
+        int leaderMemberId;
+        while (NULL_VALUE == (leaderMemberId = findLeaderId(NULL_VALUE)))
+        {
+            TestUtil.checkInterruptedStatus();
+            Thread.sleep(1000);
+        }
+
+        final int followerMemberIdA = (leaderMemberId + 1) >= MEMBER_COUNT ? 0 : (leaderMemberId + 1);
+        final int followerMemberIdB = (followerMemberIdA + 1) >= MEMBER_COUNT ? 0 : (followerMemberIdA + 1);
+
+        stopNode(followerMemberIdB);
+
+        final ExpandableArrayBuffer msgBuffer = new ExpandableArrayBuffer();
+        msgBuffer.putStringWithoutLengthAscii(0, MSG);
+
+        startClient();
+
+        sendMessages(msgBuffer);
+        awaitResponses(MESSAGE_COUNT);
+
+        startNode(followerMemberIdB, true);
+
+        while (echoServices[followerMemberIdB].messageCount() < MESSAGE_COUNT)
+        {
+            TestUtil.checkInterruptedStatus();
+            Thread.sleep(1000);
+        }
+    }
+
+    @Test(timeout = 30_000)
+    public void shouldCatchupFromEmptyLogThenSnapshotAfterShutdownAndFollowerCleanStart() throws Exception
+    {
+        int leaderMemberId;
+        while (NULL_VALUE == (leaderMemberId = findLeaderId(NULL_VALUE)))
+        {
+            TestUtil.checkInterruptedStatus();
+            Thread.sleep(1000);
+        }
+
+        int followerMemberIdA = (leaderMemberId + 1) >= MEMBER_COUNT ? 0 : (leaderMemberId + 1);
+        int followerMemberIdB = (followerMemberIdA + 1) >= MEMBER_COUNT ? 0 : (followerMemberIdA + 1);
+
+        final ExpandableArrayBuffer msgBuffer = new ExpandableArrayBuffer();
+        msgBuffer.putStringWithoutLengthAscii(0, MSG);
+
+        startClient();
+
+        sendMessages(msgBuffer);
+        awaitResponses(MESSAGE_COUNT);
+
+        terminationExpected[leaderMemberId].lazySet(true);
+        terminationExpected[followerMemberIdA].lazySet(true);
+        terminationExpected[followerMemberIdB].lazySet(true);
+
+        shutdownCluster(leaderMemberId);
+        awaitNodeTermination(leaderMemberId);
+        awaitNodeTermination(followerMemberIdA);
+        awaitNodeTermination(followerMemberIdB);
+
+        assertTrue(echoServices[leaderMemberId].wasSnapshotTaken());
+        assertTrue(echoServices[followerMemberIdA].wasSnapshotTaken());
+        assertTrue(echoServices[followerMemberIdB].wasSnapshotTaken());
+
+        stopNode(leaderMemberId);
+        stopNode(followerMemberIdA);
+        stopNode(followerMemberIdB);
+
+        terminationExpected[leaderMemberId].lazySet(false);
+        terminationExpected[followerMemberIdA].lazySet(false);
+        terminationExpected[followerMemberIdB].lazySet(false);
+
+        Thread.sleep(1000);
+
+        startNode(leaderMemberId, false);
+        startNode(followerMemberIdA, false);
+        startNode(followerMemberIdB, true);
+
+        while (NULL_VALUE == (leaderMemberId = findLeaderId(NULL_VALUE)))
+        {
+            TestUtil.checkInterruptedStatus();
+            Thread.sleep(1);
+        }
+
+        assertNotEquals(leaderMemberId, is(followerMemberIdB));
+
+        followerMemberIdA = (leaderMemberId + 1) >= MEMBER_COUNT ? 0 : (leaderMemberId + 1);
+        followerMemberIdB = (followerMemberIdA + 1) >= MEMBER_COUNT ? 0 : (followerMemberIdA + 1);
+
+        final int followerLoadingSnapshot =
+            (echoServices[followerMemberIdA].wasSnapshotLoaded()) ? followerMemberIdA : followerMemberIdB;
+        final int followerCatchingUp =
+            (echoServices[followerMemberIdA].wasSnapshotLoaded()) ? followerMemberIdB : followerMemberIdA;
+
+        Thread.sleep(1000);
+
+        assertThat(roleOf(followerMemberIdA), is(Cluster.Role.FOLLOWER));
+        assertThat(roleOf(followerMemberIdB), is(Cluster.Role.FOLLOWER));
+
+        assertTrue(echoServices[leaderMemberId].wasSnapshotLoaded());
+        assertTrue(echoServices[followerLoadingSnapshot].wasSnapshotLoaded());
+        assertFalse(echoServices[followerCatchingUp].wasSnapshotLoaded());
+
+        while (echoServices[followerCatchingUp].messageCount() < MESSAGE_COUNT)
+        {
+            TestUtil.checkInterruptedStatus();
+            Thread.sleep(1000);
+        }
+
+        awaitsSnapshotCounter(followerCatchingUp, 1);
+        assertTrue(echoServices[followerCatchingUp].wasSnapshotTaken());
+    }
+
+    private void startNode(final int index, final boolean cleanStart)
+    {
+        echoServices[index] = new EchoService(index, latchOne, latchTwo);
+        final String baseDirName = CommonContext.getAeronDirectoryName() + "-" + index;
+        final String aeronDirName = CommonContext.getAeronDirectoryName() + "-" + index + "-driver";
+
+        final AeronArchive.Context archiveCtx = new AeronArchive.Context()
+            .controlRequestChannel(memberSpecificPort(ARCHIVE_CONTROL_REQUEST_CHANNEL, index))
+            .controlRequestStreamId(100 + index)
+            .controlResponseChannel(memberSpecificPort(ARCHIVE_CONTROL_RESPONSE_CHANNEL, index))
+            .controlResponseStreamId(110 + index)
+            .aeronDirectoryName(baseDirName);
+
+        terminationExpected[index] = new AtomicBoolean(false);
+        memberWasTerminated[index] = new AtomicBoolean(false);
+        serviceWasTerminated[index] = new AtomicBoolean(false);
+
+        clusteredMediaDrivers[index] = ClusteredMediaDriver.launch(
+            new MediaDriver.Context()
+                .aeronDirectoryName(aeronDirName)
+                .threadingMode(ThreadingMode.SHARED)
+                .termBufferSparseFile(true)
+                .multicastFlowControlSupplier(new MinMulticastFlowControlSupplier())
+                .errorHandler(Throwable::printStackTrace)
+                .dirDeleteOnStart(true),
+            new Archive.Context()
+                .maxCatalogEntries(MAX_CATALOG_ENTRIES)
+                .aeronDirectoryName(aeronDirName)
+                .archiveDir(new File(baseDirName, "archive"))
+                .controlChannel(archiveCtx.controlRequestChannel())
+                .controlStreamId(archiveCtx.controlRequestStreamId())
+                .localControlChannel("aeron:ipc?term-length=64k")
+                .localControlStreamId(archiveCtx.controlRequestStreamId())
+                .threadingMode(ArchiveThreadingMode.SHARED)
+                .deleteArchiveOnStart(cleanStart),
+            new ConsensusModule.Context()
+                .epochClock(epochClock)
+                .errorHandler(Throwable::printStackTrace)
+                .clusterMemberId(index)
+                .clusterMembers(CLUSTER_MEMBERS)
+                .aeronDirectoryName(aeronDirName)
+                .clusterDir(new File(baseDirName, "consensus-module"))
+                .ingressChannel("aeron:udp?term-length=64k")
+                .logChannel(memberSpecificPort(LOG_CHANNEL, index))
+                .terminationHook(TestUtil.dynamicTerminationHook(
+                    terminationExpected[index], memberWasTerminated[index]))
+                .archiveContext(archiveCtx.clone())
+                .deleteDirOnStart(cleanStart));
+
+        containers[index] = ClusteredServiceContainer.launch(
+            new ClusteredServiceContainer.Context()
+                .aeronDirectoryName(aeronDirName)
+                .archiveContext(archiveCtx.clone())
+                .clusterDir(new File(baseDirName, "service"))
+                .clusteredService(echoServices[index])
+                .terminationHook(TestUtil.dynamicTerminationHook(
+                    terminationExpected[index], serviceWasTerminated[index]))
+                .errorHandler(Throwable::printStackTrace));
+    }
+
+    private void stopNode(final int index)
+    {
+        containers[index].close();
+        containers[index] = null;
+        clusteredMediaDrivers[index].close();
+        clusteredMediaDrivers[index].mediaDriver().context().deleteAeronDirectory();
+        clusteredMediaDrivers[index] = null;
+    }
+
+    private void startClient()
+    {
+        final String aeronDirName = CommonContext.getAeronDirectoryName();
+
+        clientMediaDriver = MediaDriver.launch(
+            new MediaDriver.Context()
+                .threadingMode(ThreadingMode.SHARED)
+                .aeronDirectoryName(aeronDirName));
+
+        client = AeronCluster.connect(
+            new AeronCluster.Context()
+                .egressListener(egressMessageListener)
+                .aeronDirectoryName(aeronDirName)
+                .ingressChannel("aeron:udp")
+                .clusterMemberEndpoints("0=localhost:20110,1=localhost:20111,2=localhost:20112"));
+    }
+
     private void sendMessages(final ExpandableArrayBuffer msgBuffer)
     {
         for (int i = 0; i < MESSAGE_COUNT; i++)
         {
             while (client.offer(msgBuffer, 0, MSG.length()) < 0)
             {
-                client.pollEgress();
                 TestUtil.checkInterruptedStatus();
+                client.pollEgress();
                 Thread.yield();
             }
 
@@ -279,7 +892,10 @@ public class ClusterTest
     static class EchoService extends StubClusteredService
     {
         private volatile int messageCount;
+        private volatile boolean wasSnapshotTaken = false;
+        private volatile boolean wasSnapshotLoaded = false;
         private final int index;
+        private final AtomicReference<String> messageCountString = new AtomicReference<>("no snapshot loaded");
         private final CountDownLatch latchOne;
         private final CountDownLatch latchTwo;
 
@@ -300,6 +916,16 @@ public class ClusterTest
             return messageCount;
         }
 
+        boolean wasSnapshotTaken()
+        {
+            return wasSnapshotTaken;
+        }
+
+        boolean wasSnapshotLoaded()
+        {
+            return wasSnapshotLoaded;
+        }
+
         public void onSessionMessage(
             final ClientSession session,
             final long timestampMs,
@@ -314,6 +940,7 @@ public class ClusterTest
             }
 
             ++messageCount;
+            messageCountString.set(Integer.toString(messageCount));
 
             if (messageCount == MESSAGE_COUNT)
             {
@@ -325,25 +952,207 @@ public class ClusterTest
                 latchTwo.countDown();
             }
         }
+
+        public void onTakeSnapshot(final Publication snapshotPublication)
+        {
+            final ExpandableArrayBuffer buffer = new ExpandableArrayBuffer();
+
+            int length = 0;
+            buffer.putInt(length, messageCount);
+            length += SIZE_OF_INT;
+            length += buffer.putIntAscii(length, messageCount);
+
+            snapshotPublication.offer(buffer, 0, length);
+            wasSnapshotTaken = true;
+        }
+
+        public void onLoadSnapshot(final Image snapshotImage)
+        {
+            while (true)
+            {
+                final int fragments = snapshotImage.poll(
+                    (buffer, offset, length, header) ->
+                    {
+                        messageCount = buffer.getInt(offset);
+
+                        final String s = buffer.getStringWithoutLengthAscii(
+                            offset + SIZE_OF_INT, length - SIZE_OF_INT);
+
+                        messageCountString.set(s);
+                    },
+                    1);
+
+                if (fragments == 1)
+                {
+                    break;
+                }
+
+                cluster.idle();
+            }
+
+            wasSnapshotLoaded = true;
+        }
     }
 
     private int findLeaderId(final int skipMemberId)
     {
         int leaderMemberId = NULL_VALUE;
 
-        for (final ClusteredMediaDriver clusteredMediaDriver : clusteredMediaDrivers)
+        for (int i = 0; i < 3; i++)
         {
-            final ConsensusModule.Context context = clusteredMediaDriver.consensusModule().context();
-            final int memberId = context.clusterMemberId();
-
-            if (memberId != skipMemberId &&
-                Cluster.Role.LEADER == Cluster.Role.get((int)context.clusterNodeCounter().get()))
+            if (i == skipMemberId)
             {
-                leaderMemberId = memberId;
-                break;
+                continue;
+            }
+
+            final ClusteredMediaDriver driver = clusteredMediaDrivers[i];
+
+            final Cluster.Role role = Cluster.Role.get(
+                (int)driver.consensusModule().context().clusterNodeCounter().get());
+
+            if (Cluster.Role.LEADER == role)
+            {
+                leaderMemberId = driver.consensusModule().context().clusterMemberId();
             }
         }
 
         return leaderMemberId;
+    }
+
+    private Cluster.Role roleOf(final int index)
+    {
+        final ClusteredMediaDriver driver = clusteredMediaDrivers[index];
+        return Cluster.Role.get((int)driver.consensusModule().context().clusterNodeCounter().get());
+    }
+
+    private long electionCounterOf(final int index)
+    {
+        final ClusteredMediaDriver driver = clusteredMediaDrivers[index];
+        final CountersReader counters = driver.mediaDriver().context().countersManager();
+
+        final long[] electionState = {NULL_VALUE};
+
+        counters.forEach(
+            (counterId, typeId, keyBuffer, label) ->
+            {
+                if (typeId == Election.ELECTION_STATE_TYPE_ID)
+                {
+                    electionState[0] = counters.getCounterValue(counterId);
+                }
+            });
+
+        return electionState[0];
+    }
+
+    private int countersOfType(final int index, final int typeIdToCount)
+    {
+        final ClusteredMediaDriver driver = clusteredMediaDrivers[index];
+        final CountersReader counters = driver.mediaDriver().context().countersManager();
+
+        final AtomicInteger count = new AtomicInteger();
+
+        counters.forEach(
+            (counterId, typeId, keyBuffer, label) ->
+            {
+                if (typeId == typeIdToCount)
+                {
+                    count.incrementAndGet();
+                }
+            });
+
+        return count.get();
+    }
+
+    private long errors(final int index)
+    {
+        final ClusteredMediaDriver driver = clusteredMediaDrivers[index];
+        final CountersReader counters = driver.mediaDriver().context().countersManager();
+
+        return counters.getCounterValue(SystemCounterDescriptor.ERRORS.id());
+    }
+
+    private void startMessageThread(final ExpandableArrayBuffer msgBuffer, final long intervalNs)
+    {
+        executor.submit(() ->
+        {
+            //final IdleStrategy idleStrategy = new YieldingIdleStrategy();
+
+            while (true)
+            {
+                while (client.offer(msgBuffer, 0, MSG.length()) < 0)
+                {
+                    if (Thread.interrupted())
+                    {
+                        return;
+                    }
+
+                    client.pollEgress();
+                    LockSupport.parkNanos(intervalNs);
+                }
+
+                client.pollEgress();
+                //idleStrategy.idle();
+            }
+        });
+    }
+
+    private void takeSnapshot(final int index)
+    {
+        final ClusteredMediaDriver driver = clusteredMediaDrivers[index];
+
+        final CountersReader countersReader = driver.consensusModule().context().aeron().countersReader();
+        final AtomicCounter controlToggle = ClusterControl.findControlToggle(countersReader);
+        assertNotNull(controlToggle);
+        assertTrue(ClusterControl.ToggleState.SNAPSHOT.toggle(controlToggle));
+    }
+
+    private void shutdownCluster(final int index)
+    {
+        final ClusteredMediaDriver driver = clusteredMediaDrivers[index];
+
+        final CountersReader countersReader = driver.consensusModule().context().aeron().countersReader();
+        final AtomicCounter controlToggle = ClusterControl.findControlToggle(countersReader);
+        assertNotNull(controlToggle);
+        assertTrue(ClusterControl.ToggleState.SHUTDOWN.toggle(controlToggle));
+    }
+
+    private void abortCluster(final int index)
+    {
+        final ClusteredMediaDriver driver = clusteredMediaDrivers[index];
+
+        final CountersReader countersReader = driver.consensusModule().context().aeron().countersReader();
+        final AtomicCounter controlToggle = ClusterControl.findControlToggle(countersReader);
+        assertNotNull(controlToggle);
+        assertTrue(ClusterControl.ToggleState.ABORT.toggle(controlToggle));
+    }
+
+    private void awaitsSnapshotCounter(final int index, final long value)
+    {
+        final ClusteredMediaDriver driver = clusteredMediaDrivers[index];
+        final Counter snapshotCounter = driver.consensusModule().context().snapshotCounter();
+
+        while (snapshotCounter.getWeak() != value)
+        {
+            TestUtil.checkInterruptedStatus();
+            Thread.yield();
+        }
+    }
+
+    private void awaitNodeTermination(final int index)
+    {
+        while (!memberWasTerminated[index].get())
+        {
+            TestUtil.checkInterruptedStatus();
+            Thread.yield();
+        }
+    }
+
+    private void awaitSnapshotLoadedForService(final int index)
+    {
+        while (!echoServices[index].wasSnapshotLoaded())
+        {
+            TestUtil.checkInterruptedStatus();
+            Thread.yield();
+        }
     }
 }

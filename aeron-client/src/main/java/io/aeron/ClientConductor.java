@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2018 Real Logic Ltd.
+ * Copyright 2014-2019 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -108,26 +108,24 @@ class ClientConductor implements Agent, DriverEventsListener
             {
                 isClosed = true;
 
-                final int lingeringResourcesSize = lingeringResources.size();
                 forceCloseResources();
-
-                if (lingeringResources.size() > lingeringResourcesSize)
-                {
-                    Aeron.sleep(16);
-                }
+                Thread.yield();
 
                 for (int i = 0, size = lingeringResources.size(); i < size; i++)
                 {
                     lingeringResources.get(i).delete();
                 }
-
-                driverProxy.clientClose();
             }
         }
         finally
         {
             clientLock.unlock();
         }
+    }
+
+    void clientClose()
+    {
+        driverProxy.clientClose();
     }
 
     public int doWork()
@@ -757,7 +755,6 @@ class ClientConductor implements Agent, DriverEventsListener
                 }
                 catch (final InterruptedException ex)
                 {
-                    Thread.currentThread().interrupt();
                     LangUtil.rethrowUnchecked(ex);
                 }
             }
@@ -831,7 +828,6 @@ class ClientConductor implements Agent, DriverEventsListener
             if (epochClock.time() > (driverProxy.timeOfLastDriverKeepaliveMs() + driverTimeoutMs))
             {
                 onClose();
-
                 throw new DriverTimeoutException("MediaDriver keepalive older than (ms): " + driverTimeoutMs);
             }
 

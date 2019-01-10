@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2018 Real Logic Ltd.
+ * Copyright 2014-2019 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -1144,8 +1144,7 @@ public final class ClusteredServiceContainer implements AutoCloseable
         }
 
         /**
-         * Set the {@link Runnable} that is called when processing a
-         * {@link io.aeron.cluster.codecs.ClusterAction#SHUTDOWN} or {@link io.aeron.cluster.codecs.ClusterAction#ABORT}
+         * Set the {@link Runnable} that is called when container is instructed to terminate.
          *
          * @param terminationHook that can be used to terminate a service container.
          * @return this for a fluent API.
@@ -1157,8 +1156,7 @@ public final class ClusteredServiceContainer implements AutoCloseable
         }
 
         /**
-         * Get the {@link Runnable} that is called when processing a
-         * {@link io.aeron.cluster.codecs.ClusterAction#SHUTDOWN} or {@link io.aeron.cluster.codecs.ClusterAction#ABORT}
+         * Get the {@link Runnable} that is called when container is instructed to terminate.
          * <p>
          * The default action is to call signal on the {@link #shutdownSignalBarrier()}.
          *

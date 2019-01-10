@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2018 Real Logic Ltd.
+ * Copyright 2014-2019 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -196,6 +196,7 @@ public class Archive implements AutoCloseable
 
         static final String CATALOG_FILE_NAME = "archive.catalog";
         static final String RECORDING_SEGMENT_POSTFIX = ".rec";
+        static final int MAX_BLOCK_LENGTH = 2 * 1024 * 1024;
 
         /**
          * Get the directory name to be used for storing the archive.
