@@ -24,14 +24,19 @@ import io.aeron.cluster.service.Cluster;
 import io.aeron.cluster.service.ClusteredServiceContainer;
 import io.aeron.driver.MediaDriver;
 import io.aeron.driver.status.SystemCounterDescriptor;
+import io.aeron.logbuffer.FragmentHandler;
 import io.aeron.logbuffer.Header;
 import org.agrona.CloseHelper;
 import org.agrona.DirectBuffer;
 import org.agrona.ExpandableArrayBuffer;
+import org.agrona.collections.MutableInteger;
 import org.agrona.concurrent.status.CountersReader;
 
+import java.io.File;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import static io.aeron.Aeron.NULL_VALUE;
 import static org.agrona.BitUtil.SIZE_OF_INT;
 
 class TestNode implements AutoCloseable
@@ -105,6 +110,27 @@ class TestNode implements AutoCloseable
         return Cluster.Role.get((int)clusteredMediaDriver.consensusModule().context().clusterNodeCounter().get());
     }
 
+    boolean isClosed()
+    {
+        return isClosed;
+    }
+
+    Election.State electionState()
+    {
+        final MutableInteger electionStateValue = new MutableInteger(NULL_VALUE);
+
+        countersReader().forEach(
+            (counterId, typeId, keyBuffer, label) ->
+            {
+                if (typeId == Election.ELECTION_STATE_TYPE_ID)
+                {
+                    electionStateValue.value = (int)countersReader().getCounterValue(counterId);
+                }
+            });
+
+        return NULL_VALUE != electionStateValue.value ? Election.State.get(electionStateValue.value) : null;
+    }
+
     boolean isLeader()
     {
         return role() == Cluster.Role.LEADER;
@@ -143,6 +169,29 @@ class TestNode implements AutoCloseable
     long errors()
     {
         return countersReader().getCounterValue(SystemCounterDescriptor.ERRORS.id());
+    }
+
+    ClusterTool.ClusterMembersInfo clusterMembersInfo()
+    {
+        final ClusterTool.ClusterMembersInfo clusterMembersInfo = new ClusterTool.ClusterMembersInfo();
+        final File clusterDir = clusteredMediaDriver.consensusModule().context().clusterDir();
+
+        if (!ClusterTool.listMembers(clusterMembersInfo, clusterDir, TimeUnit.SECONDS.toMillis(1)))
+        {
+            throw new IllegalStateException("timeout waiting for cluster members info");
+        }
+
+        return clusterMembersInfo;
+    }
+
+    void removeMember(final int followerMemberId, final boolean isPassive)
+    {
+        final File clusterDir = clusteredMediaDriver.consensusModule().context().clusterDir();
+
+        if (!ClusterTool.removeMember(clusterDir, followerMemberId, isPassive))
+        {
+            throw new IllegalStateException("could not remove member");
+        }
     }
 
     static class TestService extends StubClusteredService
@@ -207,14 +256,11 @@ class TestNode implements AutoCloseable
 
         public void onLoadSnapshot(final Image snapshotImage)
         {
+            final FragmentHandler handler = (buffer, offset, length, header) -> messageCount = buffer.getInt(offset);
+
             while (true)
             {
-                final int fragments = snapshotImage.poll(
-                    (buffer, offset, length, header) ->
-                    {
-                        messageCount = buffer.getInt(offset);
-                    },
-                    1);
+                final int fragments = snapshotImage.poll(handler, 1);
 
                 if (fragments == 1)
                 {

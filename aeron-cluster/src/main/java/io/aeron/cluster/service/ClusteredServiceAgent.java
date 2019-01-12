@@ -55,6 +55,7 @@ class ClusteredServiceAgent implements Agent, Cluster
     private final EpochClock epochClock;
     private final ClusterMarkFile markFile;
     private final UnsafeBuffer headerBuffer = new UnsafeBuffer(new byte[SESSION_HEADER_LENGTH]);
+    private final DirectBufferVector headerVector = new DirectBufferVector(headerBuffer, 0, headerBuffer.capacity());
     private final EgressMessageHeaderEncoder egressMessageHeaderEncoder = new EgressMessageHeaderEncoder();
 
     private long ackId = 0;
@@ -62,6 +63,7 @@ class ClusteredServiceAgent implements Agent, Cluster
     private long cachedTimeMs;
     private long terminationPosition = NULL_POSITION;
     private int memberId = NULL_VALUE;
+    private boolean isServiceActive;
     private BoundedLogAdapter logAdapter;
     private AtomicCounter heartbeatCounter;
     private ReadableCounter roleCounter;
@@ -97,6 +99,7 @@ class ClusteredServiceAgent implements Agent, Cluster
         commitPosition = awaitCommitPositionCounter(counters);
 
         service.onStart(this);
+        isServiceActive = true;
 
         final int recoveryCounterId = awaitRecoveryCounter(counters);
         heartbeatCounter.setOrdered(epochClock.time());
@@ -106,6 +109,19 @@ class ClusteredServiceAgent implements Agent, Cluster
 
     public void onClose()
     {
+        if (isServiceActive)
+        {
+            isServiceActive = false;
+            try
+            {
+                service.onTerminate(this);
+            }
+            catch (final Exception ex)
+            {
+                ctx.countedErrorHandler().onError(ex);
+            }
+        }
+
         if (!ctx.ownsAeronClient())
         {
             for (final ClientSession session : sessionByIdMap.values())
@@ -257,6 +273,30 @@ class ClusteredServiceAgent implements Agent, Cluster
         return publication.offer(headerBuffer, 0, headerBuffer.capacity(), buffer, offset, length, null);
     }
 
+    public long offer(final long clusterSessionId, final Publication publication, final DirectBufferVector[] vectors)
+    {
+        if (role != Cluster.Role.LEADER)
+        {
+            return ClientSession.MOCKED_OFFER;
+        }
+
+        if (null == publication)
+        {
+            return Publication.NOT_CONNECTED;
+        }
+
+        egressMessageHeaderEncoder
+            .clusterSessionId(clusterSessionId)
+            .timestamp(clusterTimeMs);
+
+        if (vectors[0] != headerVector)
+        {
+            vectors[0] = headerVector;
+        }
+
+        return publication.offer(vectors, null);
+    }
+
     public void onJoinLog(
         final long leadershipTermId,
         final long logPosition,
@@ -363,9 +403,7 @@ class ClusteredServiceAgent implements Agent, Cluster
 
         if (memberId == this.memberId && changeType == ChangeType.QUIT)
         {
-            service.onTerminate(this);
-            consensusModuleProxy.ack(logPosition, ackId++, serviceId);
-            ctx.terminationHook().run();
+            terminate(logPosition);
         }
     }
 
@@ -719,7 +757,6 @@ class ClusteredServiceAgent implements Agent, Cluster
             }
             else
             {
-                service.onTerminate(this);
                 ctx.errorHandler().onError(new ClusterException("Consensus Module not connected"));
                 ctx.terminationHook().run();
             }
@@ -749,10 +786,25 @@ class ClusteredServiceAgent implements Agent, Cluster
     {
         if (null != logAdapter && logAdapter.position() >= terminationPosition)
         {
-            service.onTerminate(this);
-            consensusModuleProxy.ack(terminationPosition, ackId++, serviceId);
+            final long logPosition = terminationPosition;
             terminationPosition = NULL_VALUE;
-            ctx.terminationHook().run();
+            terminate(logPosition);
         }
+    }
+
+    private void terminate(final long logPosition)
+    {
+        isServiceActive = false;
+        try
+        {
+            service.onTerminate(this);
+        }
+        catch (final Exception ex)
+        {
+            ctx.countedErrorHandler().onError(ex);
+        }
+
+        consensusModuleProxy.ack(logPosition, ackId++, serviceId);
+        ctx.terminationHook().run();
     }
 }
