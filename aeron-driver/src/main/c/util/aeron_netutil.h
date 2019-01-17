@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2018 Real Logic Ltd.
+ * Copyright 2014-2019 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
-#ifndef AERON_AERON_NETUTIL_H
-#define AERON_AERON_NETUTIL_H
+#ifndef AERON_NETUTIL_H
+#define AERON_NETUTIL_H
 
 #include <stdbool.h>
 #include <netinet/in.h>
@@ -59,4 +59,4 @@ bool aeron_is_wildcard_addr(struct sockaddr_storage *addr);
 
 void aeron_format_source_identity(char *buffer, size_t length, struct sockaddr_storage *addr);
 
-#endif //AERON_AERON_NETUTIL_H
+#endif //AERON_NETUTIL_H

@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2018 Real Logic Ltd.
+ * Copyright 2014-2019 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -790,7 +790,7 @@ TEST_F(ClientConductorTest, shouldClosePublicationOnInterServiceTimeout)
 
     ASSERT_TRUE(pub != nullptr);
 
-    m_conductor.onInterServiceTimeout(m_currentTime);
+    m_conductor.closeAllResources(m_currentTime);
     EXPECT_TRUE(pub->isClosed());
 }
 
@@ -805,7 +805,7 @@ TEST_F(ClientConductorTest, shouldCloseExclusivePublicationOnInterServiceTimeout
 
     ASSERT_TRUE(pub != nullptr);
 
-    m_conductor.onInterServiceTimeout(m_currentTime);
+    m_conductor.closeAllResources(m_currentTime);
     EXPECT_TRUE(pub->isClosed());
 }
 
@@ -819,7 +819,7 @@ TEST_F(ClientConductorTest, shouldCloseSubscriptionOnInterServiceTimeout)
 
     ASSERT_TRUE(sub != nullptr);
 
-    m_conductor.onInterServiceTimeout(m_currentTime);
+    m_conductor.closeAllResources(m_currentTime);
 
     EXPECT_TRUE(sub->isClosed());
 }
@@ -848,7 +848,7 @@ TEST_F(ClientConductorTest, shouldCloseAllPublicationsAndSubscriptionsOnInterSer
 
     ASSERT_TRUE(exPub != nullptr);
 
-    m_conductor.onInterServiceTimeout(m_currentTime);
+    m_conductor.closeAllResources(m_currentTime);
     EXPECT_TRUE(pub->isClosed());
     EXPECT_TRUE(sub->isClosed());
     EXPECT_TRUE(exPub->isClosed());
@@ -868,7 +868,7 @@ TEST_F(ClientConductorTest, shouldRemoveImageOnInterServiceTimeout)
     m_conductor.onAvailableImage(STREAM_ID, SESSION_ID, m_logFileName, SOURCE_IDENTITY, 1, id, correlationId);
     ASSERT_TRUE(sub->hasImage(correlationId));
 
-    m_conductor.onInterServiceTimeout(m_currentTime);
+    m_conductor.closeAllResources(m_currentTime);
 
     std::shared_ptr<Image> image = sub->imageBySessionId(SESSION_ID);
 

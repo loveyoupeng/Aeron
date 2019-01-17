@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2018 Real Logic Ltd.
+ * Copyright 2014-2019 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
-#ifndef INCLUDED_AERON_CONTEXT__
-#define INCLUDED_AERON_CONTEXT__
+#ifndef AERON_CONTEXT_H
+#define AERON_CONTEXT_H
 
 #include <memory>
 #include <util/Exceptions.h>

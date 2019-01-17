@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2018 Real Logic Ltd.
+ * Copyright 2014-2019 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -584,6 +584,17 @@ TEST_F(DriverConductorIpcTest, shouldBeAbleToTimeoutIpcPublication)
         m_context.m_context->publication_linger_timeout_ns + (m_context.m_context->client_liveness_timeout_ns * 2));
     EXPECT_EQ(aeron_driver_conductor_num_clients(&m_conductor.m_conductor), 0u);
     EXPECT_EQ(aeron_driver_conductor_num_ipc_publications(&m_conductor.m_conductor), 0u);
+
+    auto handler = [&](std::int32_t msgTypeId, AtomicBuffer& buffer, util::index_t offset, util::index_t length)
+    {
+        ASSERT_EQ(msgTypeId, AERON_RESPONSE_ON_CLIENT_TIMEOUT);
+
+        const command::ClientTimeoutFlyweight response(buffer, offset);
+
+        EXPECT_EQ(response.clientId(), client_id);
+    };
+
+    EXPECT_EQ(readAllBroadcastsFromConductor(handler), 1u);
 }
 
 TEST_F(DriverConductorIpcTest, shouldBeAbleToNotTimeoutIpcPublicationOnKeepalive)

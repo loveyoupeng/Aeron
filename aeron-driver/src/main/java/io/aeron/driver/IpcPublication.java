@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2018 Real Logic Ltd.
+ * Copyright 2014-2019 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -248,7 +248,13 @@ public final class IpcPublication implements DriverManagedResource, Subscribable
         if (0 == --refCount)
         {
             state = State.INACTIVE;
-            LogBufferDescriptor.endOfStreamPosition(metaDataBuffer, producerPosition());
+            final long producerPosition = producerPosition();
+            if (publisherLimit.get() > producerPosition)
+            {
+                publisherLimit.setOrdered(producerPosition);
+            }
+
+            LogBufferDescriptor.endOfStreamPosition(metaDataBuffer, producerPosition);
         }
     }
 

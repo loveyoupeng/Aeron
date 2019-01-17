@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2018 Real Logic Ltd.
+ * Copyright 2014-2019 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
-#ifndef AERON_AERON_AGENT_H
-#define AERON_AERON_AGENT_H
+#ifndef AERON_AGENT_H
+#define AERON_AGENT_H
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -104,4 +104,4 @@ inline void aeron_agent_idle(aeron_agent_runner_t *runner, int work_count)
 int aeron_agent_stop(aeron_agent_runner_t *runner);
 int aeron_agent_close(aeron_agent_runner_t *runner);
 
-#endif //AERON_AERON_AGENT_H
+#endif //AERON_AGENT_H

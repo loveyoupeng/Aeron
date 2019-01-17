@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2018 Real Logic Ltd.
+ * Copyright 2014-2019 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,6 +20,7 @@ import io.aeron.exceptions.AeronException;
 import org.agrona.DirectBuffer;
 import org.agrona.ExpandableArrayBuffer;
 import org.agrona.MutableDirectBuffer;
+import org.agrona.concurrent.UnsafeBuffer;
 import org.agrona.concurrent.ringbuffer.RingBuffer;
 
 import static io.aeron.command.ControlProtocolEvents.*;
@@ -29,7 +30,8 @@ import static io.aeron.command.ControlProtocolEvents.*;
  * <p>
  * Writes commands into the client conductor buffer.
  * <p>
- * Note: this class is not thread safe and is expecting to be called under the {@link ClientConductor} main lock.
+ * <b>Note:</b> this class is not thread safe and is expecting to be called within {@link Aeron.Context#clientLock()}
+ * with the exception of {@link #clientClose()} which is thread safe.
  */
 public class DriverProxy
 {
@@ -59,6 +61,11 @@ public class DriverProxy
     public long timeOfLastDriverKeepaliveMs()
     {
         return toDriverCommandBuffer.consumerHeartbeatTime();
+    }
+
+    public long clientId()
+    {
+        return correlatedMessage.clientId();
     }
 
     public long addPublication(final String channel, final int streamId)
@@ -285,7 +292,12 @@ public class DriverProxy
 
     public void clientClose()
     {
-        correlatedMessage.correlationId(toDriverCommandBuffer.nextCorrelationId());
+        final UnsafeBuffer buffer = new UnsafeBuffer(new byte[CorrelatedMessageFlyweight.LENGTH]);
+        new CorrelatedMessageFlyweight()
+            .wrap(buffer, 0)
+            .clientId(correlatedMessage.clientId())
+            .correlationId(Aeron.NULL_VALUE);
+
         toDriverCommandBuffer.write(CLIENT_CLOSE, buffer, 0, CorrelatedMessageFlyweight.LENGTH);
     }
 }

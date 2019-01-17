@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2018 Real Logic Ltd.
+ * Copyright 2014-2019 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -717,6 +717,14 @@ static const char *dissect_cmd_out(int64_t cmd_id, const void *message, size_t l
             snprintf(buffer, sizeof(buffer) -1 , "ON_COUNTER_READY %" PRId64 " %d",
                 command->correlation_id,
                 command->counter_id);
+            break;
+        }
+
+        case AERON_RESPONSE_ON_CLIENT_TIMEOUT:
+        {
+            aeron_client_timeout_t *command = (aeron_client_timeout_t *)message;
+
+            snprintf(buffer, sizeof(buffer) - 1, "ON_CLIENT_TIMEOUT %" PRId64, command->client_id);
             break;
         }
 

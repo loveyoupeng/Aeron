@@ -18,6 +18,12 @@ matrix:
       os: linux
       script: ./gradlew
 
+    - name: "OpenJDK 8"
+      language: java
+      jdk: openjdk8
+      os: linux
+      script: ./gradlew
+
     - name: "OpenJDK 11"
       language: java
       jdk: openjdk11
@@ -35,7 +41,7 @@ matrix:
           sources:
             - ubuntu-toolchain-r-test
             - llvm-toolchain-trusty-4.0
-      script: cppbuild/cppbuild -b
+      script: cppbuild/cppbuild
 
     - env: COMPILER=clang++-5.0
       language: c++
@@ -49,7 +55,7 @@ matrix:
           sources:
             - ubuntu-toolchain-r-test
             - llvm-toolchain-trusty-5.0
-      script: cppbuild/cppbuild -b
+      script: cppbuild/cppbuild
 
     - env: COMPILER=clang++-6.0
       language: c++
@@ -63,7 +69,7 @@ matrix:
           sources:
             - ubuntu-toolchain-r-test
             - llvm-toolchain-trusty-6.0
-      script: cppbuild/cppbuild -b
+      script: cppbuild/cppbuild
 
     - env: COMPILER=g++-6
       language: c++
@@ -75,7 +81,7 @@ matrix:
             - g++-6
           sources:
             - ubuntu-toolchain-r-test
-      script: cppbuild/cppbuild -b
+      script: cppbuild/cppbuild
 
     - env: COMPILER=g++-7
       language: c++
@@ -87,7 +93,7 @@ matrix:
             - g++-7
           sources:
             - ubuntu-toolchain-r-test
-      script: cppbuild/cppbuild -b
+      script: cppbuild/cppbuild
 
     - env: COMPILER=g++-8
       language: c++
@@ -105,7 +111,7 @@ matrix:
       language: c++
       compiler: clang
       os: osx
-      script: cppbuild/cppbuild -b
+      script: cppbuild/cppbuild
 
 before_cache:
   - rm -f  $HOME/.gradle/caches/modules-2/modules-2.lock

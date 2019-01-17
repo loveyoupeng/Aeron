@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2018 Real Logic Ltd.
+ * Copyright 2014-2019 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -51,6 +51,7 @@ class ClientConductor implements Agent, DriverEventsListener
     private long timeOfLastServiceNs;
     private boolean isClosed;
     private boolean isInCallback;
+    private boolean isTerminating;
     private String stashedChannel;
     private RegistrationException driverException;
 
@@ -89,7 +90,7 @@ class ClientConductor implements Agent, DriverEventsListener
         defaultUnavailableImageHandler = ctx.unavailableImageHandler();
         availableCounterHandler = ctx.availableCounterHandler();
         unavailableCounterHandler = ctx.unavailableCounterHandler();
-        driverEventsAdapter = new DriverEventsAdapter(ctx.toClientBuffer(), this);
+        driverEventsAdapter = new DriverEventsAdapter(ctx.toClientBuffer(), ctx.clientId(), this);
         driverAgentInvoker = ctx.driverAgentInvoker();
         counterValuesBuffer = ctx.countersValuesBuffer();
         countersReader = new CountersReader(ctx.countersMetaDataBuffer(), ctx.countersValuesBuffer(), US_ASCII);
@@ -107,14 +108,8 @@ class ClientConductor implements Agent, DriverEventsListener
             if (!isClosed)
             {
                 isClosed = true;
-
-                final int lingeringResourcesSize = lingeringResources.size();
                 forceCloseResources();
-
-                if (lingeringResources.size() > lingeringResourcesSize)
-                {
-                    Aeron.sleep(16);
-                }
+                Thread.yield();
 
                 for (int i = 0, size = lingeringResources.size(); i < size; i++)
                 {
@@ -122,6 +117,8 @@ class ClientConductor implements Agent, DriverEventsListener
                 }
 
                 driverProxy.clientClose();
+                Thread.yield();
+                ctx.close();
             }
         }
         finally
@@ -138,7 +135,7 @@ class ClientConductor implements Agent, DriverEventsListener
         {
             try
             {
-                if (isClosed)
+                if (isTerminating)
                 {
                     throw new AgentTerminationException();
                 }
@@ -162,6 +159,11 @@ class ClientConductor implements Agent, DriverEventsListener
     boolean isClosed()
     {
         return isClosed;
+    }
+
+    boolean isTerminating()
+    {
+        return isTerminating;
     }
 
     public void onError(final long correlationId, final int codeValue, final ErrorCode errorCode, final String message)
@@ -368,6 +370,16 @@ class ClientConductor implements Agent, DriverEventsListener
             {
                 isInCallback = false;
             }
+        }
+    }
+
+    public void onClientTimeout()
+    {
+        if (!isClosed)
+        {
+            isTerminating = true;
+            forceCloseResources();
+            handleError(new ClientTimeoutException("client timeout from driver"));
         }
     }
 
@@ -687,7 +699,7 @@ class ClientConductor implements Agent, DriverEventsListener
 
     private void ensureOpen()
     {
-        if (isClosed)
+        if (isClosed || isTerminating)
         {
             throw new AeronException("Aeron client conductor is closed");
         }
@@ -728,6 +740,11 @@ class ClientConductor implements Agent, DriverEventsListener
         {
             handleError(throwable);
 
+            if (driverEventsAdapter.isInvalid())
+            {
+                onClose();
+            }
+
             if (isClientApiCall(correlationId))
             {
                 throw throwable;
@@ -757,7 +774,7 @@ class ClientConductor implements Agent, DriverEventsListener
                 }
                 catch (final InterruptedException ex)
                 {
-                    Thread.currentThread().interrupt();
+                    isTerminating = true;
                     LangUtil.rethrowUnchecked(ex);
                 }
             }
@@ -780,6 +797,7 @@ class ClientConductor implements Agent, DriverEventsListener
 
             if (Thread.interrupted())
             {
+                isTerminating = true;
                 LangUtil.rethrowUnchecked(new InterruptedException());
             }
         }
@@ -818,7 +836,8 @@ class ClientConductor implements Agent, DriverEventsListener
                 Aeron.sleep(TimeUnit.NANOSECONDS.toMillis(ctx.resourceLingerDurationNs()));
             }
 
-            onClose();
+            isTerminating = true;
+            forceCloseResources();
 
             throw new ConductorServiceTimeoutException("service interval exceeded (ns): " + interServiceTimeoutNs);
         }
@@ -830,8 +849,8 @@ class ClientConductor implements Agent, DriverEventsListener
         {
             if (epochClock.time() > (driverProxy.timeOfLastDriverKeepaliveMs() + driverTimeoutMs))
             {
-                onClose();
-
+                isTerminating = true;
+                forceCloseResources();
                 throw new DriverTimeoutException("MediaDriver keepalive older than (ms): " + driverTimeoutMs);
             }
 

@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2018 Real Logic Ltd.
+ * Copyright 2014-2019 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,8 +13,8 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#ifndef INCLUDED_AERON_UTIL_STRING_UTIL_FILE__
-#define INCLUDED_AERON_UTIL_STRING_UTIL_FILE__
+#ifndef AERON_UTIL_STRING_FILE_H
+#define AERON_UTIL_STRING_FILE_H
 
 #include <string>
 #include <sstream>
@@ -35,7 +35,7 @@ inline std::string trimWSLeft(std::string str, const char* wschars = " \t")
 
 inline std::string trimWSRight(std::string str, const char* wschars = " \t")
 {
-    str.erase(str.find_last_not_of(wschars)+1);
+    str.erase(str.find_last_not_of(wschars) + 1);
     return str;
 }
 
@@ -65,7 +65,7 @@ valueType parse(const std::string& input)
 
     if (stream.fail() || !stream.eof())
     {
-        throw ParseException(std::string("Failed to parse: ") + input, SOURCEINFO);
+        throw ParseException(std::string("failed to parse: ") + input, SOURCEINFO);
     }
 
     return value;

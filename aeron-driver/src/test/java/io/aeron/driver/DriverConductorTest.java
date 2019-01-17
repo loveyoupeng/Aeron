@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2018 Real Logic Ltd.
+ * Copyright 2014-2019 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -486,6 +486,8 @@ public class DriverConductorTest
 
         doWorkUntil(() -> (PUBLICATION_LINGER_NS + CLIENT_LIVENESS_TIMEOUT_NS * 2) - nanoClock.nanoTime() <= 0);
 
+        verify(mockClientProxy, times(1))
+            .onClientTimeout(driverProxy.clientId());
         verify(senderProxy).removeNetworkPublication(eq(publication));
         assertNull(driverConductor.senderChannelEndpoint(UdpChannel.parse(CHANNEL_4000)));
     }
@@ -586,6 +588,8 @@ public class DriverConductorTest
 
         doWorkUntil(() -> nanoClock.nanoTime() >= CLIENT_LIVENESS_TIMEOUT_NS * 2);
 
+        verify(mockClientProxy, times(1))
+            .onClientTimeout(driverProxy.clientId());
         verify(receiverProxy, times(1))
             .removeSubscription(eq(receiveChannelEndpoint), eq(STREAM_ID_1));
 

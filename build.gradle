@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2018 Real Logic Ltd.
+ * Copyright 2014-2019 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -30,8 +30,8 @@ def aeronGroup = 'io.aeron'
 def aeronVersion = file('version.txt').text.trim()
 def aeronJavaVersion = '1.8'
 
-def agronaVersion = '0.9.28'
-def sbeVersion = '1.10.1'
+def agronaVersion = '0.9.29'
+def sbeVersion = '1.10.2'
 
 group = aeronGroup
 version = aeronVersion
@@ -124,7 +124,7 @@ subprojects {
     jar.enabled = true
 
     dependencies {
-        checkstyle 'com.puppycrawl.tools:checkstyle:8.15'
+        checkstyle 'com.puppycrawl.tools:checkstyle:8.16'
 
         compile "org.agrona:agrona:${agronaVersion}"
 
@@ -134,7 +134,7 @@ subprojects {
     }
 
     checkstyle {
-        toolVersion = '8.15'
+        toolVersion = '8.16'
     }
 
     compileJava {

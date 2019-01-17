@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2018 Real Logic Ltd.
+ * Copyright 2014-2019 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
-#ifndef INCLUDED_AERON_CLIENT_CONDUCTOR__
-#define INCLUDED_AERON_CLIENT_CONDUCTOR__
+#ifndef AERON_CLIENT_CONDUCTOR_H
+#define AERON_CLIENT_CONDUCTOR_H
 
 #include <vector>
 #include <mutex>
@@ -79,7 +79,8 @@ public:
         m_driverTimeoutMs(driverTimeoutMs),
         m_resourceLingerTimeoutMs(resourceLingerTimeoutMs),
         m_interServiceTimeoutMs(static_cast<long>(interServiceTimeoutNs / 1000000)),
-        m_driverActive(true)
+        m_driverActive(true),
+        m_isClosed(false)
     {
     }
 
@@ -178,7 +179,9 @@ public:
         std::int64_t registrationId,
         std::int32_t counterId);
 
-    void onInterServiceTimeout(long long now);
+    void onClientTimeout(std::int64_t clientId);
+
+    void closeAllResources(long long now);
 
     void addDestination(std::int64_t publicationRegistrationId, const std::string& endpointChannel);
     void removeDestination(std::int64_t publicationRegistrationId, const std::string& endpointChannel);
@@ -204,6 +207,16 @@ public:
             default:
                 return m_countersReader.getCounterValue(counterId);
         }
+    }
+
+    inline bool isClosed() const
+    {
+        return std::atomic_load_explicit(&m_isClosed, std::memory_order_acquire);
+    }
+
+    inline void forceClose()
+    {
+        std::atomic_store_explicit(&m_isClosed, true, std::memory_order_release);
     }
 
 protected:
@@ -260,7 +273,10 @@ private:
 
         ExclusivePublicationStateDefn(
             const std::string& channel, std::int64_t registrationId, std::int32_t streamId, long long now) :
-            m_channel(channel), m_registrationId(registrationId), m_streamId(streamId), m_timeOfRegistration(now)
+            m_channel(channel),
+            m_registrationId(registrationId),
+            m_streamId(streamId),
+            m_timeOfRegistration(now)
         {
         }
     };
@@ -368,6 +384,7 @@ private:
     long m_interServiceTimeoutMs;
 
     std::atomic<bool> m_driverActive;
+    std::atomic<bool> m_isClosed;
 
     inline int onHeartbeatCheckTimeouts()
     {
@@ -378,10 +395,10 @@ private:
 
         if (now > (m_timeOfLastDoWork + m_interServiceTimeoutMs))
         {
-            onInterServiceTimeout(now);
+            closeAllResources(now);
 
             ConductorServiceTimeoutException exception(
-                "Timeout between service calls over " + std::to_string(m_interServiceTimeoutMs) + " ms", SOURCEINFO);
+                "timeout between service calls over " + std::to_string(m_interServiceTimeoutMs) + " ms", SOURCEINFO);
             m_errorHandler(exception);
         }
 
@@ -396,7 +413,7 @@ private:
                 m_driverActive = false;
 
                 DriverTimeoutException exception(
-                    "Driver has been inactive for over " + std::to_string(m_driverTimeoutMs) + " ms", SOURCEINFO);
+                    "driver has been inactive for over " + std::to_string(m_driverTimeoutMs) + " ms", SOURCEINFO);
                 m_errorHandler(exception);
             }
 
@@ -418,7 +435,7 @@ private:
     {
         if (!m_driverActive)
         {
-            throw DriverTimeoutException("Driver is inactive", SOURCEINFO);
+            throw DriverTimeoutException("driver is inactive", SOURCEINFO);
         }
     }
 
@@ -426,8 +443,16 @@ private:
     {
         if (!m_driverActive)
         {
-            DriverTimeoutException exception("Driver is inactive", SOURCEINFO);
+            DriverTimeoutException exception("driver is inactive", SOURCEINFO);
             m_errorHandler(exception);
+        }
+    }
+
+    inline void ensureOpen()
+    {
+        if (isClosed())
+        {
+            throw AeronException("Aeron client conductor is closed", SOURCEINFO);
         }
     }
 };

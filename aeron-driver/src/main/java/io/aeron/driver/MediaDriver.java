@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2018 Real Logic Ltd.
+ * Copyright 2014-2019 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -242,12 +242,12 @@ public final class MediaDriver implements AutoCloseable
      */
     public void close()
     {
-        CloseHelper.quietClose(sharedRunner);
-        CloseHelper.quietClose(sharedNetworkRunner);
-        CloseHelper.quietClose(receiverRunner);
-        CloseHelper.quietClose(senderRunner);
-        CloseHelper.quietClose(conductorRunner);
-        CloseHelper.quietClose(sharedInvoker);
+        CloseHelper.close(sharedRunner);
+        CloseHelper.close(sharedNetworkRunner);
+        CloseHelper.close(receiverRunner);
+        CloseHelper.close(senderRunner);
+        CloseHelper.close(conductorRunner);
+        CloseHelper.close(sharedInvoker);
 
         if (ctx.useWindowsHighResTimer() && SystemUtil.osName().startsWith("win"))
         {
@@ -256,8 +256,6 @@ public final class MediaDriver implements AutoCloseable
                 HighResolutionTimer.disable();
             }
         }
-
-        ctx.close();
     }
 
     /**
@@ -487,8 +485,14 @@ public final class MediaDriver implements AutoCloseable
          */
         public void close()
         {
-            IoUtil.unmap(cncByteBuffer);
+            final MappedByteBuffer lossReportBuffer = this.lossReportBuffer;
+            this.lossReportBuffer = null;
             IoUtil.unmap(lossReportBuffer);
+
+
+            final MappedByteBuffer cncByteBuffer = this.cncByteBuffer;
+            this.cncByteBuffer = null;
+            IoUtil.unmap(cncByteBuffer);
 
             super.close();
         }
