@@ -16,7 +16,7 @@
 
 #include <string.h>
 #include <errno.h>
-#include <netdb.h>
+#include "aeron_socket.h"
 #include <stdio.h>
 #include "aeron_alloc.h"
 #include "util/aeron_strutil.h"

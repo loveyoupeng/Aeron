@@ -14,14 +14,27 @@
  * limitations under the License.
  */
 
-#include <concurrent/aeron_atomic.h>
+#ifndef AERON_WINDOWS_H
+#define AERON_WINDOWS_H
 
-extern bool aeron_cmpxchg64(volatile int64_t* destination, int64_t expected, int64_t desired);
+#include "util/aeron_platform.h"
 
-extern bool aeron_cmpxchgu64(volatile uint64_t* destination, uint64_t expected, uint64_t desired);
+#if defined(AERON_COMPILER_GCC)
 
-extern bool aeron_cmpxchg32(volatile int32_t* destination, int32_t expected, int32_t desired);
+#define aeron_erand48 erand48 
+#define aeron_srand48 srand48 
+#define aeron_drand48 drand48 
 
-extern void aeron_acquire();
+#elif defined(AERON_COMPILER_MSVC) && defined(AERON_CPU_X64)
 
-extern void aeron_release();
+#include <basetsd.h>
+
+double aeron_erand48(unsigned short xsubi[3]);
+void aeron_srand48(UINT64 aeron_nano_clock);
+double aeron_drand48();
+int aeron_clock_gettime_monotonic(struct timespec *tp);
+int aeron_clock_gettime_realtime(struct timespec *tp);
+
+#endif
+
+#endif //AERON_WINDOWS_H

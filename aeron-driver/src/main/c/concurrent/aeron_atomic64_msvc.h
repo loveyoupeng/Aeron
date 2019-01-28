@@ -14,23 +14,27 @@
  * limitations under the License.
  */
 
-#ifndef AERON_ATOMIC64_GCC_X86_64_H
-#define AERON_ATOMIC64_GCC_X86_64_H
+#ifndef AERON_ATOMIC64_MSVC_H
+#define AERON_ATOMIC64_MSVC_H
 
 #include <stdbool.h>
+#include <WinSock2.h>
+#include <windows.h>
+#include <winnt.h>
+#include <stdint.h>
 
 #define AERON_GET_VOLATILE(dst, src) \
 do \
 { \
     dst = src; \
-    __asm__ volatile("" ::: "memory"); \
+    _ReadBarrier(); \
 } \
 while(false)
 
 #define AERON_PUT_ORDERED(dst, src) \
 do \
 { \
-    __asm__ volatile("" ::: "memory"); \
+    _WriteBarrier(); \
     dst = src; \
 } \
 while(false)
@@ -38,36 +42,29 @@ while(false)
 #define AERON_PUT_VOLATILE(dst, src) \
 do \
 { \
-    __asm__ volatile("" ::: "memory"); \
+    _WriteBarrier(); \
     dst = src; \
-    __asm__ volatile("" ::: "memory"); \
+    _ReadWriteBarrier(); \
 } \
 while(false)
 
-#define AERON_GET_AND_ADD_INT64(original, dst, value) \
+#define AERON_GET_AND_ADD_INT64(original, current, value) \
 do \
 { \
-    __asm__ volatile( \
-        "lock; xaddq %0, %1" \
-        : "=r"(original), "+m"(dst) \
-        : "0"(value)); \
+    original = InterlockedAdd64((long long volatile*)&current, (long long)value) - value; \
 } \
 while(false)
 
-#define AERON_GET_AND_ADD_INT32(original, dst, value) \
+#define AERON_GET_AND_ADD_INT32(original,current,value) \
 do \
 { \
-    __asm__ volatile( \
-        "lock; xaddl %0, %1" \
-        : "=r"(original), "+m"(dst) \
-        : "0"(value)); \
-} \
-while(false)
+    original = InterlockedAdd((long volatile*)&current, (long )value) - value; \
+} while(false)
 
 #define AERON_CMPXCHG64(original, dst, expected, desired) \
 do \
 { \
-    asm volatile( \
+    __asm volatile( \
         "lock; cmpxchgq %2, %1" \
         : "=a"(original), "+m"(dst) \
         : "q"(desired), "0"(expected)); \
@@ -76,33 +73,24 @@ while(0)
 
 inline bool aeron_cmpxchg64(volatile int64_t* destination, int64_t expected, int64_t desired)
 {
-    int64_t original;
-    __asm__ volatile(
-        "lock; cmpxchgq %2, %1"
-        : "=a"(original), "+m"(*destination)
-        : "q"(desired), "0"(expected));
+    int64_t original = InterlockedCompareExchange64(
+        (long long volatile*)destination, (long long)desired, (long long)expected);
 
     return original == expected;
 }
 
 inline bool aeron_cmpxchgu64(volatile uint64_t* destination, uint64_t expected, uint64_t desired)
 {
-    uint64_t original;
-    __asm__ volatile(
-        "lock; cmpxchgq %2, %1"
-        : "=a"(original), "+m"(*destination)
-        : "q"(desired), "0"(expected));
+    uint64_t original = InterlockedCompareExchange64(
+        (long long volatile*)destination, (long long)desired, (long long)expected);
 
     return original == expected;
 }
 
 inline bool aeron_cmpxchg32(volatile int32_t* destination, int32_t expected, int32_t desired)
 {
-    int32_t original;
-    __asm__ volatile(
-        "lock; cmpxchgl %2, %1"
-        : "=a"(original), "+m"(*destination)
-        : "q"(desired), "0"(expected));
+    uint32_t original = _InterlockedCompareExchange(
+        (long volatile*)destination, (long volatile)desired, (long volatile)expected);
 
     return original == expected;
 }
@@ -110,8 +98,9 @@ inline bool aeron_cmpxchg32(volatile int32_t* destination, int32_t expected, int
 /* loadFence */
 inline void aeron_acquire()
 {
-    volatile int64_t* dummy;
-    __asm__ volatile("movq 0(%%rsp), %0" : "=r" (dummy) : : "memory");
+    volatile LONG dummy;
+    //__asm volatile("movq 0(%%rsp), %0" : "=r" (dummy) : : "memory");
+    InterlockedDecrementAcquire(&dummy);
 }
 
 /* storeFence */
@@ -126,10 +115,7 @@ inline void aeron_release()
 #define AERON_CMPXCHG32(original, dst, expected, desired) \
 do \
 { \
-    asm volatile( \
-        "lock; cmpxchgl %2, %1" \
-        : "=a"(original), "+m"(dst) \
-        : "q"(desired), "0"(expected)); \
+    original = InterlockedCompareExchange32(dst, desired, expected); \
 } \
 while(0)
 
@@ -141,4 +127,8 @@ while(0)
  */
 #define AERON_DECL_ALIGNED(declaration, amt) declaration __attribute__((aligned(amt)))
 
-#endif //AERON_ATOMIC64_GCC_X86_64_H
+#ifdef  AERON_COMPILER_MSVC
+#define AERON_DECL_ALIGNED(declaration, amt) __declspec(align(amt))  declaration
+#endif
+
+#endif //AERON_ATOMIC64_MSVC_H

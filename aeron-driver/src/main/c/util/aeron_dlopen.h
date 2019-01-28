@@ -14,14 +14,33 @@
  * limitations under the License.
  */
 
-#include <concurrent/aeron_atomic.h>
+#ifndef AERON_DLOPEN_H
+#define AERON_DLOPEN_H
 
-extern bool aeron_cmpxchg64(volatile int64_t* destination, int64_t expected, int64_t desired);
+#include <util/aeron_platform.h>
 
-extern bool aeron_cmpxchgu64(volatile uint64_t* destination, uint64_t expected, uint64_t desired);
+#if defined(AERON_COMPILER_GCC)
 
-extern bool aeron_cmpxchg32(volatile int32_t* destination, int32_t expected, int32_t desired);
+#include <dlfcn.h>
 
-extern void aeron_acquire();
+#define aeron_dlsym dlsym
+#define aeron_dlopen(x) dlopen(x, RTLD_LAZY)
+#define aeron_dlerror dlerror
 
-extern void aeron_release();
+#elif defined(AERON_COMPILER_MSVC) && defined(AERON_CPU_X64)
+
+#include <WinSock2.h> 
+#include <windows.h> 
+
+#define RTLD_DEFAULT -123    
+#define RTLD_NEXT -124
+
+void* aeron_dlsym(HMODULE module, LPCSTR name);
+HMODULE aeron_dlopen(LPCSTR filename);
+char* aeron_dlerror();
+
+#else
+#error Unsupported platform!
+#endif
+
+#endif //AERON_DLOPEN_H
