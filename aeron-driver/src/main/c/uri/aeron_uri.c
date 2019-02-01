@@ -433,6 +433,18 @@ int aeron_uri_publication_params(
                 return -1;
             }
 
+            if (((int32_t)params->term_id - (int32_t)params->initial_term_id) < 0)
+            {
+                aeron_set_err(
+                    EINVAL,
+                    "Param difference greater than 2^31 - 1: %s=%" PRId64 " %s=%" PRId64,
+                    AERON_URI_INITIAL_TERM_ID_KEY,
+                    params->initial_term_id,
+                    AERON_URI_TERM_OFFSET_KEY,
+                    params->term_id);
+                return -1;
+            }
+
             if (params->term_offset > params->term_length)
             {
                 aeron_set_err(
