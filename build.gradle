@@ -30,8 +30,8 @@ def aeronGroup = 'io.aeron'
 def aeronVersion = file('version.txt').text.trim()
 def aeronJavaVersion = '1.8'
 
-def agronaVersion = '0.9.31'
-def sbeVersion = '1.12.0'
+def agronaVersion = '0.9.32'
+def sbeVersion = '1.12.1'
 def byteBuddyVersion = '1.9.7'
 def hdrHistogramVersion = '2.1.11'
 
@@ -788,9 +788,8 @@ project(':aeron-all') {
         compile project(':aeron-driver')
         compile project(':aeron-archive')
         compile project(':aeron-cluster')
+        compile project(':aeron-agent')
         compile project(':aeron-samples')
-        compile "net.bytebuddy:byte-buddy:${byteBuddyVersion}"
-        compile "org.hdrhistogram:HdrHistogram:${hdrHistogramVersion}"
     }
 
     javadoc {
@@ -874,6 +873,7 @@ project(':aeron-all') {
     shadowJar {
         classifier = ''
         relocate 'org.HdrHistogram', 'io.aeron.shadow.org.HdrHistogram'
+        relocate 'net.bytebuddy', 'io.aeron.shadow.net.bytebuddy'
     }
 
     artifacts {
