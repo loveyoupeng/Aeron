@@ -19,6 +19,7 @@ import io.aeron.*;
 import io.aeron.archive.client.AeronArchive;
 import io.aeron.archive.codecs.SourceLocation;
 import io.aeron.archive.status.RecordingPos;
+import io.aeron.cluster.client.AeronCluster;
 import io.aeron.cluster.client.ClusterException;
 import io.aeron.cluster.codecs.*;
 import io.aeron.cluster.service.Cluster;
@@ -31,10 +32,7 @@ import io.aeron.logbuffer.Header;
 import io.aeron.protocol.DataHeaderFlyweight;
 import io.aeron.security.Authenticator;
 import io.aeron.status.ReadableCounter;
-import org.agrona.BitUtil;
-import org.agrona.CloseHelper;
-import org.agrona.DirectBuffer;
-import org.agrona.MutableDirectBuffer;
+import org.agrona.*;
 import org.agrona.collections.ArrayListUtil;
 import org.agrona.collections.Int2ObjectHashMap;
 import org.agrona.collections.Long2ObjectHashMap;
@@ -295,30 +293,34 @@ class ConsensusModuleAgent implements Agent, MemberStatusListener
     public void onSessionConnect(
         final long correlationId,
         final int responseStreamId,
+        final int version,
         final String responseChannel,
         final byte[] encodedCredentials)
     {
+        final long clusterSessionId = Cluster.Role.LEADER == role ? nextSessionId++ : NULL_VALUE;
+        final ClusterSession session = new ClusterSession(clusterSessionId, responseStreamId, responseChannel);
+        session.lastActivity(cachedTimeMs, correlationId);
+        session.connect(aeron);
+
         if (Cluster.Role.LEADER != role)
         {
-            final ClusterSession session = new ClusterSession(Aeron.NULL_VALUE, responseStreamId, responseChannel);
-            session.lastActivity(cachedTimeMs, correlationId);
-            session.connect(aeron);
             redirectSessions.add(session);
         }
         else
         {
-            final ClusterSession session = new ClusterSession(nextSessionId++, responseStreamId, responseChannel);
-            session.lastActivity(clusterTimeMs, correlationId);
-            session.connect(aeron);
-
-            if (pendingSessions.size() + sessionByIdMap.size() < ctx.maxConcurrentSessions())
+            if (AeronCluster.Configuration.MAJOR_VERSION != SemanticVersion.major(version))
             {
-                authenticator.onConnectRequest(session.id(), encodedCredentials, clusterTimeMs);
-                pendingSessions.add(session);
+                session.state(INVALID_VERSION);
+                rejectedSessions.add(session);
+            }
+            else if (pendingSessions.size() + sessionByIdMap.size() >= ctx.maxConcurrentSessions())
+            {
+                rejectedSessions.add(session);
             }
             else
             {
-                rejectedSessions.add(session);
+                authenticator.onConnectRequest(session.id(), encodedCredentials, clusterTimeMs);
+                pendingSessions.add(session);
             }
         }
     }
@@ -754,7 +756,7 @@ class ConsensusModuleAgent implements Agent, MemberStatusListener
         for (final Iterator<ClusterSession> i = sessionByIdMap.values().iterator(); i.hasNext(); )
         {
             final ClusterSession session = i.next();
-            if (session.openedLogPosition() >= logPosition)
+            if (session.openedLogPosition() > logPosition)
             {
                 i.remove();
                 session.close();
@@ -1422,12 +1424,6 @@ class ConsensusModuleAgent implements Agent, MemberStatusListener
             result = true;
         }
 
-        cancelMissedTimers();
-        if (missedTimersSet.capacity() > LongHashSet.DEFAULT_INITIAL_CAPACITY)
-        {
-            missedTimersSet.compact();
-        }
-
         if (!ctx.ingressChannel().contains(ENDPOINT_PARAM_NAME))
         {
             final ChannelUri ingressUri = ChannelUri.parse(ctx.ingressChannel());
@@ -1440,6 +1436,12 @@ class ConsensusModuleAgent implements Agent, MemberStatusListener
         {
             ingressAdapter.connect(aeron.addSubscription(
                 ctx.ingressChannel(), ctx.ingressStreamId(), null, this::onUnavailableIngressImage));
+        }
+
+        cancelMissedTimers();
+        if (missedTimersSet.capacity() > LongHashSet.DEFAULT_INITIAL_CAPACITY)
+        {
+            missedTimersSet.compact();
         }
 
         return result;
@@ -1487,21 +1489,9 @@ class ConsensusModuleAgent implements Agent, MemberStatusListener
         if (pollImageAndLogAdapter(subscription, logSessionId))
         {
             final Image image = logAdapter.image();
-            if (logAdapter.poll(stopPosition) == 0)
+            if (logAdapter.poll(stopPosition) == 0 && image.isClosed())
             {
-                if (image.position() == stopPosition)
-                {
-                    while (!missedTimersSet.isEmpty())
-                    {
-                        idle();
-                        cancelMissedTimers();
-                    }
-                }
-
-                if (image.isClosed())
-                {
-                    throw new ClusterException("unexpected close of image when replaying log");
-                }
+                throw new ClusterException("unexpected close of image when replaying log");
             }
 
             final long appendedPosition = this.appendedPosition.get();
@@ -1547,7 +1537,15 @@ class ConsensusModuleAgent implements Agent, MemberStatusListener
         {
             if (member.catchupReplaySessionId() != Aeron.NULL_VALUE)
             {
-                archive.stopReplay(member.catchupReplaySessionId());
+                try
+                {
+                    archive.stopReplay(member.catchupReplaySessionId());
+                }
+                catch (final Exception ex)
+                {
+                    ctx.countedErrorHandler().onError(ex);
+                }
+
                 member.catchupReplaySessionId(Aeron.NULL_VALUE);
             }
         }
@@ -1850,6 +1848,10 @@ class ConsensusModuleAgent implements Agent, MemberStatusListener
             {
                 detail = ConsensusModule.Configuration.SESSION_REJECTED_MSG;
                 eventCode = EventCode.AUTHENTICATION_REJECTED;
+            }
+            else if (session.state() == INVALID_VERSION)
+            {
+                detail = ConsensusModule.Configuration.SESSION_INVALID_VERSION_MSG;
             }
 
             if (egressPublisher.sendEvent(session, leadershipTermId, leaderMember.id(), eventCode, detail) ||
@@ -2269,7 +2271,6 @@ class ConsensusModuleAgent implements Agent, MemberStatusListener
             this);
 
         election.doWork(nowMs);
-
         serviceProxy.electionStartEvent(commitPosition.getWeak());
     }
 

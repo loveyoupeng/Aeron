@@ -30,8 +30,8 @@ def aeronGroup = 'io.aeron'
 def aeronVersion = file('version.txt').text.trim()
 def aeronJavaVersion = '1.8'
 
-def agronaVersion = '0.9.32'
-def sbeVersion = '1.12.1'
+def agronaVersion = '0.9.33'
+def sbeVersion = '1.12.2'
 def byteBuddyVersion = '1.9.7'
 def hdrHistogramVersion = '2.1.11'
 
@@ -131,7 +131,7 @@ subprojects {
         compile "org.agrona:agrona:${agronaVersion}"
 
         testCompile 'junit:junit:4.12'
-        testCompile 'org.mockito:mockito-core:2.24.0'
+        testCompile 'org.mockito:mockito-core:2.24.5'
         testCompile 'org.hamcrest:hamcrest-library:1.3'
     }
 
@@ -466,10 +466,10 @@ project(':aeron-archive') {
         systemProperties(
             'sbe.output.dir': generatedCppDir,
             'sbe.target.language': 'Cpp',
+            'sbe.target.namespace': 'aeron.archive.client',
             'sbe.validation.xsd': 'src/main/resources/fpl/sbe.xsd',
             'sbe.validation.stop.on.error': 'true')
-        args = ['src/main/resources/aeron-archive-codecs.xml',
-                'src/main/resources/aeron-archive-mark-codecs.xml']
+        args = ['src/main/resources/aeron-archive-codecs.xml']
     }
 
     test {

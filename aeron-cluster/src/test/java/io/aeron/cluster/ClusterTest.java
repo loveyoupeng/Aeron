@@ -17,6 +17,8 @@ package io.aeron.cluster;
 
 import io.aeron.cluster.service.Cluster;
 import org.agrona.collections.MutableInteger;
+import org.agrona.concurrent.IdleStrategy;
+import org.agrona.concurrent.YieldingIdleStrategy;
 import org.agrona.concurrent.status.CountersReader;
 import org.junit.*;
 
@@ -55,6 +57,21 @@ public class ClusterTest
             Thread.sleep(1_000);
 
             assertThat(follower.role(), is(Cluster.Role.FOLLOWER));
+        }
+    }
+
+    @Test(timeout = 30_000)
+    public void clientShouldBeSentNewLeaderEventOnLeaderChange() throws Exception
+    {
+        try (TestCluster cluster = TestCluster.startThreeNodeStaticCluster(NULL_VALUE))
+        {
+            final TestNode leader = cluster.awaitLeader();
+
+            cluster.connectClient();
+
+            cluster.stopNode(leader);
+
+            cluster.awaitLeadershipEvent(1);
         }
     }
 
@@ -310,7 +327,7 @@ public class ClusterTest
     }
 
     @Test(timeout = 30_000)
-    public void shouldAcceptMessagesAfterSingleNodeGoDownAndComeBackUpClean() throws Exception
+    public void shouldAcceptMessagesAfterSingleNodeCleanRestart() throws Exception
     {
         final int messageCount = 10;
 
@@ -395,7 +412,7 @@ public class ClusterTest
     }
 
     @Test(timeout = 30_000)
-    public void shouldAcceptMessagesAfterTwoNodesGoDownAndComeBackUpClean() throws Exception
+    public void shouldAcceptMessagesAfterTwoNodeCleanRestart() throws Exception
     {
         final int messageCount = 10;
 
@@ -608,6 +625,46 @@ public class ClusterTest
         }
     }
 
+    @Test(timeout = 30_000)
+    public void shouldCatchUpAfterFollowerMissesOneMessage() throws Exception
+    {
+        shouldCatchUpAfterFollowerMissesMessage(TestMessages.NO_OP);
+    }
+
+    @Test(timeout = 30_000)
+    public void shouldCatchUpAfterFollowerMissesTimerRegistration() throws Exception
+    {
+        shouldCatchUpAfterFollowerMissesMessage(TestMessages.REGISTER_TIMER);
+    }
+
+    private void shouldCatchUpAfterFollowerMissesMessage(final String message) throws InterruptedException
+    {
+        try (TestCluster cluster = TestCluster.startThreeNodeStaticCluster(NULL_VALUE))
+        {
+            cluster.awaitLeader();
+
+            TestNode follower = cluster.followers().get(0);
+
+            cluster.stopNode(follower);
+
+            Thread.sleep(1_000);
+
+            cluster.connectClient();
+            cluster.msgBuffer().putStringWithoutLengthAscii(0, message);
+            cluster.sendMessage(message.length());
+            cluster.awaitResponses(1);
+
+            Thread.sleep(1_000);
+
+            follower = cluster.startStaticNode(follower.index(), false);
+
+            Thread.sleep(1_000);
+
+            assertThat(follower.role(), is(Cluster.Role.FOLLOWER));
+            assertThat(follower.electionState(), is((Election.State)null));
+        }
+    }
+
     private int countersOfType(final CountersReader countersReader, final int typeIdToCount)
     {
         final MutableInteger count = new MutableInteger();
@@ -629,24 +686,17 @@ public class ClusterTest
         final Thread thread = new Thread(
             () ->
             {
-                //final IdleStrategy idleStrategy = new YieldingIdleStrategy();
+                final IdleStrategy idleStrategy = new YieldingIdleStrategy();
                 cluster.msgBuffer().putStringWithoutLengthAscii(0, MSG);
 
-                while (true)
+                while (!Thread.interrupted())
                 {
-                    while (cluster.client().offer(cluster.msgBuffer(), 0, MSG.length()) < 0)
+                    if (cluster.client().offer(cluster.msgBuffer(), 0, MSG.length()) < 0)
                     {
-                        if (Thread.interrupted())
-                        {
-                            return;
-                        }
-
-                        cluster.client().pollEgress();
                         LockSupport.parkNanos(intervalNs);
                     }
 
-                    cluster.client().pollEgress();
-                    //idleStrategy.idle();
+                    idleStrategy.idle(cluster.client().pollEgress());
                 }
             });
 

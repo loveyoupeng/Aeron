@@ -16,6 +16,7 @@
 package io.aeron.archive;
 
 import io.aeron.*;
+import io.aeron.archive.client.AeronArchive;
 import io.aeron.archive.client.ArchiveException;
 import io.aeron.archive.codecs.RecordingDescriptorDecoder;
 import io.aeron.archive.codecs.SourceLocation;
@@ -24,6 +25,7 @@ import io.aeron.logbuffer.LogBufferDescriptor;
 import io.aeron.protocol.DataHeaderFlyweight;
 import org.agrona.CloseHelper;
 import org.agrona.LangUtil;
+import org.agrona.SemanticVersion;
 import org.agrona.collections.Long2ObjectHashMap;
 import org.agrona.collections.Object2ObjectHashMap;
 import org.agrona.concurrent.AgentInvoker;
@@ -640,6 +642,7 @@ abstract class ArchiveConductor extends SessionWorker<Session> implements Availa
     ControlSession newControlSession(
         final long correlationId,
         final int streamId,
+        final int version,
         final String channel,
         final ControlSessionDemuxer demuxer)
     {
@@ -659,6 +662,11 @@ abstract class ArchiveConductor extends SessionWorker<Session> implements Availa
             cachedEpochClock,
             controlResponseProxy);
         addSession(controlSession);
+
+        if (SemanticVersion.major(version) != AeronArchive.Configuration.MAJOR_VERSION)
+        {
+            controlSession.invalidVersion();
+        }
 
         return controlSession;
     }
@@ -748,6 +756,12 @@ abstract class ArchiveConductor extends SessionWorker<Session> implements Availa
         if (null != tagsStr)
         {
             sb.append(CommonContext.TAGS_PARAM_NAME).append('=').append(tagsStr).append('|');
+        }
+
+        final String sessionIdStr = channelUri.get(CommonContext.SESSION_ID_PARAM_NAME);
+        if (null != tagsStr)
+        {
+            sb.append(CommonContext.SESSION_ID_PARAM_NAME).append('=').append(sessionIdStr).append('|');
         }
 
         sb.setLength(sb.length() - 1);

@@ -64,6 +64,7 @@ public:
      * @param context for configuration of the client.
      */
     Aeron(Context& context);
+
     ~Aeron();
 
     /**
@@ -271,6 +272,16 @@ public:
     inline AgentInvoker<ClientConductor>& conductorAgentInvoker()
     {
         return m_conductorInvoker;
+    }
+
+    /**
+     * Return whether the AgentInvoker is used or not.
+     *
+     * @return true if AgentInvoker used or false if not.
+     */
+    inline bool usesAgentInvoker() const
+    {
+        return m_context.m_useConductorAgentInvoker;
     }
 
     /**
