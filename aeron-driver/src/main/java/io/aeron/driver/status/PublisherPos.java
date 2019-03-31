@@ -44,7 +44,7 @@ public class PublisherPos
         final int streamId,
         final String channel)
     {
-        return StreamPositionCounter.allocate(
+        return StreamCounter.allocate(
             tempBuffer, NAME, PUBLISHER_POS_TYPE_ID, countersManager, registrationId, sessionId, streamId, channel);
     }
 }

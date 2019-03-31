@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2018 Real Logic Ltd.
+ * Copyright 2014-2019 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -62,6 +62,7 @@ typedef struct aeron_driver_receiver_proxy_stct aeron_driver_receiver_proxy_t;
 typedef aeron_rb_handler_t aeron_driver_conductor_to_driver_interceptor_func_t;
 typedef void (*aeron_driver_conductor_to_client_interceptor_func_t)(
     aeron_driver_conductor_t *conductor, int32_t msg_type_id, const void *message, size_t length);
+typedef void (*aeron_driver_termination_hook_func_t)(void *clientd);
 
 typedef enum aeron_threading_mode_enum
 {
@@ -76,11 +77,11 @@ typedef struct aeron_driver_context_stct
     char *aeron_dir;                            /* aeron.dir */
     aeron_threading_mode_t threading_mode;      /* aeron.threading.mode = DEDICATED */
     bool dirs_delete_on_start;                  /* aeron.dir.delete.on.start = false */
-    bool warn_if_dirs_exist;
+    bool warn_if_dirs_exist;                    /* aeron.dir.warn.if.exists = true */
     bool term_buffer_sparse_file;               /* aeron.term.buffer.sparse.file = false */
     bool perform_storage_checks;                /* aeron.perform.storage.checks = true */
     bool spies_simulate_connection;             /* aeron.spies.simulate.connection = false */
-    uint64_t driver_timeout_ms;
+    uint64_t driver_timeout_ms;                 /* aeron.driver.timeout = 10s */
     uint64_t client_liveness_timeout_ns;        /* aeron.client.liveness.timeout = 5s */
     uint64_t publication_linger_timeout_ns;     /* aeron.publication.linger.timeout = 5s */
     uint64_t status_message_timeout_ns;         /* aeron.rcv.status.message.timeout = 200ms */
@@ -129,14 +130,23 @@ typedef struct aeron_driver_context_stct
 
     aeron_idle_strategy_func_t conductor_idle_strategy_func;
     void *conductor_idle_strategy_state;
+    char *conductor_idle_strategy_init_args;
+
     aeron_idle_strategy_func_t shared_idle_strategy_func;
     void *shared_idle_strategy_state;
+    char *shared_idle_strategy_init_args;
+
     aeron_idle_strategy_func_t shared_network_idle_strategy_func;
     void *shared_network_idle_strategy_state;
+    char *shared_network_idle_strategy_init_args;
+
     aeron_idle_strategy_func_t sender_idle_strategy_func;
     void *sender_idle_strategy_state;
+    char *sender_idle_strategy_init_args;
+
     aeron_idle_strategy_func_t receiver_idle_strategy_func;
     void *receiver_idle_strategy_state;
+    char *receiver_idle_strategy_init_args;
 
     aeron_usable_fs_space_func_t usable_fs_space_func;
     aeron_map_raw_log_func_t map_raw_log_func;
@@ -153,6 +163,12 @@ typedef struct aeron_driver_context_stct
 
     aeron_driver_conductor_to_driver_interceptor_func_t to_driver_interceptor_func;
     aeron_driver_conductor_to_client_interceptor_func_t to_client_interceptor_func;
+
+    aeron_driver_termination_validator_func_t termination_validator_func;
+    void *termination_validator_state;
+
+    aeron_driver_termination_hook_func_t termination_hook_func;
+    void *termination_hook_state;
 
     int64_t receiver_id;
 }

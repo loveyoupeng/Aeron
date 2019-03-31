@@ -54,6 +54,7 @@
 #include "concurrent/aeron_broadcast_transmitter.h"
 #include "aeron_agent.h"
 #include "concurrent/aeron_counters_manager.h"
+#include "aeron_termination_validator.h"
 
 #if defined(__clang__)
     #pragma clang diagnostic push
@@ -149,9 +150,10 @@ uint64_t aeron_config_parse_uint64(const char *name, const char *str, uint64_t d
     if (NULL != str)
     {
         errno = 0;
+        char *end_ptr = NULL;
         uint64_t value = strtoull(str, NULL, 0);
 
-        if (0 == value && 0 != errno)
+        if ((0 == value && 0 != errno) || end_ptr == str)
         {
             aeron_config_prop_warning(name, str);
             value = def;
@@ -309,27 +311,27 @@ int aeron_driver_context_init(aeron_driver_context_t **context)
         _context->counters_values_buffer_length *
         (AERON_COUNTERS_MANAGER_METADATA_LENGTH / AERON_COUNTERS_MANAGER_VALUE_LENGTH);
     _context->error_buffer_length = 1024 * 1024;
-    _context->client_liveness_timeout_ns = 5 * 1000 * 1000 * 1000L;
-    _context->timer_interval_ns = 1 * 1000 * 1000 * 1000L;
+    _context->client_liveness_timeout_ns = 5 * 1000 * 1000 * 1000LL;
+    _context->timer_interval_ns = 1 * 1000 * 1000 * 1000LL;
     _context->term_buffer_length = 16 * 1024 * 1024;
     _context->ipc_term_buffer_length = 64 * 1024 * 1024;
     _context->mtu_length = 1408;
     _context->ipc_mtu_length = 1408;
     _context->ipc_publication_window_length = 0;
     _context->publication_window_length = 0;
-    _context->publication_linger_timeout_ns = 5 * 1000 * 1000 * 1000L;
+    _context->publication_linger_timeout_ns = 5 * 1000 * 1000 * 1000LL;
     _context->socket_rcvbuf = 128 * 1024;
     _context->socket_sndbuf = 0;
     _context->multicast_ttl = 0;
     _context->send_to_sm_poll_ratio = 4;
-    _context->status_message_timeout_ns = 200 * 1000 * 1000L;
-    _context->image_liveness_timeout_ns = 10 * 1000 * 1000 * 1000L;
+    _context->status_message_timeout_ns = 200 * 1000 * 1000LL;
+    _context->image_liveness_timeout_ns = 10 * 1000 * 1000 * 1000LL;
     _context->initial_window_length = 128 * 1024;
     _context->loss_report_length = 1024 * 1024;
     _context->file_page_size = 4 * 1024;
-    _context->publication_unblock_timeout_ns = 10 * 1000 * 1000 * 1000L;
-    _context->publication_connection_timeout_ns = 5 * 1000 * 1000 * 1000L;
-    _context->counter_free_to_reuse_ns = 1 * 1000 * 1000 * 1000L;
+    _context->publication_unblock_timeout_ns = 10 * 1000 * 1000 * 1000LL;
+    _context->publication_connection_timeout_ns = 5 * 1000 * 1000 * 1000LL;
+    _context->counter_free_to_reuse_ns = 1 * 1000 * 1000 * 1000LL;
 
     char *value = NULL;
 
@@ -389,6 +391,10 @@ int aeron_driver_context_init(aeron_driver_context_t **context)
     _context->dirs_delete_on_start = aeron_config_parse_bool(
         getenv(AERON_DIR_DELETE_ON_START_ENV_VAR),
         _context->dirs_delete_on_start);
+
+    _context->warn_if_dirs_exist = aeron_config_parse_bool(
+        getenv(AERON_DIR_WARN_IF_EXISTS_ENV_VAR),
+        _context->warn_if_dirs_exist);
 
     _context->term_buffer_sparse_file = aeron_config_parse_bool(
         getenv(AERON_TERM_BUFFER_SPARSE_FILE_ENV_VAR),
@@ -590,25 +596,60 @@ int aeron_driver_context_init(aeron_driver_context_t **context)
     _context->nano_clock = aeron_nano_clock;
     _context->epoch_clock = aeron_epoch_clock;
 
-    _context->conductor_idle_strategy_func = aeron_idle_strategy_load(
-        AERON_CONFIG_GETENV_OR_DEFAULT(AERON_CONDUCTOR_IDLE_STRATEGY_ENV_VAR, "yielding"),
-        &_context->conductor_idle_strategy_state);
+    _context->conductor_idle_strategy_init_args =
+        AERON_CONFIG_GETENV_OR_DEFAULT(AERON_CONDUCTOR_IDLE_STRATEGY_INIT_ARGS_ENV_VAR, NULL);
+    if ((_context->conductor_idle_strategy_func = aeron_idle_strategy_load(
+        AERON_CONFIG_GETENV_OR_DEFAULT(AERON_CONDUCTOR_IDLE_STRATEGY_ENV_VAR, "backoff"),
+        &_context->conductor_idle_strategy_state,
+        AERON_CONDUCTOR_IDLE_STRATEGY_ENV_VAR,
+        _context->conductor_idle_strategy_init_args)) == NULL)
+    {
+        return -1;
+    }
 
-    _context->shared_idle_strategy_func = aeron_idle_strategy_load(
-        AERON_CONFIG_GETENV_OR_DEFAULT(AERON_SHARED_IDLE_STRATEGY_ENV_VAR, "yielding"),
-        &_context->shared_idle_strategy_state);
+    _context->shared_idle_strategy_init_args =
+        AERON_CONFIG_GETENV_OR_DEFAULT(AERON_SHARED_IDLE_STRATEGY_ENV_INIT_ARGS_VAR, NULL);
+    if ((_context->shared_idle_strategy_func = aeron_idle_strategy_load(
+        AERON_CONFIG_GETENV_OR_DEFAULT(AERON_SHARED_IDLE_STRATEGY_ENV_VAR, "backoff"),
+        &_context->shared_idle_strategy_state,
+        AERON_SHARED_IDLE_STRATEGY_ENV_VAR,
+        _context->shared_idle_strategy_init_args)) == NULL)
+    {
+        return -1;
+    }
 
-    _context->shared_network_idle_strategy_func = aeron_idle_strategy_load(
-        AERON_CONFIG_GETENV_OR_DEFAULT(AERON_SHAREDNETWORK_IDLE_STRATEGY_ENV_VAR, "yielding"),
-        &_context->shared_network_idle_strategy_state);
+    _context->shared_network_idle_strategy_init_args =
+        AERON_CONFIG_GETENV_OR_DEFAULT(AERON_SHAREDNETWORK_IDLE_STRATEGY_INIT_ARGS_ENV_VAR, NULL);
+    if ((_context->shared_network_idle_strategy_func = aeron_idle_strategy_load(
+        AERON_CONFIG_GETENV_OR_DEFAULT(AERON_SHAREDNETWORK_IDLE_STRATEGY_ENV_VAR, "backoff"),
+        &_context->shared_network_idle_strategy_state,
+        AERON_SHARED_IDLE_STRATEGY_ENV_VAR,
+        _context->shared_network_idle_strategy_init_args)) == NULL)
+    {
+        return -1;
+    }
 
-    _context->sender_idle_strategy_func = aeron_idle_strategy_load(
-        AERON_CONFIG_GETENV_OR_DEFAULT(AERON_SENDER_IDLE_STRATEGY_ENV_VAR, "noop"),
-        &_context->sender_idle_strategy_state);
+    _context->sender_idle_strategy_init_args =
+        AERON_CONFIG_GETENV_OR_DEFAULT(AERON_SENDER_IDLE_STRATEGY_INIT_ARGS_ENV_VAR, NULL);
+    if ((_context->sender_idle_strategy_func = aeron_idle_strategy_load(
+        AERON_CONFIG_GETENV_OR_DEFAULT(AERON_SENDER_IDLE_STRATEGY_ENV_VAR, "backoff"),
+        &_context->sender_idle_strategy_state,
+        AERON_SENDER_IDLE_STRATEGY_ENV_VAR,
+        _context->sender_idle_strategy_init_args)) == NULL)
+    {
+        return -1;
+    }
 
-    _context->receiver_idle_strategy_func = aeron_idle_strategy_load(
-        AERON_CONFIG_GETENV_OR_DEFAULT(AERON_RECEIVER_IDLE_STRATEGY_ENV_VAR, "noop"),
-        &_context->receiver_idle_strategy_state);
+    _context->receiver_idle_strategy_init_args =
+        AERON_CONFIG_GETENV_OR_DEFAULT(AERON_RECEIVER_IDLE_STRATEGY_INIT_ARGS_ENV_VAR, NULL);
+    if ((_context->receiver_idle_strategy_func = aeron_idle_strategy_load(
+        AERON_CONFIG_GETENV_OR_DEFAULT(AERON_RECEIVER_IDLE_STRATEGY_ENV_VAR, "backoff"),
+        &_context->receiver_idle_strategy_state,
+        AERON_RECEIVER_IDLE_STRATEGY_ENV_VAR,
+        _context->receiver_idle_strategy_init_args)) == NULL)
+    {
+        return -1;
+    }
 
     _context->usable_fs_space_func = _context->perform_storage_checks ?
         aeron_usable_fs_space : aeron_usable_fs_space_disabled;
@@ -617,6 +658,17 @@ int aeron_driver_context_init(aeron_driver_context_t **context)
 
     _context->to_driver_interceptor_func = aeron_driver_conductor_to_driver_interceptor_null;
     _context->to_client_interceptor_func = aeron_driver_conductor_to_client_interceptor_null;
+
+    if ((_context->termination_validator_func = aeron_driver_termination_validator_load(
+        AERON_CONFIG_GETENV_OR_DEFAULT(AERON_DRIVER_TERMINATION_VALIDATOR_ENV_VAR, "deny"))) == NULL)
+    {
+        return -1;
+    }
+
+    _context->termination_validator_state = NULL;
+
+    _context->termination_hook_func = NULL;
+    _context->termination_hook_state = NULL;
 
 #ifdef HAVE_UUID_GENERATE
     uuid_t id;
@@ -656,7 +708,10 @@ int aeron_driver_context_close(aeron_driver_context_t *context)
 
     aeron_free((void *)context->aeron_dir);
     aeron_free(context->conductor_idle_strategy_state);
+    aeron_free(context->receiver_idle_strategy_state);
+    aeron_free(context->sender_idle_strategy_state);
     aeron_free(context->shared_idle_strategy_state);
+    aeron_free(context->shared_network_idle_strategy_state);
     aeron_free(context);
 
     return 0;

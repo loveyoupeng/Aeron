@@ -15,7 +15,8 @@
  */
 package io.aeron.driver;
 
-import io.aeron.driver.buffer.RawLogFactory;
+import io.aeron.driver.buffer.FileStoreLogFactory;
+import io.aeron.driver.buffer.TestLogFactory;
 import io.aeron.driver.status.SystemCounters;
 import org.junit.Before;
 import org.junit.Test;
@@ -61,22 +62,22 @@ public class IpcPublicationTest
     @Before
     public void setUp()
     {
-        final RingBuffer fromClientCommands = new ManyToOneRingBuffer(new UnsafeBuffer(
-            ByteBuffer.allocateDirect(Configuration.CONDUCTOR_BUFFER_LENGTH)));
+        final RingBuffer toDriverCommands = new ManyToOneRingBuffer(new UnsafeBuffer(
+            ByteBuffer.allocateDirect(Configuration.CONDUCTOR_BUFFER_LENGTH_DEFAULT)));
 
-        final RawLogFactory mockRawLogFactory = mock(RawLogFactory.class);
+        final FileStoreLogFactory mockFileStoreLogFactory = mock(FileStoreLogFactory.class);
         final UnsafeBuffer counterBuffer = new UnsafeBuffer(ByteBuffer.allocateDirect(BUFFER_LENGTH));
         final CountersManager countersManager = new CountersManager(
             new UnsafeBuffer(ByteBuffer.allocateDirect(BUFFER_LENGTH * 2)), counterBuffer, StandardCharsets.US_ASCII);
 
-        when(mockRawLogFactory.newIpcPublication(anyInt(), anyInt(), anyLong(), anyInt(), anyBoolean()))
-            .thenReturn(LogBufferHelper.newTestLogBuffers(TERM_BUFFER_LENGTH));
+        when(mockFileStoreLogFactory.newIpcPublication(anyInt(), anyInt(), anyLong(), anyInt(), anyBoolean()))
+            .thenReturn(TestLogFactory.newLogBuffers(TERM_BUFFER_LENGTH));
 
         final MediaDriver.Context ctx = new MediaDriver.Context()
             .tempBuffer(new UnsafeBuffer(new byte[METADATA_LENGTH]))
             .ipcTermBufferLength(TERM_BUFFER_LENGTH)
-            .toDriverCommands(fromClientCommands)
-            .rawLogBuffersFactory(mockRawLogFactory)
+            .toDriverCommands(toDriverCommands)
+            .logFactory(mockFileStoreLogFactory)
             .clientProxy(mock(ClientProxy.class))
             .driverCommandQueue(mock(ManyToOneConcurrentArrayQueue.class))
             .epochClock(new SystemEpochClock())
@@ -88,7 +89,7 @@ public class IpcPublicationTest
 
         ctx.countersValuesBuffer(counterBuffer);
 
-        driverProxy = new DriverProxy(fromClientCommands, CLIENT_ID);
+        driverProxy = new DriverProxy(toDriverCommands, CLIENT_ID);
         driverConductor = new DriverConductor(ctx);
 
         driverProxy.addPublication(CommonContext.IPC_CHANNEL, STREAM_ID);

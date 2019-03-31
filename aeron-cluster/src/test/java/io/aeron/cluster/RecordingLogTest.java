@@ -15,7 +15,9 @@
  */
 package io.aeron.cluster;
 
+import io.aeron.archive.client.AeronArchive;
 import org.agrona.IoUtil;
+import org.agrona.SystemUtil;
 import org.junit.After;
 import org.junit.Test;
 
@@ -30,10 +32,11 @@ import static io.aeron.cluster.RecordingLog.ENTRY_TYPE_TERM;
 import static org.hamcrest.CoreMatchers.is;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertThat;
+import static org.mockito.Mockito.mock;
 
 public class RecordingLogTest
 {
-    private static final File TEMP_DIR = new File(IoUtil.tmpDirName());
+    private static final File TEMP_DIR = new File(SystemUtil.tmpDirName());
     private boolean ignoreMissingRecordingFile = false;
 
     @After
@@ -73,6 +76,32 @@ public class RecordingLogTest
 
             final RecordingLog.Entry snapshot = recordingLog.getLatestSnapshot(SERVICE_ID);
             assertEquals(entry.toString(), snapshot.toString());
+        }
+    }
+
+    @Test
+    public void shouldIgnoreIncompleteSnapshotInRecoveryPlan()
+    {
+        final int serviceCount = 1;
+
+        try (RecordingLog recordingLog = new RecordingLog(TEMP_DIR))
+        {
+            recordingLog.appendSnapshot(1L, 1L, 0, 777L, 0, 0);
+            recordingLog.appendSnapshot(2L, 1L, 0, 777L, 0, SERVICE_ID);
+            recordingLog.appendSnapshot(3L, 1L, 0, 777L, 0, 0);
+        }
+
+        try (RecordingLog recordingLog = new RecordingLog(TEMP_DIR))
+        {
+            assertThat(recordingLog.entries().size(), is(3));
+
+            final AeronArchive mockArchive = mock(AeronArchive.class);
+            final RecordingLog.RecoveryPlan recoveryPlan = recordingLog.createRecoveryPlan(mockArchive, serviceCount);
+            assertThat(recoveryPlan.snapshots.size(), is(2));
+            assertThat(recoveryPlan.snapshots.get(0).serviceId, is(SERVICE_ID));
+            assertThat(recoveryPlan.snapshots.get(0).recordingId, is(2L));
+            assertThat(recoveryPlan.snapshots.get(1).serviceId, is(0));
+            assertThat(recoveryPlan.snapshots.get(1).recordingId, is(1L));
         }
     }
 

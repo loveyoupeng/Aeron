@@ -13,19 +13,17 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.aeron;
+package io.aeron.driver;
 
-/**
- * Interface for delivery of End of Stream image notification to a {@link Subscription}.
- */
-@Deprecated
-@FunctionalInterface
-public interface EndOfStreamHandler
+import org.agrona.DirectBuffer;
+
+import java.io.File;
+
+public class DefaultDenyTerminationValidator implements TerminationValidator
 {
-    /**
-     * Method called by Aeron to deliver notification that an {@link Image} has reached End of Stream.
-     *
-     * @param image that has reached End Of Stream.
-     */
-    void onEndOfStream(Image image);
+    public boolean allowTermination(
+        final File aeronDir, final DirectBuffer tokenBuffer, final int tokenOffset, final int tokenLength)
+    {
+        return false;
+    }
 }

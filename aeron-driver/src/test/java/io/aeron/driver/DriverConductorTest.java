@@ -19,7 +19,7 @@ import io.aeron.CommonContext;
 import io.aeron.DriverProxy;
 import io.aeron.ErrorCode;
 import io.aeron.driver.buffer.RawLog;
-import io.aeron.driver.buffer.RawLogFactory;
+import io.aeron.driver.buffer.TestLogFactory;
 import io.aeron.driver.media.ReceiveChannelEndpoint;
 import io.aeron.driver.media.ReceiveChannelEndpointThreadLocals;
 import io.aeron.driver.media.UdpChannel;
@@ -75,20 +75,21 @@ public class DriverConductorTest
     private static final int STREAM_ID_2 = 20;
     private static final int STREAM_ID_3 = 30;
     private static final int STREAM_ID_4 = 40;
-    private static final int TERM_BUFFER_LENGTH = Configuration.TERM_BUFFER_LENGTH_DEFAULT;
+    private static final int TERM_BUFFER_LENGTH = LogBufferDescriptor.TERM_MIN_LENGTH;
     private static final int BUFFER_LENGTH = 16 * 1024;
     private static final int COUNTER_TYPE_ID = 101;
     private static final int COUNTER_KEY_OFFSET = 0;
     private static final int COUNTER_KEY_LENGTH = 12;
     private static final int COUNTER_LABEL_OFFSET = COUNTER_KEY_OFFSET + COUNTER_KEY_LENGTH;
     private static final int COUNTER_LABEL_LENGTH = COUNTER_LABEL.length();
+    private static final long CLIENT_LIVENESS_TIMEOUT_NS = clientLivenessTimeoutNs();
+    private static final long PUBLICATION_LINGER_TIMEOUT_NS = publicationLingerTimeoutNs();
+    private static final int MTU_LENGTH = Configuration.mtuLength();
 
-    private final ByteBuffer toDriverBuffer = ByteBuffer.allocateDirect(Configuration.CONDUCTOR_BUFFER_LENGTH);
+    private final ByteBuffer conductorBuffer = ByteBuffer.allocate(CONDUCTOR_BUFFER_LENGTH_DEFAULT);
     private final UnsafeBuffer counterKeyAndLabel = new UnsafeBuffer(new byte[BUFFER_LENGTH]);
 
-    private final RawLogFactory mockRawLogFactory = mock(RawLogFactory.class);
-
-    private final RingBuffer fromClientCommands = new ManyToOneRingBuffer(new UnsafeBuffer(toDriverBuffer));
+    private final RingBuffer toDriverCommands = new ManyToOneRingBuffer(new UnsafeBuffer(conductorBuffer));
     private final ClientProxy mockClientProxy = mock(ClientProxy.class);
 
     private final ErrorHandler mockErrorHandler = mock(ErrorHandler.class);
@@ -104,9 +105,7 @@ public class DriverConductorTest
     private final NanoClock nanoClock = () -> currentTimeNs;
 
     private CountersManager spyCountersManager;
-
     private DriverProxy driverProxy;
-
     private DriverConductor driverConductor;
 
     private final Answer<Void> closeChannelEndpointAnswer = (invocation) ->
@@ -121,38 +120,28 @@ public class DriverConductorTest
     @Before
     public void setUp()
     {
-        // System GC required in order to ensure that the direct byte buffers get cleaned and avoid OOM.
-        System.gc();
-
-        when(mockRawLogFactory.newNetworkPublication(
-            anyString(), anyInt(), anyInt(), anyLong(), anyInt(), anyBoolean()))
-            .thenReturn(LogBufferHelper.newTestLogBuffers(TERM_BUFFER_LENGTH));
-
-        when(mockRawLogFactory.newNetworkedImage(
-            anyString(), anyInt(), anyInt(), anyLong(), eq(TERM_BUFFER_LENGTH), anyBoolean()))
-            .thenReturn(LogBufferHelper.newTestLogBuffers(TERM_BUFFER_LENGTH));
-
-        when(mockRawLogFactory.newIpcPublication(anyInt(), anyInt(), anyLong(), anyInt(), anyBoolean()))
-            .thenReturn(LogBufferHelper.newTestLogBuffers(TERM_BUFFER_LENGTH));
-
         currentTimeNs = 0;
 
         counterKeyAndLabel.putInt(COUNTER_KEY_OFFSET, 42);
         counterKeyAndLabel.putStringAscii(COUNTER_LABEL_OFFSET, COUNTER_LABEL);
 
-        final UnsafeBuffer counterBuffer = new UnsafeBuffer(ByteBuffer.allocateDirect(BUFFER_LENGTH));
+        final UnsafeBuffer counterBuffer = new UnsafeBuffer(ByteBuffer.allocate(BUFFER_LENGTH));
         spyCountersManager = spy(new CountersManager(
-            new UnsafeBuffer(ByteBuffer.allocateDirect(BUFFER_LENGTH * 2)), counterBuffer, StandardCharsets.US_ASCII));
+            new UnsafeBuffer(ByteBuffer.allocate(BUFFER_LENGTH * 2)), counterBuffer, StandardCharsets.US_ASCII));
+
+        final SystemCounters mockSystemCounters = mock(SystemCounters.class);
+        when(mockSystemCounters.get(any())).thenReturn(mockErrorCounter);
 
         final MediaDriver.Context ctx = new MediaDriver.Context()
             .tempBuffer(new UnsafeBuffer(new byte[METADATA_LENGTH]))
             .publicationTermBufferLength(TERM_BUFFER_LENGTH)
             .ipcTermBufferLength(TERM_BUFFER_LENGTH)
+            .applicationSpecificFeedback(Configuration.applicationSpecificFeedback())
             .unicastFlowControlSupplier(Configuration.unicastFlowControlSupplier())
             .multicastFlowControlSupplier(Configuration.multicastFlowControlSupplier())
             .driverCommandQueue(new ManyToOneConcurrentArrayQueue<>(Configuration.CMD_QUEUE_CAPACITY))
             .errorHandler(mockErrorHandler)
-            .rawLogBuffersFactory(mockRawLogFactory)
+            .logFactory(new TestLogFactory())
             .countersManager(spyCountersManager)
             .epochClock(epochClock)
             .nanoClock(nanoClock)
@@ -160,23 +149,18 @@ public class DriverConductorTest
             .cachedNanoClock(new CachedNanoClock())
             .sendChannelEndpointSupplier(Configuration.sendChannelEndpointSupplier())
             .receiveChannelEndpointSupplier(Configuration.receiveChannelEndpointSupplier())
-            .congestControlSupplier(Configuration.congestionControlSupplier());
-
-        ctx.toDriverCommands(fromClientCommands)
+            .congestControlSupplier(Configuration.congestionControlSupplier())
+            .toDriverCommands(toDriverCommands)
             .clientProxy(mockClientProxy)
-            .countersValuesBuffer(counterBuffer);
-
-        final SystemCounters mockSystemCounters = mock(SystemCounters.class);
-        when(mockSystemCounters.get(any())).thenReturn(mockErrorCounter);
-
-        ctx.systemCounters(mockSystemCounters)
+            .countersValuesBuffer(counterBuffer)
+            .systemCounters(mockSystemCounters)
             .receiverProxy(receiverProxy)
             .senderProxy(senderProxy)
-            .driverConductorProxy(driverConductorProxy)
-            .clientLivenessTimeoutNs(CLIENT_LIVENESS_TIMEOUT_NS)
-            .receiveChannelEndpointThreadLocals(new ReceiveChannelEndpointThreadLocals(ctx));
+            .driverConductorProxy(driverConductorProxy);
 
-        driverProxy = new DriverProxy(fromClientCommands, fromClientCommands.nextCorrelationId());
+        ctx.receiveChannelEndpointThreadLocals(new ReceiveChannelEndpointThreadLocals(ctx));
+
+        driverProxy = new DriverProxy(toDriverCommands, toDriverCommands.nextCorrelationId());
         driverConductor = new DriverConductor(ctx);
 
         doAnswer(closeChannelEndpointAnswer).when(receiverProxy).closeReceiveChannelEndpoint(any());
@@ -185,6 +169,7 @@ public class DriverConductorTest
     @After
     public void tearDown()
     {
+        driverConductor.closeChannelEndpoints();
         driverConductor.onClose();
     }
 
@@ -221,10 +206,6 @@ public class DriverConductorTest
             "|term-id=" + termId +
             "|term-offset=" + termOffset;
 
-        when(mockRawLogFactory.newNetworkPublication(
-            anyString(), anyInt(), anyInt(), anyLong(), eq(termLength), anyBoolean()))
-            .thenReturn(LogBufferHelper.newTestLogBuffers(termLength));
-
         driverProxy.addExclusivePublication(CHANNEL_4000 + params, STREAM_ID_1);
 
         driverConductor.doWork();
@@ -257,9 +238,6 @@ public class DriverConductorTest
             "|init-term-id=" + initialTermId +
             "|term-id=" + termId +
             "|term-offset=" + termOffset;
-
-        when(mockRawLogFactory.newIpcPublication(anyInt(), anyInt(), anyLong(), eq(termLength), anyBoolean()))
-            .thenReturn(LogBufferHelper.newTestLogBuffers(termLength));
 
         driverProxy.addExclusivePublication(CHANNEL_IPC + params, STREAM_ID_1);
 
@@ -322,7 +300,7 @@ public class DriverConductorTest
         final long id = driverProxy.addPublication(CHANNEL_4000, STREAM_ID_1);
         driverProxy.removePublication(id);
 
-        doWorkUntil(() -> (CLIENT_LIVENESS_TIMEOUT_NS + PUBLICATION_LINGER_NS * 2) - nanoClock.nanoTime() < 0);
+        doWorkUntil(() -> (CLIENT_LIVENESS_TIMEOUT_NS + PUBLICATION_LINGER_TIMEOUT_NS * 2) - nanoClock.nanoTime() < 0);
 
         verify(senderProxy).removeNetworkPublication(any());
         assertNull(driverConductor.senderChannelEndpoint(UdpChannel.parse(CHANNEL_4000)));
@@ -341,7 +319,8 @@ public class DriverConductorTest
         driverProxy.removePublication(id3);
         driverProxy.removePublication(id4);
 
-        doWorkUntil(() -> (PUBLICATION_LINGER_NS * 2 + CLIENT_LIVENESS_TIMEOUT_NS * 2) - nanoClock.nanoTime() <= 0);
+        doWorkUntil(
+            () -> (CLIENT_LIVENESS_TIMEOUT_NS * 2 + PUBLICATION_LINGER_TIMEOUT_NS * 2) - nanoClock.nanoTime() <= 0);
 
         verify(senderProxy, times(4)).removeNetworkPublication(any());
     }
@@ -484,7 +463,7 @@ public class DriverConductorTest
 
         final NetworkPublication publication = captor.getValue();
 
-        doWorkUntil(() -> (PUBLICATION_LINGER_NS + CLIENT_LIVENESS_TIMEOUT_NS * 2) - nanoClock.nanoTime() <= 0);
+        doWorkUntil(() -> (CLIENT_LIVENESS_TIMEOUT_NS + PUBLICATION_LINGER_TIMEOUT_NS * 2) - nanoClock.nanoTime() <= 0);
 
         verify(mockClientProxy, times(1))
             .onClientTimeout(driverProxy.clientId());
@@ -559,13 +538,13 @@ public class DriverConductorTest
         assertThat(publication.state(),
             anyOf(is(NetworkPublication.State.DRAINING), is(NetworkPublication.State.LINGER)));
 
-        final long endTime = nanoClock.nanoTime() + PUBLICATION_CONNECTION_TIMEOUT_NS + TIMER_INTERVAL_NS;
+        final long endTime = nanoClock.nanoTime() + publicationConnectionTimeoutNs() + timerIntervalNs();
         doWorkUntil(() -> nanoClock.nanoTime() >= endTime, publication::updateHasReceivers);
 
         assertThat(publication.state(),
             anyOf(is(NetworkPublication.State.LINGER), is(NetworkPublication.State.CLOSING)));
 
-        currentTimeNs += TIMER_INTERVAL_NS + PUBLICATION_LINGER_NS;
+        currentTimeNs += timerIntervalNs() + PUBLICATION_LINGER_TIMEOUT_NS;
         driverConductor.doWork();
         assertThat(publication.state(), is(NetworkPublication.State.CLOSING));
 
@@ -707,7 +686,7 @@ public class DriverConductorTest
         publicationImage.activate();
         publicationImage.ifActiveGoInactive();
 
-        doWorkUntil(() -> nanoClock.nanoTime() >= IMAGE_LIVENESS_TIMEOUT_NS + 1000);
+        doWorkUntil(() -> nanoClock.nanoTime() >= imageLivenessTimeoutNs() + 1000);
 
         verify(mockClientProxy).onUnavailableImage(
             eq(publicationImage.correlationId()), eq(subId), eq(STREAM_ID_1), anyString());
@@ -745,7 +724,7 @@ public class DriverConductorTest
 
         publicationImage.ifActiveGoInactive();
 
-        doWorkUntil(() -> nanoClock.nanoTime() >= IMAGE_LIVENESS_TIMEOUT_NS + 1000);
+        doWorkUntil(() -> nanoClock.nanoTime() >= imageLivenessTimeoutNs() + 1000);
 
         final InOrder inOrder = inOrder(mockClientProxy);
         inOrder.verify(mockClientProxy, times(2)).onAvailableImage(
@@ -789,11 +768,11 @@ public class DriverConductorTest
         publicationImage.activate();
         publicationImage.ifActiveGoInactive();
 
-        doWorkUntil(() -> nanoClock.nanoTime() >= IMAGE_LIVENESS_TIMEOUT_NS / 2);
+        doWorkUntil(() -> nanoClock.nanoTime() >= imageLivenessTimeoutNs() / 2);
 
         driverProxy.sendClientKeepalive();
 
-        doWorkUntil(() -> nanoClock.nanoTime() >= IMAGE_LIVENESS_TIMEOUT_NS + 1000);
+        doWorkUntil(() -> nanoClock.nanoTime() >= imageLivenessTimeoutNs() + 1000);
 
         final long subTwoId = driverProxy.addSubscription(CHANNEL_4000, STREAM_ID_1);
 
@@ -1118,8 +1097,8 @@ public class DriverConductorTest
     @Test
     public void shouldTimeoutNetworkPublicationWithSpy()
     {
-        final long clientId = fromClientCommands.nextCorrelationId();
-        final DriverProxy spyDriverProxy = new DriverProxy(fromClientCommands, clientId);
+        final long clientId = toDriverCommands.nextCorrelationId();
+        final DriverProxy spyDriverProxy = new DriverProxy(toDriverCommands, clientId);
 
         driverProxy.addPublication(CHANNEL_4000, STREAM_ID_1);
         final long subId = spyDriverProxy.addSubscription(spyForChannel(CHANNEL_4000), STREAM_ID_1);
@@ -1155,7 +1134,7 @@ public class DriverConductorTest
         doWorkUntil(() ->
         {
             driverProxy.sendClientKeepalive();
-            return (PUBLICATION_LINGER_NS * 2) - nanoClock.nanoTime() <= 0;
+            return (PUBLICATION_LINGER_TIMEOUT_NS * 2) - nanoClock.nanoTime() <= 0;
         });
 
         verify(senderProxy, times(1)).closeSendChannelEndpoint(any());
@@ -1657,7 +1636,8 @@ public class DriverConductorTest
         driverProxy.removePublication(id1);
         driverProxy.removePublication(id2);
 
-        doWorkUntil(() -> (PUBLICATION_LINGER_NS * 2 + CLIENT_LIVENESS_TIMEOUT_NS * 2) - nanoClock.nanoTime() <= 0);
+        doWorkUntil(
+            () -> (PUBLICATION_LINGER_TIMEOUT_NS * 2 + CLIENT_LIVENESS_TIMEOUT_NS * 2) - nanoClock.nanoTime() <= 0);
 
         verify(senderProxy).closeSendChannelEndpoint(any());
     }
@@ -1677,7 +1657,8 @@ public class DriverConductorTest
         driverProxy.removePublication(id1);
         driverProxy.removePublication(id2);
 
-        doWorkUntil(() -> (PUBLICATION_LINGER_NS * 2 + CLIENT_LIVENESS_TIMEOUT_NS * 2) - nanoClock.nanoTime() <= 0);
+        doWorkUntil(
+            () -> (PUBLICATION_LINGER_TIMEOUT_NS * 2 + CLIENT_LIVENESS_TIMEOUT_NS * 2) - nanoClock.nanoTime() <= 0);
 
         verify(senderProxy).closeSendChannelEndpoint(any());
     }

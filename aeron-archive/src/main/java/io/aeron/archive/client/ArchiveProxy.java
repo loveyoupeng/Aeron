@@ -61,6 +61,8 @@ public class ArchiveProxy
     private final StopPositionRequestEncoder stopPositionRequestEncoder = new StopPositionRequestEncoder();
     private final FindLastMatchingRecordingRequestEncoder findLastMatchingRecordingRequestEncoder =
         new FindLastMatchingRecordingRequestEncoder();
+    private final ListRecordingSubscriptionsRequestEncoder listRecordingSubscriptionsRequestEncoder =
+        new ListRecordingSubscriptionsRequestEncoder();
 
     /**
      * Create a proxy with a {@link Publication} for sending control message requests.
@@ -496,9 +498,6 @@ public class ArchiveProxy
     }
 
     /**
-     * Truncate a stopped recording to a given position that is less than the stopped position. The provided position
-     * must be on a fragment boundary. Truncating a recording to the start position effectively deletes the recording.
-     * <p>
      * Find the last recording that matches the given criteria.
      *
      * @param minRecordingId   to search back to.
@@ -527,6 +526,40 @@ public class ArchiveProxy
             .channel(channelFragment);
 
         return offer(findLastMatchingRecordingRequestEncoder.encodedLength());
+    }
+
+    /**
+     * List registered subscriptions in the archive which have been used to record streams.
+     *
+     * @param pseudoIndex       in the list of active recording subscriptions.
+     * @param subscriptionCount for the number of descriptors to be listed.
+     * @param channelFragment   for a contains match on the stripped channel used with the registered subscription.
+     * @param streamId          for the subscription.
+     * @param applyStreamId     when matching.
+     * @param correlationId     for this request.
+     * @param controlSessionId  for this request.
+     * @return true if successfully offered otherwise false.
+     */
+    public boolean listRecordingSubscriptions(
+        final int pseudoIndex,
+        final int subscriptionCount,
+        final String channelFragment,
+        final int streamId,
+        final boolean applyStreamId,
+        final long correlationId,
+        final long controlSessionId)
+    {
+        listRecordingSubscriptionsRequestEncoder
+            .wrapAndApplyHeader(buffer, 0, messageHeaderEncoder)
+            .controlSessionId(controlSessionId)
+            .correlationId(correlationId)
+            .pseudoIndex(pseudoIndex)
+            .subscriptionCount(subscriptionCount)
+            .applyStreamId(applyStreamId ? BooleanType.TRUE : BooleanType.FALSE)
+            .streamId(streamId)
+            .channel(channelFragment);
+
+        return offer(listRecordingSubscriptionsRequestEncoder.encodedLength());
     }
 
     private boolean offer(final int length)

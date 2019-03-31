@@ -821,6 +821,7 @@ aeron_network_publication_t *aeron_driver_conductor_get_or_add_network_publicati
                 aeron_position_t pub_lmt_position;
                 aeron_position_t snd_pos_position;
                 aeron_position_t snd_lmt_position;
+                aeron_counter_t snd_bpe_counter;
 
                 pub_pos_position.counter_id = aeron_counter_publisher_position_allocate(
                     &conductor->counters_manager, registration_id, session_id, stream_id, uri_length, uri);
@@ -830,11 +831,12 @@ aeron_network_publication_t *aeron_driver_conductor_get_or_add_network_publicati
                     &conductor->counters_manager, registration_id, session_id, stream_id, uri_length, uri);
                 snd_lmt_position.counter_id = aeron_counter_sender_limit_allocate(
                     &conductor->counters_manager, registration_id, session_id, stream_id, uri_length, uri);
+                snd_bpe_counter.counter_id = aeron_counter_sender_bpe_allocate(
+                    &conductor->counters_manager, registration_id, session_id, stream_id, uri_length, uri);
 
-                if (pub_lmt_position.counter_id < 0 ||
-                    pub_pos_position.counter_id < 0 ||
-                    snd_pos_position.counter_id < 0 ||
-                    snd_lmt_position.counter_id < 0)
+                if (pub_pos_position.counter_id < 0 || pub_lmt_position.counter_id < 0 ||
+                    snd_pos_position.counter_id < 0 || snd_lmt_position.counter_id < 0 ||
+                    snd_bpe_counter.counter_id < 0)
                 {
                     return NULL;
                 }
@@ -847,6 +849,8 @@ aeron_network_publication_t *aeron_driver_conductor_get_or_add_network_publicati
                     &conductor->counters_manager, (int32_t)snd_pos_position.counter_id);
                 snd_lmt_position.value_addr = aeron_counter_addr(
                     &conductor->counters_manager, (int32_t)snd_lmt_position.counter_id);
+                snd_bpe_counter.value_addr = aeron_counter_addr(
+                    &conductor->counters_manager, (int32_t)snd_bpe_counter.counter_id);
 
                 if (params->is_replay)
                 {
@@ -893,6 +897,7 @@ aeron_network_publication_t *aeron_driver_conductor_get_or_add_network_publicati
                         &pub_lmt_position,
                         &snd_pos_position,
                         &snd_lmt_position,
+                        &snd_bpe_counter,
                         flow_control_strategy,
                         params,
                         is_exclusive,
@@ -1444,6 +1449,20 @@ void aeron_driver_conductor_on_command(int32_t msg_type_id, const void *message,
             break;
         }
 
+        case AERON_COMMAND_TERMINATE_DRIVER:
+        {
+            aeron_terminate_driver_command_t *command = (aeron_terminate_driver_command_t *)message;
+
+            if (length < sizeof(aeron_terminate_driver_command_t))
+            {
+                goto malformed_command;
+            }
+
+            result = aeron_driver_conductor_on_terminate_driver(conductor, command);
+
+            break;
+        }
+
         default:
             AERON_FORMAT_BUFFER(error_message, "command=%d unknown", msg_type_id);
             aeron_driver_conductor_error(
@@ -1849,8 +1868,18 @@ int aeron_driver_conductor_on_add_network_publication(
         return -1;
     }
 
-    if ((publication = aeron_driver_conductor_get_or_add_network_publication(
-        conductor, client, endpoint, uri_length, uri, &params, correlation_id, command->stream_id, is_exclusive)) == NULL)
+    publication = aeron_driver_conductor_get_or_add_network_publication(
+        conductor,
+        client,
+        endpoint,
+        (int32_t)uri_length,
+        uri,
+        &params,
+        correlation_id,
+        command->stream_id,
+        is_exclusive);
+
+    if (publication == NULL)
     {
         return -1;
     }
@@ -2324,7 +2353,7 @@ int aeron_driver_conductor_on_add_destination(
         aeron_uri_t uri_params;
         if (aeron_uri_parse(uri_length, command_uri, &uri_params) < 0)
         {
-            return -1;
+            goto error_cleanup;
         }
 
         if (NULL != endpoint->destination_tracker || !endpoint->destination_tracker->is_manual_control_mode)
@@ -2333,13 +2362,13 @@ int aeron_driver_conductor_on_add_destination(
                 EINVAL,
                 "channel does not allow manual control of destinations: %.*s",
                 command->channel_length, command_uri);
-            return -1;
+            goto error_cleanup;
         }
 
         if (uri_params.type != AERON_URI_UDP || NULL == uri_params.params.udp.endpoint_key)
         {
             aeron_set_err(EINVAL, "incorrect URI format for destination: %.*s", command->channel_length, command_uri);
-            return -1;
+            goto error_cleanup;
         }
 
         struct sockaddr_storage destination_addr;
@@ -2350,13 +2379,18 @@ int aeron_driver_conductor_on_add_destination(
                 "could not resolve destination address=(%s): %s",
                 uri_params.params.udp.endpoint_key,
                 aeron_errmsg());
-            return -1;
+            goto error_cleanup;
         }
 
         aeron_driver_sender_proxy_on_add_destination(conductor->context->sender_proxy, endpoint, &destination_addr);
         aeron_driver_conductor_on_operation_succeeded(conductor, command->correlated.correlation_id);
 
+        aeron_uri_close(&uri_params);
         return 0;
+
+        error_cleanup:
+        aeron_uri_close(&uri_params);
+        return -1;
     }
 
     aeron_set_err(
@@ -2392,7 +2426,7 @@ int aeron_driver_conductor_on_remove_destination(
         size_t uri_length = (size_t)command->channel_length;
         if (aeron_uri_parse(uri_length, command_uri, &uri_params) < 0)
         {
-            return -1;
+            goto error_cleanup;
         }
 
         if (NULL != endpoint->destination_tracker || !endpoint->destination_tracker->is_manual_control_mode)
@@ -2401,14 +2435,14 @@ int aeron_driver_conductor_on_remove_destination(
                 EINVAL,
                 "channel does not allow manual control of destinations: %.*s",
                 command->channel_length, command_uri);
-            return -1;
+            goto error_cleanup;
         }
 
 
         if (uri_params.type != AERON_URI_UDP || NULL == uri_params.params.udp.endpoint_key)
         {
             aeron_set_err(EINVAL, "incorrect URI format for destination: %.*s", command->channel_length, command_uri);
-            return -1;
+            goto error_cleanup;
         }
 
         struct sockaddr_storage destination_addr;
@@ -2419,13 +2453,18 @@ int aeron_driver_conductor_on_remove_destination(
                 "could not resolve destination address=(%s): %s",
                 uri_params.params.udp.endpoint_key,
                 aeron_errmsg());
-            return -1;
+            goto error_cleanup;
         }
 
         aeron_driver_sender_proxy_on_remove_destination(conductor->context->sender_proxy, endpoint, &destination_addr);
         aeron_driver_conductor_on_operation_succeeded(conductor, command->correlated.correlation_id);
 
+        aeron_uri_close(&uri_params);
         return 0;
+
+        error_cleanup:
+        aeron_uri_close(&uri_params);
+        return -1;
     }
 
     aeron_set_err(
@@ -2534,6 +2573,28 @@ int aeron_driver_conductor_on_client_close(
 
         client->time_of_last_keepalive_ms = 0;
         aeron_counter_set_ordered(client->heartbeat_status.value_addr, client->time_of_last_keepalive_ms);
+    }
+
+    return 0;
+}
+
+int aeron_driver_conductor_on_terminate_driver(
+    aeron_driver_conductor_t *conductor, aeron_terminate_driver_command_t *command)
+{
+    aeron_driver_context_t *ctx = conductor->context;
+    bool is_validated = false;
+
+    if (NULL != ctx->termination_validator_func)
+    {
+        uint8_t *token_buffer = (uint8_t *)command + sizeof(aeron_terminate_driver_command_t);
+
+        is_validated = ctx->termination_validator_func(
+            ctx->termination_validator_state, token_buffer, command->token_length);
+    }
+
+    if (NULL != ctx->termination_hook_func && is_validated)
+    {
+        ctx->termination_hook_func(ctx->termination_hook_state);
     }
 
     return 0;

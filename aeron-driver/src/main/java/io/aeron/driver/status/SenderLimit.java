@@ -20,7 +20,7 @@ import org.agrona.concurrent.status.CountersManager;
 import org.agrona.concurrent.status.UnsafeBufferPosition;
 
 /**
- * The position the Sender has reached for sending data to the media on a session-channel-stream tuple.
+ * The position the Sender can immediately send up-to on a session-channel-stream tuple.
  */
 public class SenderLimit
 {
@@ -42,7 +42,7 @@ public class SenderLimit
         final int streamId,
         final String channel)
     {
-        return StreamPositionCounter.allocate(
+        return StreamCounter.allocate(
             tempBuffer, NAME, SENDER_LIMIT_TYPE_ID, countersManager, registrationId, sessionId, streamId, channel);
     }
 }

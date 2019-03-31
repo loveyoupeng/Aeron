@@ -22,6 +22,7 @@ import org.agrona.MutableDirectBuffer;
 
 import java.net.InetAddress;
 
+import static io.aeron.protocol.HeaderFlyweight.flagsToChars;
 import static java.nio.ByteOrder.LITTLE_ENDIAN;
 import static org.agrona.BitUtil.SIZE_OF_INT;
 import static org.agrona.BitUtil.SIZE_OF_LONG;
@@ -31,7 +32,7 @@ import static org.agrona.BitUtil.SIZE_OF_LONG;
  * <p>
  * <b>Note:</b>The event consumer of the log should be single threaded.
  */
-public class EventDissector
+public class DriverEventDissector
 {
     private static final DataHeaderFlyweight DATA_HEADER = new DataHeaderFlyweight();
     private static final StatusMessageFlyweight SM_HEADER = new StatusMessageFlyweight();
@@ -52,9 +53,10 @@ public class EventDissector
     private static final OperationSucceededFlyweight OPERATION_SUCCEEDED = new OperationSucceededFlyweight();
     private static final SubscriptionReadyFlyweight SUBSCRIPTION_READY = new SubscriptionReadyFlyweight();
     private static final ClientTimeoutFlyweight CLIENT_TIMEOUT = new ClientTimeoutFlyweight();
+    private static final TerminateDriverFlyweight TERMINATE_DRIVER = new TerminateDriverFlyweight();
 
     public static void dissectAsFrame(
-        final EventCode code, final MutableDirectBuffer buffer, final int offset, final StringBuilder builder)
+        final DriverEventCode code, final MutableDirectBuffer buffer, final int offset, final StringBuilder builder)
     {
         int relativeOffset = dissectLogHeader(code, buffer, offset, builder);
 
@@ -99,14 +101,14 @@ public class EventDissector
                 break;
 
             default:
-                builder.append("FRAME_UNKNOWN");
+                builder.append("FRAME_UNKNOWN: ").append(frameType(buffer, frameOffset));
                 break;
         }
     }
 
     @SuppressWarnings("MethodLength")
     public static void dissectAsCommand(
-        final EventCode code, final MutableDirectBuffer buffer, final int offset, final StringBuilder builder)
+        final DriverEventCode code, final MutableDirectBuffer buffer, final int offset, final StringBuilder builder)
     {
         final int relativeOffset = dissectLogHeader(code, buffer, offset, builder);
 
@@ -207,14 +209,23 @@ public class EventDissector
                 dissect(clientTimeout, builder);
                 break;
 
+            case CMD_IN_TERMINATE_DRIVER:
+                final TerminateDriverFlyweight terminateDriver = TERMINATE_DRIVER;
+                terminateDriver.wrap(buffer, offset + relativeOffset);
+                dissect(terminateDriver, builder);
+                break;
+
             default:
-                builder.append("COMMAND_UNKNOWN");
+                builder.append("COMMAND_UNKNOWN: ").append(code);
                 break;
         }
     }
 
     public static void dissectAsInvocation(
-        final EventCode code, final MutableDirectBuffer buffer, final int initialOffset, final StringBuilder builder)
+        final DriverEventCode code,
+        final MutableDirectBuffer buffer,
+        final int initialOffset,
+        final StringBuilder builder)
     {
         final int relativeOffset = dissectLogHeader(code, buffer, initialOffset, builder);
         builder.append(": ");
@@ -223,11 +234,10 @@ public class EventDissector
     }
 
     public static void dissectAsString(
-        final EventCode code, final MutableDirectBuffer buffer, final int offset, final StringBuilder builder)
+        final DriverEventCode code, final MutableDirectBuffer buffer, final int offset, final StringBuilder builder)
     {
         final int relativeOffset = dissectLogHeader(code, buffer, offset, builder);
-        builder.append(": ");
-        builder.append(buffer.getStringUtf8(offset + relativeOffset, LITTLE_ENDIAN));
+        builder.append(": ").append(buffer.getStringUtf8(offset + relativeOffset, LITTLE_ENDIAN));
     }
 
     private static void readStackTraceElement(
@@ -260,7 +270,7 @@ public class EventDissector
     }
 
     private static int dissectLogHeader(
-        final EventCode code, final MutableDirectBuffer buffer, final int offset, final StringBuilder builder)
+        final DriverEventCode code, final MutableDirectBuffer buffer, final int offset, final StringBuilder builder)
     {
         int relativeOffset = 0;
 
@@ -303,10 +313,7 @@ public class EventDissector
 
         try
         {
-            builder
-                .append(InetAddress.getByAddress(addressBuffer).getHostAddress())
-                .append('.')
-                .append(port);
+            builder.append(InetAddress.getByAddress(addressBuffer).getHostAddress()).append('.').append(port);
         }
         catch (final Exception ex)
         {
@@ -321,7 +328,7 @@ public class EventDissector
         builder
             .append(msg.headerType() == HeaderFlyweight.HDR_TYPE_PAD ? "PAD" : "DATA")
             .append(' ')
-            .append(msg.flags())
+            .append(flagsToChars(msg.flags()))
             .append(" len ")
             .append(msg.frameLength())
             .append(' ')
@@ -338,7 +345,7 @@ public class EventDissector
     {
         builder
             .append("SM ")
-            .append(msg.flags())
+            .append(flagsToChars(msg.flags()))
             .append(" len ")
             .append(msg.frameLength())
             .append(' ')
@@ -359,7 +366,7 @@ public class EventDissector
     {
         builder
             .append("NAK ")
-            .append(msg.flags())
+            .append(flagsToChars(msg.flags()))
             .append(" len ")
             .append(msg.frameLength())
             .append(' ')
@@ -378,7 +385,7 @@ public class EventDissector
     {
         builder
             .append("SETUP ")
-            .append(msg.flags())
+            .append(flagsToChars(msg.flags()))
             .append(" len ")
             .append(msg.frameLength())
             .append(' ')
@@ -403,7 +410,7 @@ public class EventDissector
     {
         builder
             .append("RTT ")
-            .append(msg.flags())
+            .append(flagsToChars(msg.flags()))
             .append(" len ")
             .append(msg.frameLength())
             .append(' ')
@@ -556,10 +563,7 @@ public class EventDissector
 
     private static void dissect(final CounterUpdateFlyweight msg, final StringBuilder builder)
     {
-        builder
-            .append(msg.correlationId())
-            .append(' ')
-            .append(msg.counterId());
+        builder.append(msg.correlationId()).append(' ').append(msg.counterId());
     }
 
     private static void dissect(final OperationSucceededFlyweight msg, final StringBuilder builder)
@@ -569,15 +573,17 @@ public class EventDissector
 
     private static void dissect(final SubscriptionReadyFlyweight msg, final StringBuilder builder)
     {
-        builder
-            .append(msg.correlationId())
-            .append(' ')
-            .append(msg.channelStatusCounterId());
+        builder.append(msg.correlationId()).append(' ').append(msg.channelStatusCounterId());
     }
 
     private static void dissect(final ClientTimeoutFlyweight msg, final StringBuilder builder)
     {
         builder.append(msg.clientId());
+    }
+
+    private static void dissect(final TerminateDriverFlyweight msg, final StringBuilder builder)
+    {
+        builder.append(msg.clientId()).append(' ').append(msg.tokenBufferLength());
     }
 
     public static int frameType(final MutableDirectBuffer buffer, final int termOffset)

@@ -24,6 +24,7 @@ import io.aeron.protocol.DataHeaderFlyweight;
 import org.agrona.CloseHelper;
 import org.agrona.DirectBuffer;
 import org.agrona.IoUtil;
+import org.agrona.SystemUtil;
 import org.agrona.collections.MutableInteger;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.junit.After;
@@ -56,12 +57,15 @@ public class MultiDestinationSubscriptionTest
     private static final int MESSAGE_LENGTH =
         (TERM_BUFFER_LENGTH / NUM_MESSAGES_PER_TERM) - DataHeaderFlyweight.HEADER_LENGTH;
     private static final String ROOT_DIR =
-        IoUtil.tmpDirName() + "aeron-system-tests-" + UUID.randomUUID().toString() + File.separator;
+        SystemUtil.tmpDirName() + "aeron-system-tests-" + UUID.randomUUID().toString() + File.separator;
 
     private final MediaDriver.Context driverContextA = new MediaDriver.Context();
+    private final MediaDriver.Context driverContextB = new MediaDriver.Context();
 
     private Aeron clientA;
+    private Aeron clientB;
     private MediaDriver driverA;
+    private MediaDriver driverB;
     private Publication publicationA;
     private Publication publicationB;
     private Subscription subscription;
@@ -85,6 +89,20 @@ public class MultiDestinationSubscriptionTest
         clientA = Aeron.connect(new Aeron.Context().aeronDirectoryName(driverContextA.aeronDirectoryName()));
     }
 
+    private void launchSecond()
+    {
+        final String baseDirB = ROOT_DIR + "B";
+
+        driverContextB
+            .errorHandler(Throwable::printStackTrace)
+            .publicationTermBufferLength(TERM_BUFFER_LENGTH)
+            .aeronDirectoryName(baseDirB)
+            .threadingMode(ThreadingMode.SHARED);
+
+        driverB = MediaDriver.launch(driverContextB);
+        clientB = Aeron.connect(new Aeron.Context().aeronDirectoryName(driverContextB.aeronDirectoryName()));
+    }
+
     @After
     public void closeEverything()
     {
@@ -93,6 +111,8 @@ public class MultiDestinationSubscriptionTest
         CloseHelper.close(subscription);
         CloseHelper.close(clientA);
         CloseHelper.close(driverA);
+        CloseHelper.close(clientB);
+        CloseHelper.close(driverB);
 
         IoUtil.delete(new File(ROOT_DIR), true);
     }
@@ -330,6 +350,93 @@ public class MultiDestinationSubscriptionTest
 
             final MutableInteger fragmentsRead = new MutableInteger();
             pollForFragment(subscription, fragmentHandler, fragmentsRead);
+        }
+
+        assertThat(subscription.imageCount(), is(1));
+        verifyFragments(fragmentHandler, numMessagesToSend);
+    }
+
+    @Test(timeout = 10_000)
+    public void shouldMergeStreamsFromMultiplePublicationsWithSameParams()
+    {
+        final int numMessagesToSend = 30;
+        final int numMessagesToSendForA = numMessagesToSend / 2;
+        final int numMessagesToSendForB = numMessagesToSend / 2;
+
+        launch();
+        launchSecond();
+
+        final ChannelUriStringBuilder builder = new ChannelUriStringBuilder();
+
+        builder
+            .clear()
+            .media(CommonContext.UDP_MEDIA)
+            .endpoint(UNICAST_ENDPOINT_A);
+
+        final String publicationChannelA = builder.build();
+
+        builder
+            .clear()
+            .media(CommonContext.UDP_MEDIA)
+            .endpoint(UNICAST_ENDPOINT_B);
+
+        final String destinationB = builder.build();
+
+        subscription = clientA.addSubscription(SUB_URI, STREAM_ID);
+        subscription.addDestination(publicationChannelA);
+        subscription.addDestination(destinationB);
+
+        publicationA = clientA.addExclusivePublication(publicationChannelA, STREAM_ID);
+
+        builder
+            .clear()
+            .media(CommonContext.UDP_MEDIA)
+            .initialPosition(0L, publicationA.initialTermId(), publicationA.termBufferLength())
+            .sessionId(publicationA.sessionId())
+            .endpoint(UNICAST_ENDPOINT_B);
+
+        final String publicationChannelB = builder.build();
+
+        publicationB = clientB.addExclusivePublication(publicationChannelB, STREAM_ID);
+
+        for (int i = 0; i < numMessagesToSendForA; i++)
+        {
+            while (publicationA.offer(buffer, 0, buffer.capacity()) < 0L)
+            {
+                SystemTest.checkInterruptedStatus();
+                Thread.yield();
+            }
+
+            final MutableInteger fragmentsRead = new MutableInteger();
+            pollForFragment(subscription, fragmentHandler, fragmentsRead);
+
+            while (publicationB.offer(buffer, 0, buffer.capacity()) < 0L)
+            {
+                SystemTest.checkInterruptedStatus();
+                Thread.yield();
+            }
+
+            assertThat(subscription.poll(fragmentHandler, 10), is(0));
+        }
+
+        for (int i = 0; i < numMessagesToSendForB; i++)
+        {
+            while (publicationB.offer(buffer, 0, buffer.capacity()) < 0L)
+            {
+                SystemTest.checkInterruptedStatus();
+                Thread.yield();
+            }
+
+            final MutableInteger fragmentsRead = new MutableInteger();
+            pollForFragment(subscription, fragmentHandler, fragmentsRead);
+
+            while (publicationA.offer(buffer, 0, buffer.capacity()) < 0L)
+            {
+                SystemTest.checkInterruptedStatus();
+                Thread.yield();
+            }
+
+            assertThat(subscription.poll(fragmentHandler, 10), is(0));
         }
 
         assertThat(subscription.imageCount(), is(1));

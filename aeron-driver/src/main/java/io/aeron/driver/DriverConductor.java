@@ -18,13 +18,10 @@ package io.aeron.driver;
 import io.aeron.ChannelUri;
 import io.aeron.CommonContext;
 import io.aeron.driver.MediaDriver.Context;
+import io.aeron.driver.buffer.LogFactory;
 import io.aeron.driver.buffer.RawLog;
-import io.aeron.driver.buffer.RawLogFactory;
 import io.aeron.driver.exceptions.ControlProtocolException;
-import io.aeron.driver.media.ReceiveChannelEndpoint;
-import io.aeron.driver.media.ReceiveDestinationUdpTransport;
-import io.aeron.driver.media.SendChannelEndpoint;
-import io.aeron.driver.media.UdpChannel;
+import io.aeron.driver.media.*;
 import io.aeron.driver.status.*;
 import io.aeron.logbuffer.LogBufferDescriptor;
 import io.aeron.protocol.DataHeaderFlyweight;
@@ -44,11 +41,8 @@ import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 import static io.aeron.ErrorCode.*;
-import static io.aeron.driver.Configuration.*;
 import static io.aeron.driver.PublicationParams.*;
-import static io.aeron.driver.status.SystemCounterDescriptor.ERRORS;
-import static io.aeron.driver.status.SystemCounterDescriptor.FREE_FAILS;
-import static io.aeron.driver.status.SystemCounterDescriptor.UNBLOCKED_COMMANDS;
+import static io.aeron.driver.status.SystemCounterDescriptor.*;
 import static io.aeron.logbuffer.LogBufferDescriptor.*;
 import static io.aeron.protocol.DataHeaderFlyweight.createDefaultHeader;
 import static org.agrona.collections.ArrayListUtil.fastUnorderedRemove;
@@ -72,7 +66,7 @@ public class DriverConductor implements Agent
     private int nextSessionId = BitUtil.generateRandomisedId();
 
     private final Context ctx;
-    private final RawLogFactory rawLogFactory;
+    private final LogFactory logFactory;
     private final ReceiverProxy receiverProxy;
     private final SenderProxy senderProxy;
     private final ClientProxy clientProxy;
@@ -111,7 +105,7 @@ public class DriverConductor implements Agent
         driverCmdQueue = ctx.driverCommandQueue();
         receiverProxy = ctx.receiverProxy();
         senderProxy = ctx.senderProxy();
-        rawLogFactory = ctx.rawLogBuffersFactory();
+        logFactory = ctx.logFactory();
         epochClock = ctx.epochClock();
         nanoClock = ctx.nanoClock();
         cachedEpochClock = ctx.cachedEpochClock();
@@ -255,7 +249,7 @@ public class DriverConductor implements Agent
                 activeTermId,
                 initialTermOffset,
                 rawLog,
-                udpChannel.isMulticast() ? NAK_MULTICAST_DELAY_GENERATOR : NAK_UNICAST_DELAY_GENERATOR,
+                udpChannel.isMulticast() ? ctx.multicastFeedbackDelayGenerator() : ctx.unicastFeedbackDelayGenerator(),
                 positionArray(subscriberPositions),
                 ReceiverHwm.allocate(tempBuffer, countersManager, registrationId, sessionId, streamId, channel),
                 ReceiverPos.allocate(tempBuffer, countersManager, registrationId, sessionId, streamId, channel),
@@ -294,6 +288,12 @@ public class DriverConductor implements Agent
     {
         final String errorMessage = error.getClass().getSimpleName() + " : " + error.getMessage();
         clientProxy.onError(statusIndicatorId, CHANNEL_ENDPOINT_ERROR, errorMessage);
+    }
+
+    void closeChannelEndpoints()
+    {
+        receiveChannelEndpointByChannelMap.values().forEach(UdpChannelTransport::close);
+        sendChannelEndpointByChannelMap.values().forEach(UdpChannelTransport::close);
     }
 
     SendChannelEndpoint senderChannelEndpoint(final UdpChannel channel)
@@ -908,6 +908,14 @@ public class DriverConductor implements Agent
         clientProxy.operationSucceeded(correlationId);
     }
 
+    void onTerminateDriver(final DirectBuffer tokenBuffer, final int tokenOffset, final int tokenLength)
+    {
+        if (ctx.terminationValidator().allowTermination(ctx.aeronDirectory(), tokenBuffer, tokenOffset, tokenLength))
+        {
+            ctx.terminationHook().run();
+        }
+    }
+
     private void heartbeatAndCheckTimers(final long nowNs)
     {
         final long nowMs = cachedEpochClock.time();
@@ -1012,6 +1020,8 @@ public class DriverConductor implements Agent
             tempBuffer, countersManager, registrationId, sessionId, streamId, channel);
         final UnsafeBufferPosition senderLimit = SenderLimit.allocate(
             tempBuffer, countersManager, registrationId, sessionId, streamId, channel);
+        final AtomicCounter senderBpe = SenderBpe.allocate(
+            tempBuffer, countersManager, registrationId, sessionId, streamId, channel);
 
         if (params.isReplay)
         {
@@ -1025,9 +1035,9 @@ public class DriverConductor implements Agent
 
         final RetransmitHandler retransmitHandler = new RetransmitHandler(
             cachedNanoClock,
-            ctx.systemCounters(),
-            RETRANSMIT_UNICAST_DELAY_GENERATOR,
-            RETRANSMIT_UNICAST_LINGER_GENERATOR);
+            ctx.systemCounters().get(INVALID_PACKETS),
+            ctx.retransmitUnicastDelayGenerator(),
+            ctx.retransmitUnicastLingerGenerator());
 
         final FlowControl flowControl = udpChannel.isMulticast() || udpChannel.hasExplicitControl() ?
             ctx.multicastFlowControlSupplier().newInstance(udpChannel, streamId, registrationId) :
@@ -1039,10 +1049,12 @@ public class DriverConductor implements Agent
             channelEndpoint,
             cachedNanoClock,
             newNetworkPublicationLog(sessionId, streamId, initialTermId, udpChannel, registrationId, params),
+            Configuration.producerWindowLength(params.termLength, ctx.publicationTermWindowLength()),
             publisherPosition,
             publisherLimit,
             senderPosition,
             senderLimit,
+            senderBpe,
             sessionId,
             streamId,
             initialTermId,
@@ -1074,7 +1086,7 @@ public class DriverConductor implements Agent
         final long registrationId,
         final PublicationParams params)
     {
-        final RawLog rawLog = rawLogFactory.newNetworkPublication(
+        final RawLog rawLog = logFactory.newNetworkPublication(
             udpChannel.canonicalForm(), sessionId, streamId, registrationId, params.termLength, params.isSparse);
 
         initPublicationMetadata(sessionId, streamId, initialTermId, registrationId, params, rawLog);
@@ -1089,7 +1101,7 @@ public class DriverConductor implements Agent
         final long registrationId,
         final PublicationParams params)
     {
-        final RawLog rawLog = rawLogFactory.newIpcPublication(
+        final RawLog rawLog = logFactory.newIpcPublication(
             sessionId, streamId, registrationId, params.termLength, params.isSparse);
 
         initPublicationMetadata(sessionId, streamId, initialTermId, registrationId, params, rawLog);
@@ -1160,7 +1172,7 @@ public class DriverConductor implements Agent
         final UdpChannel udpChannel,
         final long correlationId)
     {
-        final RawLog rawLog = rawLogFactory.newNetworkedImage(
+        final RawLog rawLog = logFactory.newNetworkedImage(
             udpChannel.canonicalForm(), sessionId, streamId, correlationId, termBufferLength, isSparse);
 
         final UnsafeBuffer logMetaData = rawLog.metaData();
@@ -1448,6 +1460,7 @@ public class DriverConductor implements Agent
             publisherPosition,
             publisherLimit,
             rawLog,
+            Configuration.producerWindowLength(params.termLength, ctx.ipcPublicationTermWindowLength()),
             publicationUnblockTimeoutNs,
             params.lingerTimeoutNs,
             cachedNanoClock.nanoTime(),

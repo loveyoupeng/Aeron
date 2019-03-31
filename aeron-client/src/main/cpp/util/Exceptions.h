@@ -23,11 +23,16 @@
 
 namespace aeron { namespace util {
 
+#ifdef _MSC_VER
+#define AERON_PATH_SEP '\\'
+#else
+#define AERON_PATH_SEP '/'
+#endif
 
 static constexpr const char* past_prefix(const char * const prefix, const char * const filename)
 {
     return *prefix == *filename ?
-        past_prefix(prefix + 1, filename + 1) : *filename == '/' ? filename + 1 : filename;
+        past_prefix(prefix + 1, filename + 1) : *filename == AERON_PATH_SEP ? filename + 1 : filename;
 }
 
 #ifdef __PROJECT_SOURCE_DIR__
@@ -119,6 +124,20 @@ public:
     std::int32_t errorCode() const
     {
         return m_errorCode;
+    }
+};
+
+class TimeoutException : public AeronException
+{
+public:
+    TimeoutException(
+        const std::string& what,
+        const std::string& function,
+        const std::string& file,
+        const int line)
+        :
+        AeronException(what, function, file, line)
+    {
     }
 };
 

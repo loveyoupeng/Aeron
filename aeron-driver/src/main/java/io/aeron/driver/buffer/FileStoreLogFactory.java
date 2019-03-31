@@ -25,17 +25,17 @@ import java.io.IOException;
 import java.nio.file.*;
 
 import static io.aeron.CommonContext.IPC_MEDIA;
-import static io.aeron.driver.Configuration.LOW_FILE_STORE_WARNING_THRESHOLD;
 import static io.aeron.logbuffer.LogBufferDescriptor.TERM_MAX_LENGTH;
 
 /**
  * Factory for creating {@link RawLog}s in the source publications or publication images directories as appropriate.
  */
-public class RawLogFactory
+public class FileStoreLogFactory implements LogFactory
 {
     private static final String PUBLICATIONS = "publications";
     private static final String IMAGES = "images";
 
+    private final long lowStorageWarningThreshold;
     private final int filePageSize;
     private final boolean checkStorage;
     private final ErrorHandler errorHandler;
@@ -43,13 +43,15 @@ public class RawLogFactory
     private final File imagesDir;
     private final FileStore fileStore;
 
-    public RawLogFactory(
+    public FileStoreLogFactory(
         final String dataDirectoryName,
         final int filePageSize,
         final boolean checkStorage,
+        final long lowStorageWarningThreshold,
         final ErrorHandler errorHandler)
     {
         this.filePageSize = filePageSize;
+        this.lowStorageWarningThreshold = lowStorageWarningThreshold;
         this.checkStorage = checkStorage;
         this.errorHandler = errorHandler;
 
@@ -153,11 +155,7 @@ public class RawLogFactory
         final boolean useSparseFiles)
     {
         validateTermBufferLength(termBufferLength);
-
-        if (checkStorage)
-        {
-            checkStorage(termBufferLength);
-        }
+        checkStorage(termBufferLength);
 
         final File location = streamLocation(rootDir, channel, sessionId, streamId, correlationId);
 
@@ -166,19 +164,22 @@ public class RawLogFactory
 
     private void checkStorage(final int termBufferLength)
     {
-        final long usableSpace = getUsableSpace();
-        final long logLength = LogBufferDescriptor.computeLogLength(termBufferLength, filePageSize);
-
-        if (usableSpace <= LOW_FILE_STORE_WARNING_THRESHOLD)
+        if (checkStorage)
         {
-            System.out.format("Warning: space is running low in %s threshold=%,d usable=%,d%n",
-                fileStore, LOW_FILE_STORE_WARNING_THRESHOLD, usableSpace);
-        }
+            final long usableSpace = getUsableSpace();
+            final long logLength = LogBufferDescriptor.computeLogLength(termBufferLength, filePageSize);
 
-        if (usableSpace < logLength)
-        {
-            throw new IllegalStateException(
-                "Insufficient usable storage for new log of length=" + logLength + " in " + fileStore);
+            if (usableSpace <= lowStorageWarningThreshold)
+            {
+                System.out.format("Warning: space is running low in %s threshold=%,d usable=%,d%n",
+                    fileStore, lowStorageWarningThreshold, usableSpace);
+            }
+
+            if (usableSpace < logLength)
+            {
+                throw new IllegalStateException(
+                    "Insufficient usable storage for new log of length=" + logLength + " in " + fileStore);
+            }
         }
     }
 

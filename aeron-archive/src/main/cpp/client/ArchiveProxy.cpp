@@ -14,77 +14,334 @@
  * limitations under the License.
  */
 
+#include "ArchiveException.h"
+#include "ArchiveConfiguration.h"
 #include "ArchiveProxy.h"
 #include "concurrent/YieldingIdleStrategy.h"
 #include "aeron_archive_client/ConnectRequest.h"
+#include "aeron_archive_client/CloseSessionRequest.h"
+#include "aeron_archive_client/StartRecordingRequest.h"
+#include "aeron_archive_client/ExtendRecordingRequest.h"
+#include "aeron_archive_client/StopRecordingRequest.h"
+#include "aeron_archive_client/StopRecordingSubscriptionRequest.h"
+#include "aeron_archive_client/ReplayRequest.h"
+#include "aeron_archive_client/StopReplayRequest.h"
+#include "aeron_archive_client/ListRecordingsRequest.h"
+#include "aeron_archive_client/ListRecordingsForUriRequest.h"
+#include "aeron_archive_client/ListRecordingRequest.h"
+#include "aeron_archive_client/RecordingPositionRequest.h"
+#include "aeron_archive_client/StopPositionRequest.h"
+#include "aeron_archive_client/FindLastMatchingRecordingRequest.h"
+#include "aeron_archive_client/TruncateRecordingRequest.h"
+#include "aeron_archive_client/ListRecordingSubscriptionsRequest.h"
 
+using namespace aeron;
 using namespace aeron::concurrent;
 using namespace aeron::archive::client;
 
-bool ArchiveProxy::connect(
-    const std::string& responseChannel,
-    std::int32_t responseStreamId,
-    std::int64_t correlationId,
-    std::shared_ptr<Aeron> aeron)
+template<typename Codec>
+inline static Codec& wrapAndApplyHeader(Codec& codec, AtomicBuffer& buffer)
 {
-    const std::size_t length = ConnectRequest::sbeBlockLength()
-        + ConnectRequest::responseChannelHeaderLength()
-        + responseChannel.size();
-
-    BufferClaim bufferClaim;
-
-    if (tryClaimWithTimeout(static_cast<std::int32_t>(length), bufferClaim, std::move(aeron)))
-    {
-        ConnectRequest connectRequest;
-
-        connectRequest
-            .wrapAndApplyHeader(reinterpret_cast<char *>(bufferClaim.buffer().buffer()), 0, length)
-            .correlationId(correlationId)
-            .responseStreamId(responseStreamId)
-            .version(0x0)
-            .putResponseChannel(responseChannel);
-
-        bufferClaim.commit();
-        return true;
-    }
-
-    return false;
+    return codec.wrapAndApplyHeader(buffer.sbeData(), 0, static_cast<std::uint64_t>(buffer.capacity()));
 }
 
-bool ArchiveProxy::tryClaimWithTimeout(
-    std::int32_t length, BufferClaim& bufferClaim, std::shared_ptr<Aeron> aeron)
+template<typename Codec>
+inline static util::index_t messageAndHeaderLength(Codec& codec)
 {
-    YieldingIdleStrategy idleStrategy;
+    return static_cast<util::index_t>(MessageHeader::encodedLength() + codec.encodedLength());
+}
 
-    const std::int64_t deadlineNs = m_nanoClock() + m_messageTimeoutNs;
-    while (true)
-    {
-        const std::int64_t result = m_publication->tryClaim(length, bufferClaim);
-        if (result > 0)
-        {
-            return true;
-        }
+util::index_t ArchiveProxy::connectRequest(
+    AtomicBuffer& buffer,
+    const std::string& responseChannel,
+    std::int32_t responseStreamId,
+    std::int64_t correlationId)
+{
+    ConnectRequest request;
 
-        if (result == PUBLICATION_CLOSED)
-        {
-            throw util::IllegalArgumentException("connection to the archive has been closed", SOURCEINFO);
-        }
+    wrapAndApplyHeader(request, buffer)
+        .correlationId(correlationId)
+        .responseStreamId(responseStreamId)
+        .version(Configuration::ARCHIVE_SEMANTIC_VERSION)
+        .putResponseChannel(responseChannel);
 
-        if (result == MAX_POSITION_EXCEEDED)
-        {
-            throw util::IllegalArgumentException("offer failed due to max position being reached", SOURCEINFO);
-        }
+    return messageAndHeaderLength(request);
+}
 
-        if (deadlineNs - m_nanoClock() < 0)
-        {
-            return false;
-        }
+util::index_t ArchiveProxy::closeSession(AtomicBuffer& buffer, std::int64_t controlSessionId)
+{
+    CloseSessionRequest request;
 
-        if (aeron->usesAgentInvoker())
-        {
-            aeron->conductorAgentInvoker().invoke();
-        }
+    wrapAndApplyHeader(request, buffer)
+        .controlSessionId(controlSessionId);
 
-        idleStrategy.idle();
-    }
+    return messageAndHeaderLength(request);
+}
+
+util::index_t ArchiveProxy::startRecording(
+    AtomicBuffer& buffer,
+    const std::string& channel,
+    std::int32_t streamId,
+    bool localSource,
+    std::int64_t correlationId,
+    std::int64_t controlSessionId)
+{
+    StartRecordingRequest request;
+
+    wrapAndApplyHeader(request, buffer)
+        .controlSessionId(controlSessionId)
+        .correlationId(correlationId)
+        .streamId(streamId)
+        .sourceLocation(localSource ? SourceLocation::LOCAL : SourceLocation::REMOTE)
+        .putChannel(channel);
+
+    return messageAndHeaderLength(request);
+}
+
+util::index_t ArchiveProxy::extendRecording(
+    AtomicBuffer& buffer,
+    const std::string& channel,
+    std::int32_t streamId,
+    bool localSource,
+    std::int64_t recordingId,
+    std::int64_t correlationId,
+    std::int64_t controlSessionId)
+{
+    ExtendRecordingRequest request;
+
+    wrapAndApplyHeader(request, buffer)
+        .controlSessionId(controlSessionId)
+        .correlationId(correlationId)
+        .recordingId(recordingId)
+        .streamId(streamId)
+        .sourceLocation(localSource ? SourceLocation::LOCAL : SourceLocation::REMOTE)
+        .putChannel(channel);
+
+    return messageAndHeaderLength(request);
+}
+
+util::index_t ArchiveProxy::stopRecording(
+    AtomicBuffer& buffer,
+    const std::string& channel,
+    std::int32_t streamId,
+    std::int64_t correlationId,
+    std::int64_t controlSessionId)
+{
+    StopRecordingRequest request;
+
+    wrapAndApplyHeader(request, buffer)
+        .controlSessionId(controlSessionId)
+        .correlationId(correlationId)
+        .streamId(streamId)
+        .putChannel(channel);
+
+    return messageAndHeaderLength(request);
+}
+
+util::index_t ArchiveProxy::stopRecording(
+    AtomicBuffer& buffer,
+    std::int64_t subscriptionId,
+    std::int64_t correlationId,
+    std::int64_t controlSessionId)
+{
+    StopRecordingSubscriptionRequest request;
+
+    wrapAndApplyHeader(request, buffer)
+        .controlSessionId(controlSessionId)
+        .correlationId(correlationId)
+        .subscriptionId(subscriptionId);
+
+    return messageAndHeaderLength(request);
+}
+
+util::index_t ArchiveProxy::replay(
+    AtomicBuffer& buffer,
+    std::int64_t recordingId,
+    std::int64_t position,
+    std::int64_t length,
+    const std::string& replayChannel,
+    std::int32_t replayStreamId,
+    std::int64_t correlationId,
+    std::int64_t controlSessionId)
+{
+    ReplayRequest request;
+
+    wrapAndApplyHeader(request, buffer)
+        .controlSessionId(controlSessionId)
+        .correlationId(correlationId)
+        .recordingId(recordingId)
+        .position(position)
+        .length(length)
+        .replayStreamId(replayStreamId)
+        .putReplayChannel(replayChannel);
+
+    return messageAndHeaderLength(request);
+}
+
+util::index_t ArchiveProxy::stopReplay(
+    AtomicBuffer& buffer,
+    std::int64_t replaySessionId,
+    std::int64_t correlationId,
+    std::int64_t controlSessionId)
+{
+    StopReplayRequest request;
+
+    wrapAndApplyHeader(request, buffer)
+        .controlSessionId(controlSessionId)
+        .correlationId(correlationId)
+        .replaySessionId(replaySessionId);
+
+    return messageAndHeaderLength(request);
+}
+
+util::index_t ArchiveProxy::listRecordings(
+    AtomicBuffer& buffer,
+    std::int64_t fromRecordingId,
+    std::int32_t recordCount,
+    std::int64_t correlationId,
+    std::int64_t controlSessionId)
+{
+    ListRecordingsRequest request;
+
+    wrapAndApplyHeader(request, buffer)
+        .controlSessionId(controlSessionId)
+        .correlationId(correlationId)
+        .fromRecordingId(fromRecordingId)
+        .recordCount(recordCount);
+
+    return messageAndHeaderLength(request);
+}
+
+util::index_t ArchiveProxy::listRecordingsForUri(
+    AtomicBuffer& buffer,
+    std::int64_t fromRecordingId,
+    std::int32_t recordCount,
+    const std::string& channelFragment,
+    std::int32_t streamId,
+    std::int64_t correlationId,
+    std::int64_t controlSessionId)
+{
+    ListRecordingsForUriRequest request;
+
+    wrapAndApplyHeader(request, buffer)
+        .controlSessionId(controlSessionId)
+        .correlationId(correlationId)
+        .fromRecordingId(fromRecordingId)
+        .recordCount(recordCount)
+        .streamId(streamId)
+        .putChannel(channelFragment);
+
+    return messageAndHeaderLength(request);
+}
+
+util::index_t ArchiveProxy::listRecording(
+    AtomicBuffer& buffer,
+    std::int64_t recordingId,
+    std::int64_t correlationId,
+    std::int64_t controlSessionId)
+{
+    ListRecordingRequest request;
+
+    wrapAndApplyHeader(request, buffer)
+        .controlSessionId(controlSessionId)
+        .correlationId(correlationId)
+        .recordingId(recordingId);
+
+    return messageAndHeaderLength(request);
+}
+
+util::index_t ArchiveProxy::getRecordingPosition(
+    AtomicBuffer& buffer,
+    std::int64_t recordingId,
+    std::int64_t correlationId,
+    std::int64_t controlSessionId)
+{
+    RecordingPositionRequest request;
+
+    wrapAndApplyHeader(request, buffer)
+        .controlSessionId(controlSessionId)
+        .correlationId(correlationId)
+        .recordingId(recordingId);
+
+    return messageAndHeaderLength(request);
+}
+
+util::index_t ArchiveProxy::getStopPosition(
+    AtomicBuffer& buffer,
+    std::int64_t recordingId,
+    std::int64_t correlationId,
+    std::int64_t controlSessionId)
+{
+    StopPositionRequest request;
+
+    wrapAndApplyHeader(request, buffer)
+        .controlSessionId(controlSessionId)
+        .correlationId(correlationId)
+        .recordingId(recordingId);
+
+    return messageAndHeaderLength(request);
+}
+
+util::index_t ArchiveProxy::findLastMatchingRecording(
+    AtomicBuffer& buffer,
+    std::int64_t minRecordingId,
+    const std::string& channelFragment,
+    std::int32_t streamId,
+    std::int32_t sessionId,
+    std::int64_t correlationId,
+    std::int64_t controlSessionId)
+{
+    FindLastMatchingRecordingRequest request;
+
+    wrapAndApplyHeader(request, buffer)
+        .controlSessionId(controlSessionId)
+        .correlationId(correlationId)
+        .minRecordingId(minRecordingId)
+        .sessionId(sessionId)
+        .streamId(streamId)
+        .putChannel(channelFragment);
+
+    return messageAndHeaderLength(request);
+}
+
+util::index_t ArchiveProxy::truncateRecording(
+    AtomicBuffer& buffer,
+    std::int64_t recordingId,
+    std::int64_t position,
+    std::int64_t correlationId,
+    std::int64_t controlSessionId)
+{
+    TruncateRecordingRequest request;
+
+    wrapAndApplyHeader(request, buffer)
+        .controlSessionId(controlSessionId)
+        .correlationId(correlationId)
+        .recordingId(recordingId)
+        .position(position);
+
+    return messageAndHeaderLength(request);
+}
+
+util::index_t ArchiveProxy::listRecordingSubscriptions(
+    AtomicBuffer& buffer,
+    std::int32_t pseudoIndex,
+    std::int32_t subscriptionCount,
+    const std::string& channelFragment,
+    std::int32_t streamId,
+    bool applyStreamId,
+    std::int64_t correlationId,
+    std::int64_t controlSessionId)
+{
+    ListRecordingSubscriptionsRequest request;
+
+    wrapAndApplyHeader(request, buffer)
+        .controlSessionId(controlSessionId)
+        .correlationId(correlationId)
+        .pseudoIndex(pseudoIndex)
+        .subscriptionCount(subscriptionCount)
+        .applyStreamId(applyStreamId ? BooleanType::Value::TRUE : BooleanType::Value::FALSE)
+        .streamId(streamId)
+        .putChannel(channelFragment);
+
+    return messageAndHeaderLength(request);
 }

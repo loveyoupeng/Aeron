@@ -45,17 +45,22 @@ public class ArchivingMediaDriver implements AutoCloseable
     {
         loadPropertiesFiles(args);
 
-        try (ArchivingMediaDriver ignore = launch())
+        final ShutdownSignalBarrier barrier = new ShutdownSignalBarrier();
+        final MediaDriver.Context ctx = new MediaDriver.Context();
+
+        ctx.terminationHook(barrier::signal);
+
+        try (ArchivingMediaDriver ignore = launch(ctx, new Archive.Context()))
         {
-            new ShutdownSignalBarrier().await();
+            barrier.await();
 
             System.out.println("Shutdown Archive...");
         }
     }
 
     /**
-     * Launch a new {@link ArchivingMediaDriver} with defaults for {@link MediaDriver.Context} and
-     * {@link Archive.Context}.
+     * Launch a new {@link ArchivingMediaDriver} with defaults for {@link io.aeron.driver.MediaDriver.Context} and
+     * {@link io.aeron.archive.Archive.Context}.
      *
      * @return a new {@link ArchivingMediaDriver} with default contexts.
      */

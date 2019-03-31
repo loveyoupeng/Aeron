@@ -3,7 +3,7 @@ Aeron
 
 [![Gitter](https://img.shields.io/gitter/room/gitterHQ/gitter.svg)](https://gitter.im/real-logic/Aeron?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge&utm_content=badge) To chat with other Aeron users and the contributors.
 
-[![Javadocs](http://www.javadoc.io/badge/io.aeron/aeron-all.svg)](http://www.javadoc.io/doc/io.aeron/aeron-all)
+[![Javadocs](https://www.javadoc.io/badge/io.aeron/aeron-all.svg)](https://www.javadoc.io/doc/io.aeron/aeron-all)
 [![Build Status](https://travis-ci.org/real-logic/aeron.svg?branch=master)](https://travis-ci.org/real-logic/aeron)
 [![GitHub](https://img.shields.io/github/license/real-logic/Aeron.svg)](https://github.com/real-logic/aeron/blob/master/LICENSE)
 [![Code Quality: Java](https://img.shields.io/lgtm/grade/java/g/real-logic/aeron.svg?logo=lgtm&logoWidth=18)](https://lgtm.com/projects/g/real-logic/aeron/context:java)
@@ -64,8 +64,7 @@ The project is built with [Gradle](http://gradle.org/) using this
 
 You require the following to build Aeron:
 
-* Latest stable [Oracle JDK 8](http://www.oracle.com/technetwork/java/), Java versions before 1.8.0_65 are very buggy
-   and can cause tests to fail.
+* Latest stable [JDK 8](http://www.oracle.com/technetwork/java/), Java versions before 1.8.0_65 are very buggy and can cause tests to fail.
 
 You must first build and install [Agrona](https://github.com/real-logic/agrona) and
 [Simple Binary Encoding (SBE)](https://github.com/real-logic/simple-binary-encoding) into the local maven repository 
@@ -99,7 +98,8 @@ You require the following to build the C++ API for Aeron:
 ```
 
 __Note__: Aeron is supported on Linux, Mac, and Windows. Windows builds require Visual Studio and are being developed
-with Visual Studio 2013 and 2015 with 64-bit builds only. Cygwin, MSys, etc. may work, but are not maintained at this time.
+with Visual Studio 2017 with 64-bit builds only. Cygwin, MSys, etc. may work, but are not maintained at this time.
+Windows builds require 7z to unzip the zlib source archive.
 
 For convenience, a script is provided that does a full clean, build, and test of all targets as a Release build.
 
@@ -122,7 +122,7 @@ If you are comfortable with using CMake, then a full clean, build, and test look
 By default, the C Media Driver is built as part of the C++ Build. However, it can be disabled via the CMake
 option `BUILD_AERON_DRIVER` being set to `OFF`.
 
-__Note__: C Media Driver is currently only supported on Mac and Linux (Windows version is available as a proof-of-concept).
+__Note__: C Media Driver is currently only supported on Mac and Linux (Windows version is experimental).
 
 For dependencies and other information, see the
 [README](https://github.com/real-logic/aeron/blob/master/aeron-driver/src/main/c/README.md).

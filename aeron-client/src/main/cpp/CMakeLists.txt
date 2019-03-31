@@ -22,6 +22,7 @@ SET(SOURCE
     Aeron.cpp
     LogBuffers.cpp
     Counter.cpp
+    Context.cpp
     util/MemoryMappedFile.cpp
     util/CommandOption.cpp
     util/CommandOptionParser.cpp)
@@ -42,6 +43,8 @@ SET(HEADERS
     ControlledFragmentAssembler.h
     ExclusivePublication.h
     Counter.h
+    ChannelUri.h
+    ChannelUriStringBuilder.h
     command/ImageMessageFlyweight.h
     command/ImageBuffersReadyFlyweight.h
     command/ControlProtocolEvents.h
@@ -58,6 +61,7 @@ SET(HEADERS
     command/CounterMessageFlyweight.h
     command/CounterUpdateFlyweight.h
     command/ClientTimeoutFlyweight.h
+    command/TerminateDriverFlyweight.h
     concurrent/AgentRunner.h
     concurrent/AgentInvoker.h
     concurrent/Atomic64.h
@@ -69,6 +73,7 @@ SET(HEADERS
     concurrent/NoOpIdleStrategy.h
     concurrent/SleepingIdleStrategy.h
     concurrent/YieldingIdleStrategy.h
+    concurrent/BackOffIdleStrategy.h
     concurrent/atomic/Atomic64_gcc_cpp11.h
     concurrent/atomic/Atomic64_gcc_x86_64.h
     concurrent/atomic/Atomic64_msvc.h
@@ -93,7 +98,6 @@ SET(HEADERS
     concurrent/logbuffer/TermReader.h
     concurrent/logbuffer/TermScanner.h
     concurrent/logbuffer/ExclusiveTermAppender.h
-    concurrent/logbuffer/ExclusiveBufferClaim.h
     concurrent/ringbuffer/ManyToOneRingBuffer.h
     concurrent/ringbuffer/RecordDescriptor.h
     concurrent/ringbuffer/RingBufferDescriptor.h
@@ -102,6 +106,8 @@ SET(HEADERS
     concurrent/status/Position.h
     concurrent/status/UnsafeBufferPosition.h
     concurrent/status/StatusIndicatorReader.h
+    concurrent/reports/LossReportDescriptor.h
+    concurrent/reports/LossReportReader.h
     protocol/HeaderFlyweight.h
     protocol/NakFlyweight.h
     protocol/StatusMessageFlyweight.h
@@ -119,8 +125,6 @@ SET(HEADERS
     protocol/SetupFlyweight.h
     protocol/DataHeaderFlyweight.h)
 
-set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -DDISABLE_BOUNDS_CHECKS")
-
 # static library
 add_library(aeron_client STATIC ${SOURCE} ${HEADERS})
 
@@ -128,9 +132,17 @@ target_include_directories(aeron_client
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
-# relative file paths for use in exceptions
+if (MSVC)
+    string(REPLACE "/" "\\\\" NATIVE_PROJECT_SOURCE_DIR "${PROJECT_SOURCE_DIR}")
+    string(TOLOWER "${NATIVE_PROJECT_SOURCE_DIR}" NATIVE_PROJECT_SOURCE_DIR)
+else()
+    set(NATIVE_PROJECT_SOURCE_DIR "${PROJECT_SOURCE_DIR}")
+endif()
+
 target_compile_definitions(aeron_client
-    PUBLIC "__PROJECT_SOURCE_DIR__=\"${PROJECT_SOURCE_DIR}\""
+    PUBLIC $<$<NOT:$<CONFIG:Debug>>:DISABLE_BOUNDS_CHECKS>
+    # relative file paths for use in exceptions
+    PUBLIC "__PROJECT_SOURCE_DIR__=\"${NATIVE_PROJECT_SOURCE_DIR}\""
 )
 
 if (NOT WIN32)

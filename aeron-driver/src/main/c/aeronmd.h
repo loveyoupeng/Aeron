@@ -38,12 +38,17 @@ typedef struct aeron_driver_stct aeron_driver_t;
 #define AERON_DIR_ENV_VAR "AERON_DIR"
 
 /**
+ * Warn if the top level Aeron directory exists when starting the driver.
+ */
+#define AERON_DIR_WARN_IF_EXISTS_ENV_VAR "AERON_DIR_WARN_IF_EXISTS"
+
+/**
  * Threading Mode to be used by the driver.
  */
 #define AERON_THREADING_MODE_ENV_VAR "AERON_THREADING_MODE"
 
 /**
- * Attempt to delete directories on start if they exist
+ * Attempt to delete directories on start if they exist.
  */
 #define AERON_DIR_DELETE_ON_START_ENV_VAR "AERON_DIR_DELETE_ON_START"
 
@@ -103,12 +108,12 @@ typedef struct aeron_driver_stct aeron_driver_t;
 #define AERON_FILE_PAGE_SIZE_ENV_VAR "AERON_FILE_PAGE_SIZE"
 
 /**
- * Length (in bytes) of the maximum transmission unit of the publication
+ * Length (in bytes) of the maximum transmission unit of the publication.
  */
 #define AERON_MTU_LENGTH_ENV_VAR "AERON_MTU_LENGTH"
 
 /**
- * Length (in bytes) of the maximum transmission unit of the IPC publication
+ * Length (in bytes) of the maximum transmission unit of the IPC publication.
  */
 #define AERON_IPC_MTU_LENGTH_ENV_VAR "AERON_IPC_MTU_LENGTH"
 
@@ -223,6 +228,31 @@ typedef struct aeron_driver_stct aeron_driver_t;
 #define AERON_SHARED_IDLE_STRATEGY_ENV_VAR "AERON_SHARED_IDLE_STRATEGY"
 
 /**
+ * Idle strategy init args to be employed by Sender for DEDICATED Threading Mode.
+ */
+#define AERON_SENDER_IDLE_STRATEGY_INIT_ARGS_ENV_VAR "AERON_SENDER_IDLE_STRATEGY_INIT_ARGS"
+
+/**
+ * Idle strategy init args to be employed by Conductor for DEDICATED or SHARED_NETWORK Threading Mode.
+ */
+#define AERON_CONDUCTOR_IDLE_STRATEGY_INIT_ARGS_ENV_VAR "AERON_CONDUCTOR_IDLE_STRATEGY_INIT_ARGS"
+
+/**
+ * Idle strategy init args to be employed by Receiver for DEDICATED Threading Mode.
+ */
+#define AERON_RECEIVER_IDLE_STRATEGY_INIT_ARGS_ENV_VAR "AERON_RECEIVER_IDLE_STRATEGY_INIT_ARGS"
+
+/**
+ * Idle strategy init args to be employed by Sender and Receiver for SHARED_NETWORK Threading Mode.
+ */
+#define AERON_SHAREDNETWORK_IDLE_STRATEGY_INIT_ARGS_ENV_VAR "AERON_SHAREDNETWORK_IDLE_STRATEGY_INIT_ARGS"
+
+/**
+ * Idle strategy init args to be employed by Conductor, Sender, and Receiver for SHARED Threading Mode.
+ */
+#define AERON_SHARED_IDLE_STRATEGY_ENV_INIT_ARGS_VAR "AERON_SHARED_IDLE_STRATEGY_INIT_ARGS"
+
+/**
  * Function name to call on start of each agent.
  */
 #define AERON_AGENT_ON_START_FUNCTION_ENV_VAR "AERON_AGENT_ON_START_FUNCTION"
@@ -231,6 +261,16 @@ typedef struct aeron_driver_stct aeron_driver_t;
  * Timeout for freed counters before they can be reused.
  */
 #define AERON_COUNTERS_FREE_TO_REUSE_TIMEOUT_ENV_VAR "AERON_COUNTERS_FREE_TO_REUSE_TIMEOUT"
+
+/**
+ * Timeout for a receiver to be tracked.
+ */
+#define AERON_MIN_MULTICAST_FLOW_CONTROL_RECEIVER_TIMEOUT_ENV_VAR "AERON_MIN_MULTICAST_FLOW_CONTROL_RECEIVER_TIMEOUT"
+
+/**
+ * Function name to call for termination validation.
+ */
+#define AERON_DRIVER_TERMINATION_VALIDATOR_ENV_VAR "AERON_DRIVER_TERMINATION_VALIDATOR"
 
 #define AERON_IPC_CHANNEL "aeron:ipc"
 #define AERON_IPC_CHANNEL_LEN strlen(AERON_IPC_CHANNEL)
@@ -257,7 +297,7 @@ int aeron_driver_context_close(aeron_driver_context_t *context);
  *
  * The given aeron_driver_context_t struct will be used exclusively by the driver. Do not reuse between drivers.
  *
- * @param driver to create and initialize.
+ * @param driver  to create and initialize.
  * @param context to use for initialization.
  * @return 0 for success and -1 for error.
  */
@@ -334,9 +374,9 @@ typedef void (*aeron_log_func_t)(const char *);
 /**
  * Determine if an aeron driver is using a given aeron directory.
  *
- * @param dirname for aeron directory
- * @param timeout to use to determine activity for aeron directory
- * @param now current time in nanoseconds. @see aeron_nano_clock.
+ * @param dirname  for aeron directory
+ * @param timeout  to use to determine activity for aeron directory
+ * @param now      current time in nanoseconds. @see aeron_nano_clock.
  * @param log_func to call during activity check to log diagnostic information.
  * @return true for active driver or false for no active driver.
  */

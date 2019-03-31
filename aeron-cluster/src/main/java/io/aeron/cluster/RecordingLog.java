@@ -16,6 +16,7 @@
 package io.aeron.cluster;
 
 import io.aeron.archive.client.AeronArchive;
+import io.aeron.archive.status.RecordingPos;
 import io.aeron.cluster.client.ClusterException;
 import org.agrona.BitUtil;
 import org.agrona.CloseHelper;
@@ -481,6 +482,44 @@ public class RecordingLog implements AutoCloseable
     }
 
     /**
+     * Find the last recording id used for a leader ship term. If not found then {@link RecordingPos#NULL_RECORDING_ID}.
+     *
+     * @return the last leadership term recording id or {@link RecordingPos#NULL_RECORDING_ID} if not found.
+     */
+    public long findLastTermRecordingId()
+    {
+        for (int i = entries.size() - 1; i >= 0; i--)
+        {
+            final Entry entry = entries.get(i);
+            if (ENTRY_TYPE_TERM == entry.type)
+            {
+                return entry.recordingId;
+            }
+        }
+
+        return RecordingPos.NULL_RECORDING_ID;
+    }
+
+    /**
+     * Find the last leadership term in the recording log.
+     *
+     * @return the last leadership term in the recording log.
+     */
+    public Entry findLastTerm()
+    {
+        for (int i = entries.size() - 1; i >= 0; i--)
+        {
+            final Entry entry = entries.get(i);
+            if (ENTRY_TYPE_TERM == entry.type)
+            {
+                return entry;
+            }
+        }
+
+        return null;
+    }
+
+    /**
      * Get the term {@link Entry} for a given leadership term id.
      *
      * @param leadershipTermId to get {@link Entry} for.
@@ -846,15 +885,6 @@ public class RecordingLog implements AutoCloseable
         }
     }
 
-    private static void getRecordingExtent(
-        final AeronArchive archive, final RecordingExtent recordingExtent, final Entry entry)
-    {
-        if (archive.listRecording(entry.recordingId, recordingExtent) == 0)
-        {
-            throw new ClusterException("unknown recording id: " + entry.recordingId);
-        }
-    }
-
     private int getLeadershipTermEntryIndex(final long leadershipTermId)
     {
         for (int i = 0, size = entries.size(); i < size; i++)
@@ -905,7 +935,8 @@ public class RecordingLog implements AutoCloseable
         for (int i = entries.size() - 1; i >= 0; i--)
         {
             final Entry entry = entries.get(i);
-            if (-1 == snapshotIndex && ENTRY_TYPE_SNAPSHOT == entry.type)
+            if (-1 == snapshotIndex && ENTRY_TYPE_SNAPSHOT == entry.type &&
+                entry.serviceId == ConsensusModule.Configuration.SERVICE_ID)
             {
                 snapshotIndex = i;
             }
@@ -919,8 +950,6 @@ public class RecordingLog implements AutoCloseable
             }
         }
 
-        final RecordingExtent recordingExtent = new RecordingExtent();
-
         if (-1 != snapshotIndex)
         {
             addSnapshots(snapshots, entries, serviceCount, snapshotIndex);
@@ -929,7 +958,11 @@ public class RecordingLog implements AutoCloseable
         if (-1 != logIndex)
         {
             final Entry entry = entries.get(logIndex);
-            getRecordingExtent(archive, recordingExtent, entry);
+            final RecordingExtent recordingExtent = new RecordingExtent();
+            if (archive.listRecording(entry.recordingId, recordingExtent) == 0)
+            {
+                throw new ClusterException("unknown recording id: " + entry.recordingId);
+            }
 
             final long startPosition = -1 == snapshotIndex ?
                 recordingExtent.startPosition : snapshots.get(0).logPosition;

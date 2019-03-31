@@ -20,6 +20,7 @@ import io.aeron.driver.media.UdpChannel;
 import io.aeron.logbuffer.LogBufferDescriptor;
 import org.agrona.ErrorHandler;
 import org.agrona.IoUtil;
+import org.agrona.SystemUtil;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.junit.*;
 
@@ -31,26 +32,28 @@ import static org.hamcrest.Matchers.is;
 import static org.junit.Assert.assertThat;
 import static org.mockito.Mockito.mock;
 
-public class RawLogFactoryTest
+public class FileStoreLogFactoryTest
 {
     private static final String CHANNEL = "aeron:udp?endpoint=localhost:4321";
     private static final int SESSION_ID = 100;
     private static final int STREAM_ID = 101;
     private static final int CREATION_ID = 102;
-    private static final File DATA_DIR = new File(IoUtil.tmpDirName(), "dataDirName");
+    private static final File DATA_DIR = new File(SystemUtil.tmpDirName(), "dataDirName");
     private static final int TERM_BUFFER_LENGTH = Configuration.TERM_BUFFER_LENGTH_DEFAULT;
+    private static final long LOW_STORAGE_THRESHOLD = Configuration.LOW_FILE_STORE_WARNING_THRESHOLD_DEFAULT;
     private static final int PAGE_SIZE = 4 * 1024;
     private static final boolean PRE_ZERO_LOG = false;
     private static final boolean PERFORM_STORAGE_CHECKS = false;
-    private RawLogFactory rawLogFactory;
+    private FileStoreLogFactory fileStoreLogFactory;
     private final UdpChannel udpChannel = UdpChannel.parse(CHANNEL);
 
     @Before
     public void createDataDir()
     {
         IoUtil.ensureDirectoryExists(DATA_DIR, "data");
-        rawLogFactory = new RawLogFactory(
-            DATA_DIR.getAbsolutePath(), PAGE_SIZE, PERFORM_STORAGE_CHECKS, mock(ErrorHandler.class));
+        final String absolutePath = DATA_DIR.getAbsolutePath();
+        fileStoreLogFactory = new FileStoreLogFactory(
+            absolutePath, PAGE_SIZE, PERFORM_STORAGE_CHECKS, LOW_STORAGE_THRESHOLD, mock(ErrorHandler.class));
     }
 
     @After
@@ -63,7 +66,7 @@ public class RawLogFactoryTest
     public void shouldCreateCorrectLengthAndZeroedFilesForPublication()
     {
         final String canonicalForm = udpChannel.canonicalForm();
-        final RawLog rawLog = rawLogFactory.newNetworkPublication(
+        final RawLog rawLog = fileStoreLogFactory.newNetworkPublication(
             canonicalForm, SESSION_ID, STREAM_ID, CREATION_ID, TERM_BUFFER_LENGTH, PRE_ZERO_LOG);
 
         assertThat(rawLog.termLength(), is(TERM_BUFFER_LENGTH));
@@ -92,7 +95,7 @@ public class RawLogFactoryTest
     {
         final String canonicalForm = udpChannel.canonicalForm();
         final int imageTermBufferMaxLength = TERM_BUFFER_LENGTH / 2;
-        final RawLog rawLog = rawLogFactory.newNetworkedImage(
+        final RawLog rawLog = fileStoreLogFactory.newNetworkedImage(
             canonicalForm, SESSION_ID, STREAM_ID, CREATION_ID, imageTermBufferMaxLength, PRE_ZERO_LOG);
 
         assertThat(rawLog.termLength(), is(imageTermBufferMaxLength));
@@ -121,7 +124,7 @@ public class RawLogFactoryTest
     {
         final String canonicalForm = udpChannel.canonicalForm();
         final int imageTermBufferMaxLength = TERM_MAX_LENGTH + 1;
-        rawLogFactory.newNetworkedImage(
+        fileStoreLogFactory.newNetworkedImage(
             canonicalForm, SESSION_ID, STREAM_ID, CREATION_ID, imageTermBufferMaxLength, PRE_ZERO_LOG);
     }
 }

@@ -23,7 +23,7 @@ import io.aeron.driver.ThreadingMode;
 import io.aeron.logbuffer.FragmentHandler;
 import org.agrona.CloseHelper;
 import org.agrona.ExpandableArrayBuffer;
-import org.agrona.IoUtil;
+import org.agrona.SystemUtil;
 import org.agrona.collections.MutableInteger;
 import org.agrona.concurrent.status.CountersReader;
 import org.junit.After;
@@ -79,7 +79,7 @@ public class BasicArchiveTest
                 .maxCatalogEntries(MAX_CATALOG_ENTRIES)
                 .aeronDirectoryName(aeronDirectoryName)
                 .deleteArchiveOnStart(true)
-                .archiveDir(new File(IoUtil.tmpDirName(), "archive"))
+                .archiveDir(new File(SystemUtil.tmpDirName(), "archive"))
                 .fileSyncLevel(0)
                 .threadingMode(ArchiveThreadingMode.SHARED));
 
@@ -101,28 +101,6 @@ public class BasicArchiveTest
 
         archivingMediaDriver.archive().context().deleteArchiveDirectory();
         archivingMediaDriver.mediaDriver().context().deleteAeronDirectory();
-    }
-
-    @Test(timeout = 10_000)
-    public void shouldPerformAsyncConnect()
-    {
-        final long lastControlSessionId = aeronArchive.controlSessionId();
-        aeronArchive.close();
-        aeronArchive = null;
-
-        final AeronArchive.AsyncConnect asyncConnect = AeronArchive.asyncConnect(
-            new AeronArchive.Context().aeron(aeron));
-
-        AeronArchive archive;
-        do
-        {
-            archive = asyncConnect.poll();
-        }
-        while (null == archive);
-
-        assertThat(archive.controlSessionId(), is(lastControlSessionId + 1));
-
-        archive.close();
     }
 
     @Test(timeout = 10_000)

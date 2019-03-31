@@ -34,6 +34,11 @@ using namespace aeron::concurrent;
 class Image;
 
 /**
+ * Used to represent a null value for when some value is not yet set.
+ */
+constexpr const std::int32_t NULL_VALUE = -1;
+
+/**
  * Function called by Aeron to deliver notification of an available image
  *
  * The Image passed may not be the image used internally, but may be copied or moved freely.
@@ -357,6 +362,9 @@ public:
         return *this;
     }
 
+    static void requestDriverTermination(
+        const std::string& directory, const std::uint8_t *tokenBuffer, std::size_t tokenLength);
+
     inline static std::string tmpDir()
     {
 #if defined(_MSC_VER)
@@ -407,7 +415,7 @@ public:
 #if defined(__linux__)
         return "/dev/shm/aeron-" + getUserName();
 #elif (_MSC_VER)
-        return tmpDir() + "/aeron-" + getUserName();
+        return tmpDir() + "aeron-" + getUserName();
 #else
         return tmpDir() + "/aeron-" + getUserName();
 #endif

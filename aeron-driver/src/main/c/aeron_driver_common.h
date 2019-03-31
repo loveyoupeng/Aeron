@@ -26,9 +26,11 @@
 
 typedef void (*aeron_idle_strategy_func_t)(void *, int);
 
-typedef int (*aeron_idle_strategy_init_func_t)(void **);
+typedef int (*aeron_idle_strategy_init_func_t)(void **, const char *, const char *);
 
 typedef int64_t (*aeron_feedback_delay_generator_func_t)();
+
+typedef bool (*aeron_driver_termination_validator_func_t)(void *, uint8_t *, int32_t);
 
 typedef struct aeron_driver_managed_resource_stct
 {
