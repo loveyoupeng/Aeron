@@ -19,6 +19,7 @@ import io.aeron.*;
 import io.aeron.archive.codecs.ControlResponseCode;
 import io.aeron.archive.codecs.ControlResponseDecoder;
 import io.aeron.archive.codecs.SourceLocation;
+import io.aeron.exceptions.ConcurrentConcludeException;
 import io.aeron.exceptions.TimeoutException;
 import org.agrona.CloseHelper;
 import org.agrona.ErrorHandler;
@@ -27,11 +28,13 @@ import org.agrona.SemanticVersion;
 import org.agrona.concurrent.*;
 
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 
 import static io.aeron.archive.client.ArchiveProxy.DEFAULT_RETRY_ATTEMPTS;
 import static io.aeron.driver.Configuration.*;
+import static java.util.concurrent.atomic.AtomicIntegerFieldUpdater.newUpdater;
 import static org.agrona.SystemUtil.getDurationInNanos;
 import static org.agrona.SystemUtil.getSizeAsInt;
 
@@ -183,6 +186,10 @@ public class AeronArchive implements AutoCloseable
             }
 
             return aeronArchive;
+        }
+        catch (final ConcurrentConcludeException ex)
+        {
+            throw ex;
         }
         catch (final Exception ex)
         {
@@ -496,7 +503,9 @@ public class AeronArchive implements AutoCloseable
     /**
      * Extend an existing, non-active recording of a channel and stream pairing.
      * <p>
-     * Channel must be session specific and include the existing recording sessionId.
+     * The channel must be configured for the initial position from which it will be extended. This can be done
+     * with {@link ChannelUriStringBuilder#initialPosition(long, int, int)}. The details required to initialise can
+     * be found by calling {@link #listRecording(long, RecordingDescriptorConsumer)}.
      *
      * @param recordingId    of the existing recording.
      * @param channel        to be recorded.
@@ -1530,6 +1539,13 @@ public class AeronArchive implements AutoCloseable
      */
     public static class Context implements Cloneable
     {
+        /**
+         * Using an integer because there is no support for boolean. 1 is concluded, 0 is not concluded.
+         */
+        private static final AtomicIntegerFieldUpdater<Context> IS_CONCLUDED_UPDATER = newUpdater(
+            Context.class, "isConcluded");
+        private volatile int isConcluded;
+
         private long messageTimeoutNs = Configuration.messageTimeoutNs();
         private String recordingEventsChannel = AeronArchive.Configuration.recordingEventsChannel();
         private int recordingEventsStreamId = AeronArchive.Configuration.recordingEventsStreamId();
@@ -1569,6 +1585,11 @@ public class AeronArchive implements AutoCloseable
          */
         public void conclude()
         {
+            if (0 != IS_CONCLUDED_UPDATER.getAndSet(this, 1))
+            {
+                throw new ConcurrentConcludeException();
+            }
+
             if (null == aeron)
             {
                 aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(aeronDirectoryName));

@@ -44,33 +44,33 @@ aeron_publication_link_t;
 
 typedef struct aeron_counter_link_stct
 {
-    int64_t registration_id;
     int32_t counter_id;
+    int64_t registration_id;
 }
 aeron_counter_link_t;
 
 typedef struct aeron_client_stct
 {
+    bool reached_end_of_life;
     int64_t client_id;
     int64_t client_liveness_timeout_ms;
     int64_t time_of_last_keepalive_ms;
-    bool reached_end_of_life;
 
     aeron_counter_t heartbeat_status;
 
     struct publication_link_stct
     {
-        aeron_publication_link_t *array;
         size_t length;
         size_t capacity;
+        aeron_publication_link_t *array;
     }
     publication_links;
 
     struct counter_link_stct
     {
-        aeron_counter_link_t *array;
         size_t length;
         size_t capacity;
+        aeron_counter_link_t *array;
     }
     counter_links;
 }
@@ -78,29 +78,30 @@ aeron_client_t;
 
 typedef struct aeron_subscribable_list_entry_stct
 {
+    int32_t counter_id;
     aeron_subscribable_t *subscribable;
-    int64_t counter_id;
 }
 aeron_subscribable_list_entry_t;
 
 typedef struct aeron_subscription_link_stct
 {
     char channel[AERON_MAX_PATH];
-    int64_t client_id;
-    int64_t registration_id;
+    bool is_tether;
+    bool is_sparse;
+    bool is_reliable;
     int32_t stream_id;
     int32_t channel_length;
-    bool is_reliable;
-    bool is_sparse;
+    int64_t registration_id;
+    int64_t client_id;
 
     aeron_receive_channel_endpoint_t *endpoint;
     aeron_udp_channel_t *spy_channel;
 
     struct subscribable_list_stct
     {
-        aeron_subscribable_list_entry_t *array;
         size_t length;
         size_t capacity;
+        aeron_subscribable_list_entry_t *array;
     }
     subscribable_list;
 }
@@ -138,9 +139,9 @@ aeron_publication_image_entry_t;
 
 typedef struct aeron_linger_resource_entry_stct
 {
-    uint8_t *buffer;
-    int64_t timeout;
     bool has_reached_end_of_life;
+    uint8_t *buffer;
+    int64_t timeout_ns;
 }
 aeron_linger_resource_entry_t;
 
@@ -162,9 +163,9 @@ typedef struct aeron_driver_conductor_stct
 
     struct client_stct
     {
-        aeron_client_t *array;
         size_t length;
         size_t capacity;
+        aeron_client_t *array;
         void (*on_time_event)(aeron_driver_conductor_t *, aeron_client_t *, int64_t, int64_t);
         bool (*has_reached_end_of_life)(aeron_driver_conductor_t *, aeron_client_t *);
         void (*delete_func)(aeron_driver_conductor_t *, aeron_client_t *);
@@ -173,17 +174,17 @@ typedef struct aeron_driver_conductor_stct
 
     struct ipc_subscriptions_stct
     {
-        aeron_subscription_link_t *array;
         size_t length;
         size_t capacity;
+        aeron_subscription_link_t *array;
     }
     ipc_subscriptions;
 
     struct ipc_publication_stct
     {
-        aeron_ipc_publication_entry_t *array;
         size_t length;
         size_t capacity;
+        aeron_ipc_publication_entry_t *array;
         void (*on_time_event)(aeron_driver_conductor_t *, aeron_ipc_publication_entry_t *, int64_t, int64_t);
         bool (*has_reached_end_of_life)(aeron_driver_conductor_t *, aeron_ipc_publication_entry_t *);
         void (*delete_func)(aeron_driver_conductor_t *, aeron_ipc_publication_entry_t *);
@@ -192,25 +193,25 @@ typedef struct aeron_driver_conductor_stct
 
     struct network_subscriptions_stct
     {
-        aeron_subscription_link_t *array;
         size_t length;
         size_t capacity;
+        aeron_subscription_link_t *array;
     }
     network_subscriptions;
 
     struct spy_subscriptions_stct
     {
-        aeron_subscription_link_t *array;
         size_t length;
         size_t capacity;
+        aeron_subscription_link_t *array;
     }
     spy_subscriptions;
 
     struct network_publication_stct
     {
-        aeron_network_publication_entry_t *array;
         size_t length;
         size_t capacity;
+        aeron_network_publication_entry_t *array;
         void (*on_time_event)(aeron_driver_conductor_t *, aeron_network_publication_entry_t *, int64_t, int64_t);
         bool (*has_reached_end_of_life)(aeron_driver_conductor_t *, aeron_network_publication_entry_t *);
         void (*delete_func)(aeron_driver_conductor_t *, aeron_network_publication_entry_t *);
@@ -230,9 +231,9 @@ typedef struct aeron_driver_conductor_stct
 
     struct receive_channel_endpoint_stct
     {
-        aeron_receive_channel_endpoint_entry_t *array;
         size_t length;
         size_t capacity;
+        aeron_receive_channel_endpoint_entry_t *array;
         void (*on_time_event)(aeron_driver_conductor_t *, aeron_receive_channel_endpoint_entry_t *, int64_t, int64_t);
         bool (*has_reached_end_of_life)(aeron_driver_conductor_t *, aeron_receive_channel_endpoint_entry_t *);
         void (*delete_func)(aeron_driver_conductor_t *, aeron_receive_channel_endpoint_entry_t *);
@@ -241,9 +242,9 @@ typedef struct aeron_driver_conductor_stct
 
     struct publication_image_stct
     {
-        aeron_publication_image_entry_t *array;
         size_t length;
         size_t capacity;
+        aeron_publication_image_entry_t *array;
         void (*on_time_event)(aeron_driver_conductor_t *, aeron_publication_image_entry_t *, int64_t, int64_t);
         bool (*has_reached_end_of_life)(aeron_driver_conductor_t *, aeron_publication_image_entry_t *);
         void (*delete_func)(aeron_driver_conductor_t *, aeron_publication_image_entry_t *);
@@ -252,9 +253,9 @@ typedef struct aeron_driver_conductor_stct
 
     struct aeron_driver_conductor_lingering_resources_stct
     {
-        aeron_linger_resource_entry_t *array;
         size_t length;
         size_t capacity;
+        aeron_linger_resource_entry_t *array;
         void (*on_time_event)(aeron_driver_conductor_t *, aeron_linger_resource_entry_t *, int64_t, int64_t);
         bool (*has_reached_end_of_life)(aeron_driver_conductor_t *, aeron_linger_resource_entry_t *);
         void (*delete_func)(aeron_driver_conductor_t *, aeron_linger_resource_entry_t *);
@@ -268,10 +269,10 @@ typedef struct aeron_driver_conductor_stct
     aeron_clock_func_t nano_clock;
     aeron_clock_func_t epoch_clock;
 
+    int32_t next_session_id;
     int64_t time_of_last_timeout_check_ns;
     int64_t time_of_last_to_driver_position_change_ns;
     int64_t last_consumer_command_position;
-    int32_t next_session_id;
 }
 aeron_driver_conductor_t;
 
@@ -345,6 +346,18 @@ void aeron_driver_conductor_client_transmit(
     const void *message,
     size_t length);
 
+void aeron_driver_conductor_on_available_image(
+    aeron_driver_conductor_t *conductor,
+    int64_t correlation_id,
+    int32_t stream_id,
+    int32_t session_id,
+    const char *log_file_name,
+    size_t log_file_name_length,
+    int32_t subscriber_position_id,
+    int64_t subscriber_registration_id,
+    const char *source_identity,
+    size_t source_identity_length);
+
 void aeron_driver_conductor_on_unavailable_image(
     aeron_driver_conductor_t *conductor,
     int64_t correlation_id,
@@ -353,9 +366,7 @@ void aeron_driver_conductor_on_unavailable_image(
     const char *channel,
     size_t channel_length);
 
-void aeron_driver_conductor_on_client_timeout(
-    aeron_driver_conductor_t *conductor,
-    int64_t correlation_id);
+void aeron_driver_conductor_on_client_timeout(aeron_driver_conductor_t *conductor, int64_t correlation_id);
 
 void aeron_driver_conductor_cleanup_spies(
     aeron_driver_conductor_t *conductor, aeron_network_publication_t *publication);
@@ -377,11 +388,11 @@ int aeron_driver_conductor_link_subscribable(
     int32_t session_id,
     int32_t stream_id,
     int64_t join_position,
-    int32_t uri_length,
-    const char *original_uri,
+    int64_t now_ns,
+    size_t source_identity_length,
     const char *source_identity,
-    const char *log_file_name,
-    size_t log_file_name_length);
+    size_t log_file_name_length,
+    const char *log_file_name);
 
 void aeron_driver_conductor_unlink_subscribable(aeron_subscription_link_t *link, aeron_subscribable_t *subscribable);
 
@@ -427,6 +438,12 @@ int aeron_driver_conductor_on_terminate_driver(
 void aeron_driver_conductor_on_create_publication_image(void *clientd, void *item);
 
 void aeron_driver_conductor_on_linger_buffer(void *clientd, void *item);
+
+aeron_send_channel_endpoint_t *aeron_driver_conductor_find_send_channel_endpoint_by_tag(
+    aeron_driver_conductor_t *conductor, int64_t channel_tag_id);
+
+aeron_receive_channel_endpoint_t *aeron_driver_conductor_find_receive_channel_endpoint_by_tag(
+    aeron_driver_conductor_t *conductor, int64_t channel_tag_id);
 
 inline bool aeron_driver_conductor_is_subscribable_linked(
     aeron_subscription_link_t *link, aeron_subscribable_t *subscribable)
@@ -691,10 +708,10 @@ inline aeron_publication_image_t * aeron_driver_conductor_find_publication_image
 }
 
 inline void aeron_driver_init_subscription_channel(
-    int32_t uri_length, const char *uri, aeron_subscription_link_t *link)
+    size_t uri_length, const char *uri, aeron_subscription_link_t *link)
 {
     size_t copy_length = sizeof(link->channel) - 1;
-    copy_length = (size_t)uri_length < copy_length ? (size_t)uri_length : copy_length;
+    copy_length = uri_length < copy_length ? uri_length : copy_length;
 
     strncpy(link->channel, uri, copy_length);
     link->channel[copy_length] = '\0';

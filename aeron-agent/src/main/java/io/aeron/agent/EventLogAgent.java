@@ -103,12 +103,12 @@ public class EventLogAgent
 
     public static void premain(final String agentArgs, final Instrumentation instrumentation)
     {
-        agent(AgentBuilder.RedefinitionStrategy.RETRANSFORMATION, instrumentation);
+        agent(AgentBuilder.RedefinitionStrategy.DISABLED, instrumentation);
     }
 
     public static void agentmain(final String agentArgs, final Instrumentation instrumentation)
     {
-        agent(AgentBuilder.RedefinitionStrategy.DISABLED, instrumentation);
+        agent(AgentBuilder.RedefinitionStrategy.RETRANSFORMATION, instrumentation);
     }
 
     public static void removeTransformer()
@@ -156,8 +156,8 @@ public class EventLogAgent
         readerAgentRunner = new AgentRunner(
             new SleepingMillisIdleStrategy(SLEEP_PERIOD_MS), Throwable::printStackTrace, null, getReaderAgent());
 
-        AgentBuilder agentBuilder = new AgentBuilder.Default(
-            new ByteBuddy().with(TypeValidation.DISABLED))
+        AgentBuilder agentBuilder = new AgentBuilder.Default(new ByteBuddy()
+            .with(TypeValidation.DISABLED))
             .disableClassFormatChanges()
             .with(LISTENER)
             .with(redefinitionStrategy);
@@ -190,32 +190,37 @@ public class EventLogAgent
         return agentBuilder
             .type(nameEndsWith("DriverConductor"))
             .transform((builder, typeDescription, classLoader, javaModule) -> builder
-                .visit(to(CleanupInterceptor.CleanupImage.class).on(named("cleanupImage")))
-                .visit(to(CleanupInterceptor.CleanupPublication.class).on(named("cleanupPublication")))
-                .visit(to(CleanupInterceptor.CleanupSubscriptionLink.class).on(named("cleanupSubscriptionLink"))))
+                .visit(to(CleanupInterceptor.CleanupImage.class)
+                    .on(named("cleanupImage")))
+                .visit(to(CleanupInterceptor.CleanupPublication.class)
+                    .on(named("cleanupPublication")))
+                .visit(to(CleanupInterceptor.CleanupSubscriptionLink.class)
+                    .on(named("cleanupSubscriptionLink"))))
             .type(nameEndsWith("ClientCommandAdapter"))
             .transform((builder, typeDescription, classLoader, javaModule) -> builder
-                .visit(to(CmdInterceptor.class).on(named("onMessage"))))
+                .visit(to(CmdInterceptor.class)
+                    .on(named("onMessage"))))
             .type(nameEndsWith("ClientProxy"))
             .transform((builder, typeDescription, classLoader, javaModule) -> builder
-                .visit(to(CmdInterceptor.class).on(named("transmit"))))
+                .visit(to(CmdInterceptor.class)
+                    .on(named("transmit"))))
             .type(nameEndsWith("SenderProxy"))
             .transform((builder, typeDescription, classLoader, javaModule) -> builder
-                .visit(to(ChannelEndpointInterceptor.SenderProxyInterceptor.RegisterSendChannelEndpoint.class)
+                .visit(to(ChannelEndpointInterceptor.SenderProxy.RegisterSendChannelEndpoint.class)
                     .on(named("registerSendChannelEndpoint")))
-                .visit(to(ChannelEndpointInterceptor.SenderProxyInterceptor.CloseSendChannelEndpoint.class)
+                .visit(to(ChannelEndpointInterceptor.SenderProxy.CloseSendChannelEndpoint.class)
                     .on(named("closeSendChannelEndpoint"))))
             .type(nameEndsWith("ReceiverProxy"))
             .transform((builder, typeDescription, classLoader, javaModule) -> builder
-                .visit(to(ChannelEndpointInterceptor.ReceiverProxyInterceptor.RegisterReceiveChannelEndpoint.class)
+                .visit(to(ChannelEndpointInterceptor.ReceiverProxy.RegisterReceiveChannelEndpoint.class)
                     .on(named("registerReceiveChannelEndpoint")))
-                .visit(to(ChannelEndpointInterceptor.ReceiverProxyInterceptor.CloseReceiveChannelEndpoint.class)
+                .visit(to(ChannelEndpointInterceptor.ReceiverProxy.CloseReceiveChannelEndpoint.class)
                     .on(named("closeReceiveChannelEndpoint"))))
             .type(nameEndsWith("UdpChannelTransport"))
             .transform((builder, typeDescription, classLoader, javaModule) -> builder
-                .visit(to(ChannelEndpointInterceptor.UdpChannelTransportInterceptor.SendHook.class)
+                .visit(to(ChannelEndpointInterceptor.UdpChannelTransport.SendHook.class)
                     .on(named("sendHook")))
-                .visit(to(ChannelEndpointInterceptor.UdpChannelTransportInterceptor.ReceiveHook.class)
+                .visit(to(ChannelEndpointInterceptor.UdpChannelTransport.ReceiveHook.class)
                     .on(named("receiveHook"))));
     }
 
@@ -224,7 +229,8 @@ public class EventLogAgent
         return agentBuilder
             .type(nameEndsWith("ControlRequestAdapter"))
             .transform(((builder, typeDescription, classLoader, module) -> builder
-                .visit(to(ControlRequestInterceptor.ControlRequest.class).on(named("onFragment")))));
+                .visit(to(ControlRequestInterceptor.ControlRequest.class)
+                    .on(named("onFragment")))));
     }
 
     private static AgentBuilder addClusterInstrumentation(final AgentBuilder agentBuilder)
@@ -232,14 +238,16 @@ public class EventLogAgent
         return agentBuilder
             .type(nameEndsWith("Election"))
             .transform(((builder, typeDescription, classLoader, module) -> builder
-                .visit(to(ClusterEventInterceptor.ElectionStateChange.class).on(named("state")
-                    .and(takesArgument(0, nameEndsWith("State")))))))
+                .visit(to(ClusterInterceptor.ElectionStateChange.class)
+                    .on(named("state").and(takesArgument(0, nameEndsWith("State")))))))
             .type(nameEndsWith("ConsensusModuleAgent"))
             .transform(((builder, typeDescription, classLoader, module) -> builder
-                .visit(to(ClusterEventInterceptor.NewLeadershipTerm.class).on(named("onNewLeadershipTerm")))
-                .visit(to(ClusterEventInterceptor.StateChange.class).on(named("state")))
-                .visit(to(ClusterEventInterceptor.RoleChange.class).on(named("role")
-                    .and(takesArgument(0, nameEndsWith("Role")))))));
+                .visit(to(ClusterInterceptor.NewLeadershipTerm.class)
+                    .on(named("onNewLeadershipTerm")))
+                .visit(to(ClusterInterceptor.ConsensusModuleStateChange.class)
+                    .on(named("state")))
+                .visit(to(ClusterInterceptor.ConsensusModuleRoleChange.class)
+                    .on(named("role").and(takesArgument(0, nameEndsWith("Role")))))));
     }
 
     private static Agent getReaderAgent()

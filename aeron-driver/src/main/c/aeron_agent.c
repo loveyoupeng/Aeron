@@ -357,11 +357,14 @@ aeron_idle_strategy_func_t aeron_idle_strategy_load(
 aeron_agent_on_start_func_t aeron_agent_on_start_load(const char *name)
 {
     aeron_agent_on_start_func_t func = NULL;
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
     if ((func = (aeron_agent_on_start_func_t)aeron_dlsym(RTLD_DEFAULT, name)) == NULL)
     {
         aeron_set_err(EINVAL, "could not find agent on_start func %s: dlsym - %s", name, aeron_dlerror());
         return NULL;
     }
+#pragma GCC diagnostic pop
 
     return func;
 }
@@ -477,8 +480,6 @@ int aeron_agent_stop(aeron_agent_runner_t *runner)
     if (AERON_AGENT_STATE_STARTED == runner->state)
     {
         runner->state = AERON_AGENT_STATE_STOPPING;
-
-        /* TODO: should use timed aeron_thread_join _np version when available? */
 
         if ((pthread_result = aeron_thread_join(runner->thread, NULL)))
         {

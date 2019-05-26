@@ -21,6 +21,7 @@ import io.aeron.archive.client.AeronArchive;
 import io.aeron.cluster.client.ClusterException;
 import io.aeron.cluster.codecs.mark.ClusterComponentType;
 import io.aeron.cluster.codecs.mark.MarkFileHeaderEncoder;
+import io.aeron.exceptions.ConcurrentConcludeException;
 import io.aeron.exceptions.ConfigurationException;
 import org.agrona.CloseHelper;
 import org.agrona.ErrorHandler;
@@ -34,12 +35,20 @@ import org.agrona.concurrent.status.StatusIndicator;
 
 import java.io.File;
 import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
 import java.util.function.Supplier;
 
 import static io.aeron.driver.status.SystemCounterDescriptor.SYSTEM_COUNTER_TYPE_ID;
+import static java.util.concurrent.atomic.AtomicIntegerFieldUpdater.newUpdater;
 import static org.agrona.SystemUtil.getSizeAsInt;
 import static org.agrona.SystemUtil.loadPropertiesFiles;
 
+/**
+ * Container for a service in the cluster managed by the Consensus Module. This is where business logic resides and
+ * loaded via {@link ClusteredServiceContainer.Configuration#SERVICE_CLASS_NAME_PROP_NAME} or
+ * {@link ClusteredServiceContainer.Context#clusteredService(ClusteredService)}.
+ */
+@SuppressWarnings("unused")
 public final class ClusteredServiceContainer implements AutoCloseable
 {
     /**
@@ -424,6 +433,13 @@ public final class ClusteredServiceContainer implements AutoCloseable
      */
     public static class Context implements Cloneable
     {
+        /**
+         * Using an integer because there is no support for boolean. 1 is concluded, 0 is not concluded.
+         */
+        private static final AtomicIntegerFieldUpdater<Context> IS_CONCLUDED_UPDATER = newUpdater(
+            Context.class, "isConcluded");
+        private volatile int isConcluded;
+
         private int serviceId = Configuration.serviceId();
         private String serviceName = Configuration.serviceName();
         private String replayChannel = Configuration.replayChannel();
@@ -475,9 +491,14 @@ public final class ClusteredServiceContainer implements AutoCloseable
         @SuppressWarnings("MethodLength")
         public void conclude()
         {
+            if (0 != IS_CONCLUDED_UPDATER.getAndSet(this, 1))
+            {
+                throw new ConcurrentConcludeException();
+            }
+
             if (serviceId < 0)
             {
-                throw new ConfigurationException("service id must be not be negative: " + serviceId);
+                throw new ConfigurationException("service id cannot be negative: " + serviceId);
             }
 
             if (null == threadFactory)

@@ -127,6 +127,8 @@ SET(SOURCE
     util/aeron_netutil.c
     util/aeron_dlopen.c
     util/aeron_parse_util.c
+    util/aeron_properties_util.c
+    util/aeron_http_util.c
     aeron_driver_context.c
     aeron_alloc.c
     aeron_driver.c
@@ -173,6 +175,8 @@ SET(HEADERS
     util/aeron_error.h
     util/aeron_netutil.h
     util/aeron_parse_util.h
+    util/aeron_properties_util.h
+    util/aeron_http_util.h
     concurrent/aeron_thread.h
     concurrent/aeron_atomic.h
     concurrent/aeron_atomic64_gcc_x86_64.h
@@ -262,6 +266,12 @@ add_library(aeron_driver SHARED ${SOURCE} ${HEADERS})
 target_include_directories(aeron_driver
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}
 )
+
+add_library(aeron_driver_static STATIC ${SOURCE} ${HEADERS})
+target_include_directories(aeron_driver_static
+    PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
 add_executable(aeronmd aeronmd.c)
 target_include_directories(aeronmd
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}

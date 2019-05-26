@@ -19,14 +19,11 @@ find_package(Java REQUIRED)
 include_directories(${AERON_CLIENT_SOURCE_PATH})
 include_directories(${AERON_ARCHIVE_SOURCE_PATH})
 
-#set(TEST_HEADERS
-#    ClientConductorFixture.h
-#    util/TestUtils.h
-#    concurrent/MockAtomicBuffer.h)
-
 add_definitions(-DAERON_ALL_JAR="${AERON_ALL_JAR}")
 add_definitions(-DJAVA_EXECUTABLE="${Java_JAVA_EXECUTABLE}")
 add_definitions(-DARCHIVE_DIR="${CMAKE_CURRENT_BINARY_DIR}/archive")
+add_definitions(-DJAVA_MAJOR_VERSION=${Java_VERSION_MAJOR})
+add_definitions(-DJAVA_MINOR_VERSION=${Java_VERSION_MINOR})
 
 function(aeron_archive_client_test name file)
     add_executable(${name} ${file})

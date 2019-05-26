@@ -288,12 +288,10 @@ public class ClusterTool
     }
 
     public static boolean queryClusterMembers(
-        final ClusterMarkFile markFile,
-        final ClusterMembersInfo clusterMembersInfo,
-        final long timeoutMs)
+        final ClusterMarkFile markFile, final ClusterMembersInfo clusterMembersInfo, final long timeoutMs)
     {
         final String aeronDirectoryName = markFile.decoder().aeronDirectory();
-        final String archiveChannel = markFile.decoder().archiveChannel();
+        markFile.decoder().archiveChannel();
         final String channel = markFile.decoder().serviceControlChannel();
         final int toServiceStreamId = markFile.decoder().serviceStreamId();
         final int toConsensusModuleStreamId = markFile.decoder().consensusModuleStreamId();
@@ -352,15 +350,11 @@ public class ClusterTool
         return false;
     }
 
-    public static boolean removeMember(
-        final ClusterMarkFile markFile,
-        final int memberId,
-        final boolean isPassive)
+    public static boolean removeMember(final ClusterMarkFile markFile, final int memberId, final boolean isPassive)
     {
         final String aeronDirectoryName = markFile.decoder().aeronDirectory();
-        final String archiveChannel = markFile.decoder().archiveChannel();
+        markFile.decoder().archiveChannel();
         final String channel = markFile.decoder().serviceControlChannel();
-        final int toServiceStreamId = markFile.decoder().serviceStreamId();
         final int toConsensusModuleStreamId = markFile.decoder().consensusModuleStreamId();
 
         try (Aeron aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(aeronDirectoryName));
@@ -432,7 +426,7 @@ public class ClusterTool
         {
             throw new AeronException(
                 "Aeron CnC version does not match: version=" + cncVersion +
-                    " required=" + CncFileDescriptor.CNC_VERSION);
+                " required=" + CncFileDescriptor.CNC_VERSION);
         }
 
         final AtomicBuffer buffer = CncFileDescriptor.createErrorLogBuffer(cncByteBuffer, cncMetaDataBuffer);

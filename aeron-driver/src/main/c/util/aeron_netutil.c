@@ -44,7 +44,7 @@ static aeron_uri_hostname_resolver_func_t aeron_uri_hostname_resolver_func = NUL
 
 static void *aeron_uri_hostname_resolver_clientd = NULL;
 
-int aeron_ip_addr_resolver(const char *host, struct sockaddr_storage *sockaddr, int family_hint)
+int aeron_ip_addr_resolver(const char *host, struct sockaddr_storage *sockaddr, int family_hint, int protocol)
 {
     aeron_net_init();
 
@@ -53,8 +53,8 @@ int aeron_ip_addr_resolver(const char *host, struct sockaddr_storage *sockaddr, 
 
     memset(&hints, 0, sizeof(struct addrinfo));
     hints.ai_family = family_hint;
-    hints.ai_socktype = SOCK_DGRAM;
-    hints.ai_protocol = IPPROTO_UDP;
+    hints.ai_socktype = (IPPROTO_UDP == protocol) ? SOCK_DGRAM : SOCK_STREAM;
+    hints.ai_protocol = protocol;
 
     int error, result = -1;
     if ((error = getaddrinfo(host, NULL, &hints, &info)) != 0)
@@ -93,7 +93,7 @@ int aeron_ip_addr_resolver(const char *host, struct sockaddr_storage *sockaddr, 
     return result;
 }
 
-int aeron_ipv4_addr_resolver(const char *host, struct sockaddr_storage *sockaddr)
+int aeron_ipv4_addr_resolver(const char *host, int protocol, struct sockaddr_storage *sockaddr)
 {
     struct sockaddr_in *addr = (struct sockaddr_in *)sockaddr;
 
@@ -103,10 +103,10 @@ int aeron_ipv4_addr_resolver(const char *host, struct sockaddr_storage *sockaddr
         return 0;
     }
 
-    return aeron_ip_addr_resolver(host, sockaddr, AF_INET);
+    return aeron_ip_addr_resolver(host, sockaddr, AF_INET, protocol);
 }
 
-int aeron_ipv6_addr_resolver(const char *host, struct sockaddr_storage *sockaddr)
+int aeron_ipv6_addr_resolver(const char *host, int protocol, struct sockaddr_storage *sockaddr)
 {
     struct sockaddr_in6 *addr = (struct sockaddr_in6 *)sockaddr;
 
@@ -116,7 +116,7 @@ int aeron_ipv6_addr_resolver(const char *host, struct sockaddr_storage *sockaddr
         return 0;
     }
 
-    return aeron_ip_addr_resolver(host, sockaddr, AF_INET6);
+    return aeron_ip_addr_resolver(host, sockaddr, AF_INET6, protocol);
 }
 
 int aeron_udp_port_resolver(const char *port_str, bool optional)
@@ -161,12 +161,12 @@ int aeron_host_and_port_resolver(
     {
         if (AF_INET == family_hint)
         {
-            result = aeron_ipv4_addr_resolver(host_str, sockaddr);
+            result = aeron_ipv4_addr_resolver(host_str, IPPROTO_UDP, sockaddr);
             ((struct sockaddr_in *)sockaddr)->sin_port = htons((uint16_t)port);
         }
         else if (AF_INET6 == family_hint)
         {
-            result = aeron_ipv6_addr_resolver(host_str, sockaddr);
+            result = aeron_ipv6_addr_resolver(host_str, IPPROTO_UDP, sockaddr);
             ((struct sockaddr_in6 *)sockaddr)->sin6_port = htons((uint16_t)port);
         }
     }
@@ -238,12 +238,12 @@ int aeron_host_port_prefixlen_resolver(
 
     if (AF_INET == family_hint)
     {
-        host_result = aeron_ipv4_addr_resolver(host_str, sockaddr);
+        host_result = aeron_ipv4_addr_resolver(host_str, IPPROTO_UDP, sockaddr);
         ((struct sockaddr_in *)sockaddr)->sin_port = htons((uint16_t)port_result);
     }
     else if (AF_INET6 == family_hint)
     {
-        host_result = aeron_ipv6_addr_resolver(host_str, sockaddr);
+        host_result = aeron_ipv6_addr_resolver(host_str, IPPROTO_UDP, sockaddr);
         ((struct sockaddr_in6 *)sockaddr)->sin6_port = htons((uint16_t)port_result);
     }
 
@@ -592,7 +592,27 @@ bool aeron_is_wildcard_addr(struct sockaddr_storage *addr)
     return result;
 }
 
-void aeron_format_source_identity(char *buffer, size_t length, struct sockaddr_storage *addr)
+bool aeron_is_wildcard_port(struct sockaddr_storage *addr)
+{
+    bool result = false;
+
+    if (AF_INET6 == addr->ss_family)
+    {
+        struct sockaddr_in6 *a = (struct sockaddr_in6 *)addr;
+
+        return 0 == a->sin6_port;
+    }
+    else if (AF_INET == addr->ss_family)
+    {
+        struct sockaddr_in *a = (struct sockaddr_in *)addr;
+
+        result = 0 == a->sin_port;
+    }
+
+    return result;
+}
+
+int aeron_format_source_identity(char *buffer, size_t length, struct sockaddr_storage *addr)
 {
     char addr_str[AERON_MAX_PATH] = "";
     unsigned short port = 0;
@@ -612,5 +632,11 @@ void aeron_format_source_identity(char *buffer, size_t length, struct sockaddr_s
         port = ntohs(in4->sin_port);
     }
 
-    snprintf(buffer, length, "%s:%d", addr_str, port);
+    int total = snprintf(buffer, length, "%s:%d", addr_str, port);
+    if (total < 0)
+    {
+        return 0;
+    }
+
+    return total > AERON_MAX_PATH - 1 ? AERON_MAX_PATH - 1 : total;
 }

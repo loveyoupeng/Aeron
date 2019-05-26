@@ -18,6 +18,7 @@
 #define AERON_SEND_CHANNEL_ENDPOINT_H
 
 #include "collections/aeron_int64_to_ptr_hash_map.h"
+#include "util/aeron_netutil.h"
 #include "aeron_network_publication.h"
 #include "aeron_driver_context.h"
 #include "aeron_udp_channel.h"
@@ -47,12 +48,12 @@ typedef struct aeron_send_channel_endpoint_stct
 
     /* uint8_t conductor_fields_pad[(2 * AERON_CACHE_LINE_LENGTH) - sizeof(struct conductor_fields_stct)]; */
 
+    bool has_sender_released;
     aeron_udp_channel_transport_t transport;
-    aeron_int64_to_ptr_hash_map_t publication_dispatch_map;
     aeron_counter_t channel_status;
     aeron_udp_destination_tracker_t *destination_tracker;
     aeron_driver_sender_proxy_t *sender_proxy;
-    bool has_sender_released;
+    aeron_int64_to_ptr_hash_map_t publication_dispatch_map;
 }
 aeron_send_channel_endpoint_t;
 

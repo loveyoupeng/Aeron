@@ -24,9 +24,11 @@
 #include <time.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <unistd.h>
 #include "aeronmd.h"
 #include "concurrent/aeron_atomic.h"
 #include "aeron_driver_context.h"
+#include "util/aeron_properties_util.h"
 
 volatile bool running = true;
 
@@ -47,11 +49,58 @@ inline bool is_running()
     return result;
 }
 
+int set_property(void *clientd, const char *name, const char *value)
+{
+    return aeron_properties_setenv(name, value);
+}
+
 int main(int argc, char **argv)
 {
     int status = EXIT_FAILURE;
+    int opt;
     aeron_driver_context_t *context = NULL;
     aeron_driver_t *driver = NULL;
+
+#ifndef _MSC_VER
+    while ((opt = getopt(argc, argv, "D:v")) != -1)
+    {
+        switch (opt)
+        {
+            case 'D':
+            {
+                aeron_properties_parser_state_t state;
+                aeron_properties_parse_init(&state);
+                if (aeron_properties_parse_line(&state, optarg, strlen(optarg), set_property, NULL) < 0)
+                {
+                    fprintf(stderr, "malformed define: %s\n", optarg);
+                    exit(status);
+                }
+                break;
+            }
+
+            case 'v':
+            {
+                printf("%s <%s> major %d minor %d patch %d\n",
+                    argv[0], aeron_version_full(), aeron_version_major(), aeron_version_minor(), aeron_version_patch());
+                exit(EXIT_SUCCESS);
+                break;
+            }
+
+            default:
+                fprintf(stderr, "Usage: %s [-v][-Dname=value]\n", argv[0]);
+                exit(status);
+        }
+    }
+#endif
+
+    for (int i = optind; i < argc; i++)
+    {
+        if (aeron_properties_load(argv[i]) < 0)
+        {
+            fprintf(stderr, "ERROR: loading properties from %s (%d) %s\n", argv[i], aeron_errcode(), aeron_errmsg());
+            exit(status);
+        }
+    }
 
     signal(SIGINT, sigint_handler);
 
@@ -61,7 +110,12 @@ int main(int argc, char **argv)
         goto cleanup;
     }
 
-    context->termination_hook_func = termination_hook;
+
+    if (aeron_driver_context_set_driver_termination_hook(context, termination_hook, NULL) < 0)
+    {
+        fprintf(stderr, "ERROR: context set termination hook (%d) %s\n", aeron_errcode(), aeron_errmsg());
+        goto cleanup;
+    }
 
     if (aeron_driver_init(&driver, context) < 0)
     {

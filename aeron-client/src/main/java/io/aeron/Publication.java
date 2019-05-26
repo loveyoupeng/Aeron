@@ -43,7 +43,7 @@ import static io.aeron.protocol.DataHeaderFlyweight.HEADER_LENGTH;
 public abstract class Publication implements AutoCloseable
 {
     /**
-     * The publication is not yet connected to a subscriber.
+     * The publication is not connected to a subscriber, this can be an intermittent state as subscribers come and go.
      */
     public static final long NOT_CONNECTED = -1;
 
@@ -478,6 +478,7 @@ public abstract class Publication implements AutoCloseable
     /**
      * Try to claim a range in the publication log into which a message can be written with zero copy semantics.
      * Once the message has been written then {@link BufferClaim#commit()} should be called thus making it available.
+     * A claim length cannot be greater than {@link #maxPayloadLength()}.
      * <p>
      * <b>Note:</b> This method can only be used for message lengths less than MTU length minus header.
      * If the claim is held for more than the aeron.publication.unblock.timeout system property then the driver will
@@ -624,6 +625,7 @@ public abstract class Publication implements AutoCloseable
         return "Publication{" +
             "originalRegistrationId=" + originalRegistrationId +
             ", registrationId=" + registrationId +
+            ", isClosed=" + isClosed +
             ", initialTermId=" + initialTermId +
             ", termBufferLength=" + termBufferLength +
             ", sessionId=" + sessionId +

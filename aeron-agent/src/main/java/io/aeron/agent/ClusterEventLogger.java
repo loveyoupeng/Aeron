@@ -21,11 +21,16 @@ import io.aeron.cluster.service.Cluster;
 import org.agrona.MutableDirectBuffer;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.agrona.concurrent.ringbuffer.ManyToOneRingBuffer;
+import org.agrona.concurrent.ringbuffer.RingBuffer;
 
 import java.nio.ByteBuffer;
 
 import static io.aeron.agent.ClusterEventCode.*;
 
+/**
+ * Event logger interface used by interceptors for recording cluster events into a {@link RingBuffer} for a
+ * {@link ConsensusModule} events via a Java Agent.
+ */
 public final class ClusterEventLogger
 {
     static final long ENABLED_EVENT_CODES = EventConfiguration.getEnabledClusterEventCodes();
@@ -98,7 +103,7 @@ public final class ClusterEventLogger
         }
     }
 
-    private static int toEventCodeId(final ClusterEventCode code)
+    public static int toEventCodeId(final ClusterEventCode code)
     {
         return ClusterEventCode.EVENT_CODE_TYPE << 16 | (code.id() & 0xFFFF);
     }

@@ -33,10 +33,7 @@ import io.aeron.protocol.DataHeaderFlyweight;
 import io.aeron.security.Authenticator;
 import io.aeron.status.ReadableCounter;
 import org.agrona.*;
-import org.agrona.collections.ArrayListUtil;
-import org.agrona.collections.Int2ObjectHashMap;
-import org.agrona.collections.Long2ObjectHashMap;
-import org.agrona.collections.LongHashSet;
+import org.agrona.collections.*;
 import org.agrona.concurrent.Agent;
 import org.agrona.concurrent.AgentInvoker;
 import org.agrona.concurrent.EpochClock;
@@ -55,14 +52,23 @@ import static io.aeron.archive.client.AeronArchive.NULL_POSITION;
 import static io.aeron.archive.codecs.SourceLocation.LOCAL;
 import static io.aeron.cluster.ClusterSession.State.*;
 import static io.aeron.cluster.ConsensusModule.Configuration.*;
+import static io.aeron.cluster.client.AeronCluster.SESSION_HEADER_LENGTH;
 
 class ConsensusModuleAgent implements Agent, MemberStatusListener
 {
+    private static final int MESSAGE_LIMIT = 10;
+
     private final long sessionTimeoutMs;
     private final long leaderHeartbeatIntervalMs;
     private final long leaderHeartbeatTimeoutMs;
     private final long serviceHeartbeatTimeoutMs;
+    private final int logPublicationTag;
+    private final int logPublicationChannelTag;
+    private final int logSubscriptionTag;
+    private final int logSubscriptionChannelTag;
     private long nextSessionId = 1;
+    private long nextServiceSessionId = Long.MIN_VALUE;
+    private long logServiceSessionId = Long.MIN_VALUE;
     private long leadershipTermId = NULL_VALUE;
     private long expectedAckPosition = 0;
     private long serviceAckId = 0;
@@ -109,7 +115,12 @@ class ConsensusModuleAgent implements Agent, MemberStatusListener
     private final ArrayList<ClusterSession> rejectedSessions = new ArrayList<>();
     private final ArrayList<ClusterSession> redirectSessions = new ArrayList<>();
     private final Int2ObjectHashMap<ClusterMember> clusterMemberByIdMap = new Int2ObjectHashMap<>();
-    private final LongHashSet missedTimersSet = new LongHashSet();
+    private final Long2LongCounterMap expiredTimerCountByCorrelationIdMap = new Long2LongCounterMap(0);
+    private final ExpandableRingBuffer pendingServiceMessages = new ExpandableRingBuffer();
+    private final ExpandableRingBuffer.MessageConsumer serviceSessionMessageAppender =
+        this::serviceSessionMessageAppender;
+    private final ExpandableRingBuffer.MessageConsumer serviceSessionMessageSweeper =
+        this::serviceSessionMessageSweeper;
     private final Authenticator authenticator;
     private final ClusterSessionProxy sessionProxy;
     private final Aeron aeron;
@@ -155,6 +166,10 @@ class ConsensusModuleAgent implements Agent, MemberStatusListener
         this.serviceHeartbeats = ctx.serviceHeartbeatCounters();
         this.serviceAcks = ServiceAck.newArray(ctx.serviceCount());
         this.highMemberId = ClusterMember.highMemberId(clusterMembers);
+        this.logPublicationChannelTag = (int)aeron.nextCorrelationId();
+        this.logSubscriptionChannelTag = (int)aeron.nextCorrelationId();
+        this.logPublicationTag = (int)aeron.nextCorrelationId();
+        this.logSubscriptionTag = (int)aeron.nextCorrelationId();
 
         aeronClientInvoker = aeron.conductorAgentInvoker();
         aeronClientInvoker.invoke();
@@ -163,7 +178,7 @@ class ConsensusModuleAgent implements Agent, MemberStatusListener
         role(Cluster.Role.FOLLOWER);
 
         ClusterMember.addClusterMemberIds(clusterMembers, clusterMemberByIdMap);
-        thisMember = determineMemberAndCheckEndpoints(clusterMembers);
+        thisMember = ClusterMember.determineMember(clusterMembers, ctx.clusterMemberId(), ctx.memberEndpoints());
         leaderMember = thisMember;
 
         final ChannelUri memberStatusUri = ChannelUri.parse(ctx.memberStatusChannel());
@@ -208,12 +223,7 @@ class ConsensusModuleAgent implements Agent, MemberStatusListener
 
     public void onStart()
     {
-        final ChannelUri archiveUri = ChannelUri.parse(ctx.archiveContext().controlRequestChannel());
-        ClusterMember.checkArchiveEndpoint(thisMember, archiveUri);
-        archiveUri.put(ENDPOINT_PARAM_NAME, thisMember.archiveEndpoint());
-        ctx.archiveContext().controlRequestChannel(archiveUri.toString());
         archive = AeronArchive.connect(ctx.archiveContext().clone());
-
         recoveryPlan = recordingLog.createRecoveryPlan(archive, ctx.serviceCount());
 
         if (null == (dynamicJoin = requiresDynamicJoin()))
@@ -495,9 +505,7 @@ class ConsensusModuleAgent implements Agent, MemberStatusListener
 
             if (null != follower)
             {
-                follower
-                    .logPosition(logPosition)
-                    .timeOfLastAppendPositionMs(cachedTimeMs);
+                follower.logPosition(logPosition).timeOfLastAppendPositionMs(cachedTimeMs);
                 checkCatchupStop(follower);
             }
         }
@@ -527,20 +535,18 @@ class ConsensusModuleAgent implements Agent, MemberStatusListener
         {
             final ClusterMember follower = clusterMemberByIdMap.get(followerMemberId);
 
-            if (null != follower)
+            if (null != follower && follower.catchupReplaySessionId() == Aeron.NULL_VALUE)
             {
                 final String replayChannel = new ChannelUriStringBuilder()
                     .media(CommonContext.UDP_MEDIA)
                     .endpoint(follower.transferEndpoint())
                     .isSessionIdTagged(true)
-                    .sessionId(ConsensusModule.Configuration.LOG_PUBLICATION_SESSION_ID_TAG)
+                    .sessionId(logPublicationTag)
+                    .eos(false)
                     .build();
 
-                if (follower.catchupReplaySessionId() == Aeron.NULL_VALUE)
-                {
-                    follower.catchupReplaySessionId(archive.startReplay(
-                        logRecordingId(), logPosition, Long.MAX_VALUE, replayChannel, ctx.logStreamId()));
-                }
+                follower.catchupReplaySessionId(archive.startReplay(
+                    logRecordingId(), logPosition, Long.MAX_VALUE, replayChannel, ctx.logStreamId()));
             }
         }
     }
@@ -629,7 +635,6 @@ class ConsensusModuleAgent implements Agent, MemberStatusListener
                 final ChannelUri memberStatusUri = ChannelUri.parse(ctx.memberStatusChannel());
 
                 ClusterMember.addMemberStatusPublication(member, memberStatusUri, ctx.memberStatusStreamId(), aeron);
-
                 logPublisher.addPassiveFollower(member.logEndpoint());
             }
 
@@ -665,6 +670,56 @@ class ConsensusModuleAgent implements Agent, MemberStatusListener
         }
     }
 
+    public void onRemoveMember(final long correlationId, final int memberId, final boolean isPassive)
+    {
+        final ClusterMember member = clusterMemberByIdMap.get(memberId);
+
+        if (null == election && Cluster.Role.LEADER == role && null != member)
+        {
+            if (isPassive)
+            {
+                passiveMembers = ClusterMember.removeMember(passiveMembers, memberId);
+
+                member.closePublication();
+
+                logPublisher.removePassiveFollower(member.logEndpoint());
+
+                clusterMemberByIdMap.remove(memberId);
+                clusterMemberByIdMap.compact();
+            }
+            else
+            {
+                final ClusterMember[] newClusterMembers = ClusterMember.removeMember(clusterMembers, memberId);
+                final String newClusterMembersString = ClusterMember.encodeAsString(newClusterMembers);
+                final long position = logPublisher.calculatePositionForMembershipChangeEvent(newClusterMembersString);
+
+                if (logPublisher.appendMembershipChangeEvent(
+                    leadershipTermId,
+                    position,
+                    clusterTimeMs,
+                    thisMember.id(),
+                    clusterMembers.length,
+                    ChangeType.QUIT,
+                    memberId,
+                    newClusterMembersString))
+                {
+                    timeOfLastLogUpdateMs = cachedTimeMs - leaderHeartbeatIntervalMs;
+                    member.removalPosition(logPublisher.position());
+                    pendingMemberRemovals++;
+                }
+            }
+        }
+    }
+
+    public void onClusterMembersQuery(final long correlationId)
+    {
+        serviceProxy.clusterMembersResponse(
+            correlationId,
+            leaderMember.id(),
+            ClusterMember.encodeAsString(clusterMembers),
+            ClusterMember.encodeAsString(passiveMembers));
+    }
+
     void state(final ConsensusModule.State state)
     {
         this.state = state;
@@ -680,6 +735,11 @@ class ConsensusModuleAgent implements Agent, MemberStatusListener
     Cluster.Role role()
     {
         return role;
+    }
+
+    String logSubscriptionTags()
+    {
+        return logSubscriptionChannelTag + "," + logSubscriptionTag;
     }
 
     void prepareForNewLeadership(final long logPosition)
@@ -800,9 +860,49 @@ class ConsensusModuleAgent implements Agent, MemberStatusListener
         }
     }
 
+    void onServiceMessage(final long leadershipTermId, final DirectBuffer buffer, final int offset, final int length)
+    {
+        if (leadershipTermId != this.leadershipTermId)
+        {
+            return;
+        }
+
+        if (Cluster.Role.LEADER != role)
+        {
+            enqueueServiceSessionMessage((MutableDirectBuffer)buffer, offset, length, ++nextServiceSessionId);
+        }
+        else
+        {
+            if (ConsensusModule.State.ACTIVE != state || !pendingServiceMessages.isEmpty())
+            {
+                enqueueServiceSessionMessage((MutableDirectBuffer)buffer, offset, length, ++nextServiceSessionId);
+            }
+            else
+            {
+                final long clusterSessionId = ++nextServiceSessionId;
+                if (logPublisher.appendMessage(
+                    leadershipTermId, clusterSessionId, clusterTimeMs, buffer, offset, length))
+                {
+                    logServiceSessionId = clusterSessionId;
+                }
+                else
+                {
+                    enqueueServiceSessionMessage((MutableDirectBuffer)buffer, offset, length, clusterSessionId);
+                }
+            }
+        }
+    }
+
     void onScheduleTimer(final long correlationId, final long deadlineMs)
     {
-        timerService.scheduleTimer(correlationId, deadlineMs);
+        if (expiredTimerCountByCorrelationIdMap.get(correlationId) == 0)
+        {
+            timerService.scheduleTimer(correlationId, deadlineMs);
+        }
+        else
+        {
+            expiredTimerCountByCorrelationIdMap.decrementAndGet(correlationId);
+        }
     }
 
     void onCancelTimer(final long correlationId)
@@ -876,58 +976,6 @@ class ConsensusModuleAgent implements Agent, MemberStatusListener
         }
     }
 
-    public void onClusterMembersQuery(final long correlationId)
-    {
-        serviceProxy.clusterMembersResponse(
-            correlationId,
-            leaderMember.id(),
-            ClusterMember.encodeAsString(clusterMembers),
-            ClusterMember.encodeAsString(passiveMembers));
-    }
-
-    public void onRemoveMember(
-        @SuppressWarnings("unused") final long correlationId, final int memberId, final boolean isPassive)
-    {
-        final ClusterMember member = clusterMemberByIdMap.get(memberId);
-
-        if (null == election && Cluster.Role.LEADER == role && null != member)
-        {
-            if (isPassive)
-            {
-                passiveMembers = ClusterMember.removeMember(passiveMembers, memberId);
-
-                member.publication().close();
-                member.publication(null);
-
-                logPublisher.removePassiveFollower(member.logEndpoint());
-
-                clusterMemberByIdMap.remove(memberId);
-                clusterMemberByIdMap.compact();
-            }
-            else
-            {
-                final ClusterMember[] newClusterMembers = ClusterMember.removeMember(clusterMembers, memberId);
-                final String newClusterMembersString = ClusterMember.encodeAsString(newClusterMembers);
-                final long position = logPublisher.calculatePositionForMembershipChangeEvent(newClusterMembersString);
-
-                if (logPublisher.appendMembershipChangeEvent(
-                    leadershipTermId,
-                    position,
-                    clusterTimeMs,
-                    thisMember.id(),
-                    clusterMembers.length,
-                    ChangeType.QUIT,
-                    memberId,
-                    newClusterMembersString))
-                {
-                    timeOfLastLogUpdateMs = cachedTimeMs - leaderHeartbeatIntervalMs;
-                    member.removalPosition(logPublisher.position());
-                    pendingMemberRemovals++;
-                }
-            }
-        }
-    }
-
     @SuppressWarnings("unused")
     void onReplaySessionMessage(
         final long clusterSessionId,
@@ -938,7 +986,16 @@ class ConsensusModuleAgent implements Agent, MemberStatusListener
         final Header header)
     {
         clusterTimeMs(timestamp);
-        sessionByIdMap.get(clusterSessionId).timeOfLastActivityMs(timestamp);
+
+        final ClusterSession clusterSession = sessionByIdMap.get(clusterSessionId);
+        if (null == clusterSession)
+        {
+            sweepPendingServiceSessionMessages(clusterSessionId);
+        }
+        else
+        {
+            clusterSession.timeOfLastActivityMs(timestamp);
+        }
     }
 
     void onReplayTimerEvent(final long correlationId, final long timestamp)
@@ -947,7 +1004,7 @@ class ConsensusModuleAgent implements Agent, MemberStatusListener
 
         if (!timerService.cancelTimer(correlationId))
         {
-            missedTimersSet.add(correlationId);
+            expiredTimerCountByCorrelationIdMap.getAndIncrement(correlationId);
         }
     }
 
@@ -994,6 +1051,11 @@ class ConsensusModuleAgent implements Agent, MemberStatusListener
         {
             nextSessionId = clusterSessionId + 1;
         }
+    }
+
+    void onLoadPendingMessage(final DirectBuffer buffer, final int offset, final int length)
+    {
+        pendingServiceMessages.append(buffer, offset, length);
     }
 
     void onReplaySessionClose(final long clusterSessionId, final long timestamp, final CloseReason closeReason)
@@ -1057,10 +1119,9 @@ class ConsensusModuleAgent implements Agent, MemberStatusListener
         clusterTimeMs(timestamp);
         this.leadershipTermId = leadershipTermId;
 
-        final ClusterMember[] newMembers = ClusterMember.parse(clusterMembers);
-
         if (ChangeType.JOIN == changeType)
         {
+            final ClusterMember[] newMembers = ClusterMember.parse(clusterMembers);
             if (memberId == this.memberId)
             {
                 this.clusterMembers = newMembers;
@@ -1096,15 +1157,23 @@ class ConsensusModuleAgent implements Agent, MemberStatusListener
 
                 if (hasCurrentLeaderSteppedDown)
                 {
+                    commitPosition.proposeMaxOrdered(logPosition);
                     enterElection(cachedTimeMs);
                 }
             }
         }
     }
 
-    void onReloadState(final long nextSessionId)
+    void onReloadState(
+        final long nextSessionId,
+        final long nextServiceSessionId,
+        final long logServiceSessionId,
+        final int pendingMessageCapacity)
     {
         this.nextSessionId = nextSessionId;
+        this.nextServiceSessionId = nextServiceSessionId;
+        this.logServiceSessionId = logServiceSessionId;
+        pendingServiceMessages.reset(pendingMessageCapacity);
     }
 
     void onReloadClusterMembers(final int memberId, final int highMemberId, final String members)
@@ -1114,7 +1183,6 @@ class ConsensusModuleAgent implements Agent, MemberStatusListener
             return;
         }
 
-        // TODO: this must be superset of any configured cluster members, unless being overridden
         final ClusterMember[] snapshotClusterMembers = ClusterMember.parse(members);
 
         if (Aeron.NULL_VALUE == this.memberId)
@@ -1144,8 +1212,7 @@ class ConsensusModuleAgent implements Agent, MemberStatusListener
 
         final ChannelUri channelUri = ChannelUri.parse(ctx.logChannel());
         final Publication publication = createLogPublication(channelUri, recoveryPlan, election.logPosition());
-
-        logPublisher.connect(publication);
+        logPublisher.publication(publication);
 
         return publication;
     }
@@ -1194,7 +1261,7 @@ class ConsensusModuleAgent implements Agent, MemberStatusListener
             clusterMember.isLeader(clusterMember.id() == leaderMember.id());
         }
 
-        updateClientFacingEndpoints(clusterMembers);
+        clientFacingEndpoints = ClusterMember.clientFacingEndpoints(clusterMembers);
     }
 
     void liveLogDestination(final String liveLogDestination)
@@ -1205,6 +1272,11 @@ class ConsensusModuleAgent implements Agent, MemberStatusListener
     void replayLogDestination(final String replayLogDestination)
     {
         this.replayLogDestination = replayLogDestination;
+    }
+
+    boolean hasReplayDestination()
+    {
+        return null != replayLogDestination;
     }
 
     Subscription createAndRecordLogSubscriptionAsFollower(final String logChannel)
@@ -1247,7 +1319,7 @@ class ConsensusModuleAgent implements Agent, MemberStatusListener
         }
     }
 
-    boolean pollImageAndLogAdapter(final Subscription subscription, final int logSessionId)
+    boolean findImageAndLogAdapter(final Subscription subscription, final int logSessionId)
     {
         boolean result = false;
 
@@ -1276,7 +1348,7 @@ class ConsensusModuleAgent implements Agent, MemberStatusListener
     {
         leadershipTermId = election.leadershipTermId();
         idleStrategy.reset();
-        while (!pollImageAndLogAdapter(subscription, logSessionId))
+        while (!findImageAndLogAdapter(subscription, logSessionId))
         {
             idle();
         }
@@ -1355,17 +1427,17 @@ class ConsensusModuleAgent implements Agent, MemberStatusListener
     void replayLogPoll(final LogAdapter logAdapter, final long stopPosition)
     {
         final int workCount = logAdapter.poll(stopPosition);
+        final long logPosition = logAdapter.position();
         if (0 == workCount)
         {
-            if (logAdapter.isImageClosed() && logAdapter.position() != stopPosition)
+            if (logAdapter.isImageClosed() && logPosition != stopPosition)
             {
-                throw new ClusterException("unexpected close of image when replaying log");
+                throw new ClusterException("unexpected close of image when replaying log: position=");
             }
         }
 
-        commitPosition.setOrdered(logAdapter.position());
+        commitPosition.setOrdered(logPosition);
         consensusModuleAdapter.poll();
-        cancelMissedTimers();
     }
 
     long logRecordingId()
@@ -1413,11 +1485,15 @@ class ConsensusModuleAgent implements Agent, MemberStatusListener
     boolean electionComplete(final long nowMs)
     {
         boolean result = false;
+        final long logPosition = election.logPosition();
+        this.followerCommitPosition = logPosition;
+        commitPosition.setOrdered(logPosition);
+        pendingServiceMessages.consume(serviceSessionMessageSweeper, Integer.MAX_VALUE);
 
         if (Cluster.Role.LEADER == role)
         {
             if (logPublisher.appendNewLeadershipTermEvent(
-                leadershipTermId, election.logPosition(), nowMs, memberId, logPublisher.sessionId()))
+                leadershipTermId, logPosition, nowMs, memberId, logPublisher.sessionId()))
             {
                 timeOfLastLogUpdateMs = cachedTimeMs - leaderHeartbeatIntervalMs;
                 election = null;
@@ -1446,11 +1522,6 @@ class ConsensusModuleAgent implements Agent, MemberStatusListener
                 ctx.ingressChannel(), ctx.ingressStreamId(), null, this::onUnavailableIngressImage));
         }
 
-        cancelMissedTimers();
-        if (missedTimersSet.capacity() > LongHashSet.DEFAULT_INITIAL_CAPACITY)
-        {
-            missedTimersSet.compact();
-        }
 
         return result;
     }
@@ -1494,17 +1565,19 @@ class ConsensusModuleAgent implements Agent, MemberStatusListener
 
     void catchupLogPoll(final Subscription subscription, final int logSessionId, final long stopPosition)
     {
-        if (pollImageAndLogAdapter(subscription, logSessionId))
+        if (findImageAndLogAdapter(subscription, logSessionId))
         {
             final Image image = logAdapter.image();
             if (logAdapter.poll(stopPosition) == 0 && image.isClosed())
             {
-                throw new ClusterException("unexpected close of image when replaying log");
+                throw new ClusterException("unexpected image close replaying log at position " + image.position());
             }
 
-            final long appendedPosition = this.appendedPosition.get();
+            final long archivePosition = this.appendedPosition.get();
+            final long appendedPosition = Math.min(image.position(), archivePosition);
             if (appendedPosition != lastAppendedPosition)
             {
+                commitPosition.setOrdered(appendedPosition);
                 final Publication publication = election.leader().publication();
                 if (memberStatusPublisher.appendedPosition(publication, leadershipTermId, appendedPosition, memberId))
                 {
@@ -1513,27 +1586,25 @@ class ConsensusModuleAgent implements Agent, MemberStatusListener
                 }
             }
 
-            commitPosition.setOrdered(Math.min(image.position(), appendedPosition));
             consensusModuleAdapter.poll();
-            cancelMissedTimers();
         }
     }
 
     boolean hasAppendReachedPosition(final Subscription subscription, final int logSessionId, final long position)
     {
-        return pollImageAndLogAdapter(subscription, logSessionId) && appendedPosition.get() >= position;
+        return findImageAndLogAdapter(subscription, logSessionId) && commitPosition.get() >= position;
     }
 
     boolean hasAppendReachedLivePosition(final Subscription subscription, final int logSessionId, final long position)
     {
         boolean result = false;
 
-        if (pollImageAndLogAdapter(subscription, logSessionId))
+        if (findImageAndLogAdapter(subscription, logSessionId))
         {
-            final long appendPosition = appendedPosition.get();
+            final long localPosition = commitPosition.get();
             final long window = logAdapter.image().termBufferLength() * 2L;
 
-            result = appendPosition >= (position - window);
+            result = localPosition >= (position - window);
         }
 
         return result;
@@ -1615,36 +1686,51 @@ class ConsensusModuleAgent implements Agent, MemberStatusListener
         workCount += processRedirectSessions(redirectSessions, nowMs);
         workCount += processRejectedSessions(rejectedSessions, nowMs);
 
-        if (Cluster.Role.LEADER == role && null == election)
+        if (null == election)
         {
-            workCount += checkControlToggle(nowMs);
-
-            if (ConsensusModule.State.ACTIVE == state)
+            if (Cluster.Role.LEADER == role)
             {
-                workCount += processPendingSessions(pendingSessions, nowMs);
-                workCount += checkSessions(sessionByIdMap, nowMs);
-                workCount += processPassiveMembers(passiveMembers);
+                workCount += checkControlToggle(nowMs);
 
-                if (!ClusterMember.hasActiveQuorum(clusterMembers, nowMs, leaderHeartbeatTimeoutMs))
+                if (ConsensusModule.State.ACTIVE == state)
                 {
-                    ctx.countedErrorHandler().onError(new ClusterException("lost connection to quorum of followers"));
+                    workCount += processPendingSessions(pendingSessions, nowMs);
+                    workCount += checkSessions(sessionByIdMap, nowMs);
+                    workCount += processPassiveMembers(passiveMembers);
+
+                    if (!ClusterMember.hasActiveQuorum(clusterMembers, nowMs, leaderHeartbeatTimeoutMs))
+                    {
+                        ctx.countedErrorHandler().onError(new ClusterException("no active follower quorum"));
+                        enterElection(nowMs);
+                        workCount += 1;
+                    }
+                }
+                else if (ConsensusModule.State.TERMINATING == state)
+                {
+                    if (clusterTermination.canTerminate(clusterMembers, terminationPosition, cachedTimeMs))
+                    {
+                        recordingLog.commitLogPosition(leadershipTermId, terminationPosition);
+                        state(ConsensusModule.State.CLOSED);
+                        ctx.terminationHook().run();
+                    }
+                }
+            }
+            else if (ConsensusModule.State.ACTIVE == state || ConsensusModule.State.SUSPENDED == state)
+            {
+                if (NULL_POSITION != terminationPosition && logAdapter.position() >= terminationPosition)
+                {
+                    serviceProxy.terminationPosition(terminationPosition);
+                    expectedAckPosition = terminationPosition;
+                    state(ConsensusModule.State.TERMINATING);
+                }
+
+                if (nowMs >= (timeOfLastLogUpdateMs + leaderHeartbeatTimeoutMs))
+                {
+                    ctx.countedErrorHandler().onError(new ClusterException("heartbeat timeout from leader"));
                     enterElection(nowMs);
                     workCount += 1;
                 }
             }
-            else if (ConsensusModule.State.TERMINATING == state)
-            {
-                if (clusterTermination.canTerminate(clusterMembers, terminationPosition, cachedTimeMs))
-                {
-                    recordingLog.commitLogPosition(leadershipTermId, terminationPosition);
-                    state(ConsensusModule.State.CLOSED);
-                    ctx.terminationHook().run();
-                }
-            }
-        }
-        else
-        {
-            cancelMissedTimers();
         }
 
         if (null != archive)
@@ -1662,6 +1748,7 @@ class ConsensusModuleAgent implements Agent, MemberStatusListener
         if (Cluster.Role.LEADER == role && ConsensusModule.State.ACTIVE == state)
         {
             workCount += ingressAdapter.poll();
+            workCount += pendingServiceMessages.consume(serviceSessionMessageAppender, MESSAGE_LIMIT);
             workCount += timerService.poll(nowMs);
         }
         else if (Cluster.Role.FOLLOWER == role &&
@@ -1672,21 +1759,18 @@ class ConsensusModuleAgent implements Agent, MemberStatusListener
             final int count = logAdapter.poll(followerCommitPosition);
             if (0 == count && logAdapter.isImageClosed())
             {
-                ctx.countedErrorHandler().onError(new ClusterException("lost connection to leader"));
+                ctx.countedErrorHandler().onError(new ClusterException(
+                    "no leader connection: logPosition=" + logPosition() + " commitPosition=" + commitPosition.get() +
+                    " leadershipTermId=" + leadershipTermId + " leaderId=" + leaderMember.id()));
                 enterElection(nowMs);
                 return 1;
             }
 
             workCount += count;
 
-            if (NULL_POSITION != terminationPosition)
+            if (ConsensusModule.State.ACTIVE == state)
             {
-                if (logAdapter.position() >= terminationPosition && ConsensusModule.State.SNAPSHOT != state)
-                {
-                    serviceProxy.terminationPosition(terminationPosition);
-                    expectedAckPosition = terminationPosition;
-                    state(ConsensusModule.State.TERMINATING);
-                }
+                workCount += timerService.poll(nowMs - leaderHeartbeatTimeoutMs);
             }
         }
 
@@ -2144,24 +2228,6 @@ class ConsensusModuleAgent implements Agent, MemberStatusListener
         }
     }
 
-    private void updateClientFacingEndpoints(final ClusterMember[] members)
-    {
-        final StringBuilder builder = new StringBuilder(100);
-
-        for (int i = 0, length = members.length; i < length; i++)
-        {
-            if (0 != i)
-            {
-                builder.append(',');
-            }
-
-            final ClusterMember member = members[i];
-            builder.append(member.id()).append('=').append(member.clientFacingEndpoint());
-        }
-
-        clientFacingEndpoints = builder.toString();
-    }
-
     private void handleMemberRemovals(final long commitPosition)
     {
         ClusterMember[] newClusterMembers = clusterMembers;
@@ -2180,8 +2246,7 @@ class ConsensusModuleAgent implements Agent, MemberStatusListener
                 clusterMemberByIdMap.remove(member.id());
                 clusterMemberByIdMap.compact();
 
-                CloseHelper.close(member.publication());
-                member.publication(null);
+                member.closePublication();
 
                 logPublisher.removePassiveFollower(member.logEndpoint());
                 pendingMemberRemovals--;
@@ -2199,10 +2264,11 @@ class ConsensusModuleAgent implements Agent, MemberStatusListener
         final long appendedPosition = this.appendedPosition.get();
         if (Cluster.Role.LEADER == role)
         {
-            thisMember.logPosition(appendedPosition).timeOfLastAppendPositionMs(nowMs);
+            final long leaderPosition = Math.min(appendedPosition, logPublisher.position());
+            thisMember.logPosition(leaderPosition).timeOfLastAppendPositionMs(nowMs);
             final long quorumPosition = ClusterMember.quorumPosition(clusterMembers, rankedPositions);
 
-            if (commitPosition.proposeMaxOrdered(Math.min(quorumPosition, appendedPosition)) ||
+            if (commitPosition.proposeMaxOrdered(quorumPosition) ||
                 nowMs >= (timeOfLastLogUpdateMs + leaderHeartbeatIntervalMs))
             {
                 final long commitPosition = this.commitPosition.getWeak();
@@ -2239,13 +2305,6 @@ class ConsensusModuleAgent implements Agent, MemberStatusListener
             }
 
             commitPosition.proposeMaxOrdered(Math.min(logAdapter.position(), appendedPosition));
-
-            if (nowMs >= (timeOfLastLogUpdateMs + leaderHeartbeatTimeoutMs))
-            {
-                ctx.countedErrorHandler().onError(new ClusterException("heartbeat timeout from leader"));
-                enterElection(nowMs);
-                workCount += 1;
-            }
         }
 
         return workCount;
@@ -2254,7 +2313,6 @@ class ConsensusModuleAgent implements Agent, MemberStatusListener
     private void enterElection(final long nowMs)
     {
         ingressAdapter.close();
-        commitPosition.proposeMaxOrdered(followerCommitPosition);
 
         election = new Election(
             false,
@@ -2367,6 +2425,10 @@ class ConsensusModuleAgent implements Agent, MemberStatusListener
 
         snapshotTaker.markBegin(SNAPSHOT_TYPE_ID, logPosition, leadershipTermId, 0);
 
+        snapshotTaker.snapshotConsensusModuleState(
+            nextSessionId, nextServiceSessionId, logServiceSessionId, pendingServiceMessages.capacity());
+        snapshotTaker.snapshotClusterMembers(memberId, highMemberId, clusterMembers);
+
         for (final ClusterSession session : sessionByIdMap.values())
         {
             if (session.state() == OPEN || session.state() == CLOSED)
@@ -2375,11 +2437,8 @@ class ConsensusModuleAgent implements Agent, MemberStatusListener
             }
         }
 
-        aeronClientInvoker.invoke();
-
         timerService.snapshot(snapshotTaker);
-        snapshotTaker.consensusModuleState(nextSessionId);
-        snapshotTaker.clusterMembers(memberId, highMemberId, clusterMembers);
+        snapshotTaker.snapshot(pendingServiceMessages);
 
         snapshotTaker.markEnd(SNAPSHOT_TYPE_ID, logPosition, leadershipTermId, 0);
     }
@@ -2387,7 +2446,7 @@ class ConsensusModuleAgent implements Agent, MemberStatusListener
     private Publication createLogPublication(
         final ChannelUri channelUri, final RecordingLog.RecoveryPlan plan, final long position)
     {
-        channelUri.put(TAGS_PARAM_NAME, ConsensusModule.Configuration.LOG_PUBLICATION_TAGS);
+        channelUri.put(TAGS_PARAM_NAME, logPublicationChannelTag + "," + logPublicationTag);
 
         if (!plan.logs.isEmpty())
         {
@@ -2465,17 +2524,6 @@ class ConsensusModuleAgent implements Agent, MemberStatusListener
         logAdapter = null;
     }
 
-    private void cancelMissedTimers()
-    {
-        for (final LongHashSet.LongIterator iterator = missedTimersSet.iterator(); iterator.hasNext(); )
-        {
-            if (timerService.cancelTimer(iterator.nextValue()))
-            {
-                iterator.remove();
-            }
-        }
-    }
-
     private void onUnavailableIngressImage(final Image image)
     {
         ingressAdapter.freeSessionBuffer(image.sessionId());
@@ -2491,28 +2539,52 @@ class ConsensusModuleAgent implements Agent, MemberStatusListener
         clusterTimeMs = nowMs;
     }
 
-    private ClusterMember determineMemberAndCheckEndpoints(final ClusterMember[] clusterMembers)
+    private void enqueueServiceSessionMessage(
+        final MutableDirectBuffer buffer, final int offset, final int length, final long clusterSessionId)
     {
-        final int memberId = ctx.clusterMemberId();
-        ClusterMember member = NULL_VALUE != memberId ? ClusterMember.findMember(clusterMembers, memberId) : null;
+        final int headerOffset = offset - SESSION_HEADER_LENGTH;
+        final int clusterSessionIdOffset = headerOffset +
+            MessageHeaderDecoder.ENCODED_LENGTH +
+            SessionMessageHeaderDecoder.clusterSessionIdEncodingOffset();
 
-        if ((null == clusterMembers || 0 == clusterMembers.length) && null == member)
+        buffer.putLong(clusterSessionIdOffset, clusterSessionId, SessionMessageHeaderDecoder.BYTE_ORDER);
+        pendingServiceMessages.append(buffer, headerOffset, length + SESSION_HEADER_LENGTH);
+    }
+
+    private boolean serviceSessionMessageAppender(final MutableDirectBuffer buffer, final int offset, final int length)
+    {
+        final int clusterSessionIdOffset =
+            offset + MessageHeaderDecoder.ENCODED_LENGTH + SessionMessageHeaderDecoder.clusterSessionIdEncodingOffset();
+        final long clusterSessionId = buffer.getLong(clusterSessionIdOffset, SessionMessageHeaderDecoder.BYTE_ORDER);
+
+        final boolean appended = logPublisher.appendMessage(
+            leadershipTermId,
+            clusterSessionId,
+            clusterTimeMs,
+            buffer,
+            offset + SESSION_HEADER_LENGTH,
+            length - SESSION_HEADER_LENGTH);
+
+        if (appended)
         {
-            member = ClusterMember.parseEndpoints(NULL_VALUE, ctx.memberEndpoints());
-        }
-        else
-        {
-            if (null == member)
-            {
-                throw new ClusterException("memberId=" + memberId + " not found in clusterMembers");
-            }
-
-            if (!ctx.memberEndpoints().equals(""))
-            {
-                ClusterMember.validateMemberEndpoints(member, ctx.memberEndpoints());
-            }
+            logServiceSessionId = clusterSessionId;
         }
 
-        return member;
+        return appended;
+    }
+
+    private void sweepPendingServiceSessionMessages(final long clusterSessionId)
+    {
+        logServiceSessionId = clusterSessionId;
+        pendingServiceMessages.consume(serviceSessionMessageSweeper, MESSAGE_LIMIT);
+    }
+
+    @SuppressWarnings("unused")
+    private boolean serviceSessionMessageSweeper(final MutableDirectBuffer buffer, final int offset, final int length)
+    {
+        final int clusterSessionIdOffset =
+            offset + MessageHeaderDecoder.ENCODED_LENGTH + SessionMessageHeaderDecoder.clusterSessionIdEncodingOffset();
+
+        return buffer.getLong(clusterSessionIdOffset, SessionMessageHeaderDecoder.BYTE_ORDER) <= logServiceSessionId;
     }
 }

@@ -22,10 +22,12 @@ import io.aeron.archive.Archive;
 import io.aeron.archive.ArchiveThreadingMode;
 import io.aeron.cluster.client.AeronCluster;
 import io.aeron.cluster.service.ClientSession;
+import io.aeron.cluster.service.Cluster;
 import io.aeron.cluster.service.ClusteredService;
 import io.aeron.cluster.service.ClusteredServiceContainer;
 import io.aeron.driver.MediaDriver;
 import io.aeron.driver.ThreadingMode;
+import io.aeron.logbuffer.FragmentHandler;
 import io.aeron.logbuffer.Header;
 import org.agrona.CloseHelper;
 import org.agrona.DirectBuffer;
@@ -37,12 +39,13 @@ import org.junit.Before;
 import org.junit.Test;
 
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.agrona.BitUtil.SIZE_OF_INT;
 import static org.agrona.BitUtil.SIZE_OF_LONG;
-import static org.hamcrest.CoreMatchers.is;
+import static org.hamcrest.Matchers.is;
 import static org.junit.Assert.*;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -58,9 +61,9 @@ public class ClusterNodeRestartTest
 
     private ClusteredMediaDriver clusteredMediaDriver;
     private ClusteredServiceContainer container;
+    private AeronCluster aeronCluster;
 
     private final ExpandableArrayBuffer msgBuffer = new ExpandableArrayBuffer();
-    private AeronCluster aeronCluster;
     private final AtomicReference<String> serviceState = new AtomicReference<>();
     private final AtomicLong snapshotCount = new AtomicLong();
     private final Counter mockSnapshotCounter = mock(Counter.class);
@@ -170,7 +173,6 @@ public class ClusterNodeRestartTest
         }
 
         forceCloseForRestart();
-
 
         serviceState.set(null);
         launchClusteredMediaDriver(false);
@@ -361,11 +363,41 @@ public class ClusterNodeRestartTest
         assertThat(serviceState.get(), is("5"));
     }
 
+    @Test(timeout = 10_000)
+    public void shouldTriggerRescheduledTimerAfterReplay()
+    {
+        final AtomicInteger triggeredTimersCounter = new AtomicInteger();
+
+        launchReschedulingService(triggeredTimersCounter);
+        connectClient();
+
+        sendCountedMessageIntoCluster(0);
+
+        while (triggeredTimersCounter.get() < 2)
+        {
+            TestUtil.checkInterruptedStatus();
+            Thread.yield();
+        }
+
+        forceCloseForRestart();
+
+        final int triggeredSinceStart = triggeredTimersCounter.getAndSet(0);
+
+        launchClusteredMediaDriver(false);
+        launchReschedulingService(triggeredTimersCounter);
+
+        while (triggeredTimersCounter.get() <= triggeredSinceStart)
+        {
+            TestUtil.checkInterruptedStatus();
+            Thread.yield();
+        }
+    }
+
     private void sendCountedMessageIntoCluster(final int value)
     {
         msgBuffer.putInt(MESSAGE_VALUE_OFFSET, value);
 
-        sendBufferIntoCluster(aeronCluster, msgBuffer, MESSAGE_LENGTH);
+        sendMessageIntoCluster(aeronCluster, msgBuffer, MESSAGE_LENGTH);
     }
 
     private void sendTimerMessageIntoCluster(final int value, final long timerCorrelationId, final long delayMs)
@@ -374,15 +406,14 @@ public class ClusterNodeRestartTest
         msgBuffer.putLong(TIMER_MESSAGE_ID_OFFSET, timerCorrelationId);
         msgBuffer.putLong(TIMER_MESSAGE_DELAY_OFFSET, delayMs);
 
-        sendBufferIntoCluster(aeronCluster, msgBuffer, TIMER_MESSAGE_LENGTH);
+        sendMessageIntoCluster(aeronCluster, msgBuffer, TIMER_MESSAGE_LENGTH);
     }
 
-    private static void sendBufferIntoCluster(
-        final AeronCluster aeronCluster, final DirectBuffer buffer, final int length)
+    private static void sendMessageIntoCluster(final AeronCluster cluster, final DirectBuffer buffer, final int length)
     {
         while (true)
         {
-            final long result = aeronCluster.offer(buffer, 0, length);
+            final long result = cluster.offer(buffer, 0, length);
             if (result > 0)
             {
                 break;
@@ -402,6 +433,38 @@ public class ClusterNodeRestartTest
             {
                 private int nextCorrelationId = 0;
                 private int counterValue = 0;
+
+                public void onStart(final Cluster cluster, final Image snapshotImage)
+                {
+                    super.onStart(cluster, snapshotImage);
+
+                    if (null != snapshotImage)
+                    {
+                        final FragmentHandler fragmentHandler = (buffer, offset, length, header) ->
+                        {
+                            nextCorrelationId = buffer.getInt(offset);
+                            offset += SIZE_OF_INT;
+
+                            counterValue = buffer.getInt(offset);
+                            offset += SIZE_OF_INT;
+
+                            final String s = buffer.getStringAscii(offset);
+
+                            serviceState.set(s);
+                        };
+
+                        while (true)
+                        {
+                            final int fragments = snapshotImage.poll(fragmentHandler, 1);
+                            if (fragments == 1)
+                            {
+                                break;
+                            }
+
+                            cluster.idle();
+                        }
+                    }
+                }
 
                 public void onSessionMessage(
                     final ClientSession session,
@@ -442,31 +505,74 @@ public class ClusterNodeRestartTest
 
                     snapshotPublication.offer(buffer, 0, length);
                 }
+            };
 
-                public void onLoadSnapshot(final Image snapshotImage)
+        container = null;
+
+        container = ClusteredServiceContainer.launch(
+            new ClusteredServiceContainer.Context()
+                .clusteredService(service)
+                .terminationHook(TestUtil.TERMINATION_HOOK)
+                .errorHandler(TestUtil.errorHandler(0)));
+    }
+
+    private void launchReschedulingService(final AtomicInteger triggeredTimersCounter)
+    {
+        final ClusteredService service =
+            new StubClusteredService()
+            {
+                public void onSessionMessage(
+                    final ClientSession session,
+                    final long timestampMs,
+                    final DirectBuffer buffer,
+                    final int offset,
+                    final int length,
+                    final Header header)
                 {
-                    while (true)
+                    scheduleNext(serviceCorrelationId(7), timestampMs + 100);
+                }
+
+                public void onTimerEvent(final long correlationId, final long timestampMs)
+                {
+                    triggeredTimersCounter.getAndIncrement();
+                    scheduleNext(correlationId, timestampMs + 100);
+                }
+
+                public void onStart(final Cluster cluster, final Image snapshotImage)
+                {
+                    super.onStart(cluster, snapshotImage);
+
+                    if (null != snapshotImage)
                     {
-                        final int fragments = snapshotImage.poll(
-                            (buffer, offset, length, header) ->
-                            {
-                                nextCorrelationId = buffer.getInt(offset);
-                                offset += SIZE_OF_INT;
+                        final FragmentHandler fragmentHandler =
+                            (buffer, offset, length, header) -> triggeredTimersCounter.set(buffer.getInt(offset));
 
-                                counterValue = buffer.getInt(offset);
-                                offset += SIZE_OF_INT;
-
-                                final String s = buffer.getStringAscii(offset);
-
-                                serviceState.set(s);
-                            },
-                            1);
-
-                        if (fragments == 1)
+                        while (true)
                         {
-                            break;
-                        }
+                            final int fragments = snapshotImage.poll(fragmentHandler, 1);
+                            if (fragments == 1)
+                            {
+                                break;
+                            }
 
+                            cluster.idle();
+                        }
+                    }
+                }
+
+                public void onTakeSnapshot(final Publication snapshotPublication)
+                {
+                    final ExpandableArrayBuffer buffer = new ExpandableArrayBuffer();
+
+                    buffer.putInt(0, triggeredTimersCounter.get());
+
+                    snapshotPublication.offer(buffer, 0, SIZE_OF_INT);
+                }
+
+                private void scheduleNext(final long correlationId, final long deadlineMs)
+                {
+                    while (!cluster.scheduleTimer(correlationId, deadlineMs))
+                    {
                         cluster.idle();
                     }
                 }

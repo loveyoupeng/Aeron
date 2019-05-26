@@ -31,11 +31,14 @@ aeron_flow_control_strategy_supplier_func_t aeron_flow_control_strategy_supplier
 {
     aeron_flow_control_strategy_supplier_func_t func = NULL;
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
     if ((func = (aeron_flow_control_strategy_supplier_func_t)aeron_dlsym(RTLD_DEFAULT, strategy_name)) == NULL)
     {
         aeron_set_err(EINVAL, "could not find flow control strategy %s: dlsym - %s", strategy_name, aeron_dlerror());
         return NULL;
     }
+#pragma GCC diagnostic pop
 
     return func;
 }
@@ -95,9 +98,7 @@ int64_t aeron_max_flow_control_strategy_on_sm(
     return snd_lmt > window_edge ? snd_lmt : window_edge;
 }
 
-bool aeron_max_flow_control_strategy_should_linger(
-    void *state,
-    int64_t now_ns)
+bool aeron_max_flow_control_strategy_should_linger(void *state, int64_t now_ns)
 {
     aeron_max_flow_control_strategy_state_t *strategy_state = (aeron_max_flow_control_strategy_state_t *)state;
 
@@ -116,12 +117,12 @@ int aeron_max_flow_control_strategy_fini(aeron_flow_control_strategy_t *strategy
 
 int aeron_max_multicast_flow_control_strategy_supplier(
     aeron_flow_control_strategy_t **strategy,
-    int32_t channel_length,
+    size_t channel_length,
     const char *channel,
     int32_t stream_id,
     int64_t registration_id,
     int32_t initial_term_id,
-    size_t term_buffer_capacity)
+    size_t term_length)
 {
     aeron_flow_control_strategy_t *_strategy;
 
@@ -148,13 +149,38 @@ int aeron_max_multicast_flow_control_strategy_supplier(
 
 int aeron_unicast_flow_control_strategy_supplier(
     aeron_flow_control_strategy_t **strategy,
-    int32_t channel_length,
+    size_t channel_length,
     const char *channel,
     int32_t stream_id,
     int64_t registration_id,
     int32_t initial_term_id,
-    size_t term_buffer_capacity)
+    size_t term_length)
 {
     return aeron_max_multicast_flow_control_strategy_supplier(
-        strategy, channel_length, channel, stream_id, registration_id, initial_term_id, term_buffer_capacity);
+        strategy, channel_length, channel, stream_id, registration_id, initial_term_id, term_length);
+}
+
+aeron_flow_control_strategy_supplier_func_table_entry_t aeron_flow_control_strategy_supplier_table[] =
+{
+    { AERON_UNICAST_MAX_FLOW_CONTROL_STRATEGY_NAME, aeron_unicast_flow_control_strategy_supplier },
+    { AERON_MULTICAST_MAX_FLOW_CONTROL_STRATEGY_NAME, aeron_max_multicast_flow_control_strategy_supplier },
+    { AERON_MULTICAST_MIN_FLOW_CONTROL_STRATEGY_NAME, aeron_min_flow_control_strategy_supplier }
+};
+
+aeron_flow_control_strategy_supplier_func_t aeron_flow_control_strategy_supplier_by_name(const char *name)
+{
+    size_t entries = sizeof(aeron_flow_control_strategy_supplier_table) /
+        sizeof(aeron_flow_control_strategy_supplier_func_table_entry_t);
+
+    for (size_t i = 0; i < entries; i++)
+    {
+        aeron_flow_control_strategy_supplier_func_table_entry_t *entry = &aeron_flow_control_strategy_supplier_table[i];
+
+        if (strncmp(entry->name, name, strlen(entry->name)) == 0)
+        {
+            return entry->supplier_func;
+        }
+    }
+
+    return NULL;
 }

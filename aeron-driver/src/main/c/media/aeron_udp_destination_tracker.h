@@ -26,9 +26,9 @@
 
 typedef struct aeron_udp_destination_entry_stct
 {
-    struct sockaddr_storage addr;
     int64_t time_of_last_activity_ns;
     int64_t receiver_id;
+    struct sockaddr_storage addr;
 }
 aeron_udp_destination_entry_t;
 
@@ -42,14 +42,14 @@ typedef struct aeron_udp_destination_tracker_stct
     }
     destinations;
 
+    bool is_manual_control_mode;
     aeron_clock_func_t nano_clock;
     int64_t destination_timeout_ns;
-    bool is_manual_control_mode;
 }
 aeron_udp_destination_tracker_t;
 
 int aeron_udp_destination_tracker_init(
-    aeron_udp_destination_tracker_t *tracker, aeron_clock_func_t clock, int64_t timeout);
+    aeron_udp_destination_tracker_t *tracker, aeron_clock_func_t clock, int64_t timeout_ns);
 int aeron_udp_destination_tracker_close(aeron_udp_destination_tracker_t *tracker);
 
 int aeron_udp_destination_tracker_sendmmsg(

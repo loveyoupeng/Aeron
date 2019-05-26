@@ -15,8 +15,7 @@
  */
 package io.aeron;
 
-import io.aeron.exceptions.AeronException;
-import io.aeron.exceptions.DriverTimeoutException;
+import io.aeron.exceptions.*;
 import org.agrona.DirectBuffer;
 import org.agrona.IoUtil;
 import org.agrona.SystemUtil;
@@ -33,12 +32,14 @@ import java.nio.MappedByteBuffer;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
 import java.util.function.Consumer;
 
 import static io.aeron.Aeron.sleep;
 import static io.aeron.CncFileDescriptor.*;
 import static java.lang.Long.getLong;
 import static java.lang.System.getProperty;
+import static java.util.concurrent.atomic.AtomicIntegerFieldUpdater.newUpdater;
 
 /**
  * This class provides the Media Driver and client with common configuration for the Aeron directory.
@@ -177,7 +178,8 @@ public class CommonContext implements Cloneable
     public static final String LINGER_PARAM_NAME = "linger";
 
     /**
-     * Parameter name for channel URI param to indicate if a subscribed must be reliable or not. Value is boolean.
+     * Parameter name for channel URI param to indicate if a subscribed stream must be reliable or not.
+     * Value is boolean with true to recover loss and false to gap fill.
      */
     public static final String RELIABLE_STREAM_PARAM_NAME = "reliable";
 
@@ -200,6 +202,25 @@ public class CommonContext implements Cloneable
      * Parameter name for channel URI param to indicate an alias for the given URI. Value not interpreted by Aeron.
      */
     public static final String ALIAS_PARAM_NAME = "alias";
+
+    /**
+     * Parameter name for channel URI param to indicate if End of Stream (EOS) should be sent or not. Value is boolean.
+     */
+    public static final String EOS_PARAM_NAME = "eos";
+
+    /**
+     * Parameter name for channel URI param to indicate if a subscription should tether for local flow control.
+     * Value is boolean. A tether only applies when there is more than one matching active subscription. If tether is
+     * true then that subscription is included in flow control. If only one subscription then it tethers pace.
+     */
+    public static final String TETHER_PARAM_NAME = "tether";
+
+    /**
+     * Using an integer because there is no support for boolean. 1 is concluded, 0 is not concluded.
+     */
+    private static final AtomicIntegerFieldUpdater<CommonContext> IS_CONCLUDED_UPDATER = newUpdater(
+        CommonContext.class, "isConcluded");
+    private volatile int isConcluded;
 
     private long driverTimeoutMs = DRIVER_TIMEOUT_MS;
     private String aeronDirectoryName = getAeronDirectoryName();
@@ -275,6 +296,11 @@ public class CommonContext implements Cloneable
      */
     public CommonContext conclude()
     {
+        if (0 != IS_CONCLUDED_UPDATER.getAndSet(this, 1))
+        {
+            throw new ConcurrentConcludeException();
+        }
+
         concludeAeronDirectory();
 
         cncFile = new File(aeronDirectory, CncFileDescriptor.CNC_FILE);

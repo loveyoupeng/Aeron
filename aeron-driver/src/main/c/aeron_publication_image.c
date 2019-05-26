@@ -88,9 +88,7 @@ int aeron_publication_image_create(
 
     if (aeron_loss_detector_init(
         &_image->loss_detector,
-        is_multicast,
-        is_multicast ?
-            aeron_loss_detector_nak_multicast_delay_generator : aeron_loss_detector_nak_unicast_delay_generator,
+        is_multicast ? &context->multicast_delay_feedback_generator : &context->unicast_delay_feedback_generator,
         aeron_publication_image_on_gap_detected, _image) < 0)
     {
         aeron_free(_image);
@@ -207,12 +205,12 @@ int aeron_publication_image_close(aeron_counters_manager_t *counters_manager, ae
     {
         aeron_subscribable_t *subscribable = &image->conductor_fields.subscribable;
 
-        aeron_counters_manager_free(counters_manager, (int32_t)image->rcv_hwm_position.counter_id);
-        aeron_counters_manager_free(counters_manager, (int32_t)image->rcv_pos_position.counter_id);
+        aeron_counters_manager_free(counters_manager, image->rcv_hwm_position.counter_id);
+        aeron_counters_manager_free(counters_manager, image->rcv_pos_position.counter_id);
 
         for (size_t i = 0, length = subscribable->length; i < length; i++)
         {
-            aeron_counters_manager_free(counters_manager, (int32_t)subscribable->array[i].counter_id);
+            aeron_counters_manager_free(counters_manager, subscribable->array[i].counter_id);
         }
 
         aeron_free(subscribable->array);
@@ -246,7 +244,6 @@ void aeron_publication_image_clean_buffer_to(aeron_publication_image_t *image, i
 void aeron_publication_image_on_gap_detected(void *clientd, int32_t term_id, int32_t term_offset, size_t length)
 {
     aeron_publication_image_t *image = (aeron_publication_image_t *)clientd;
-
     const int64_t change_number = image->begin_loss_change + 1;
 
     AERON_PUT_ORDERED(image->begin_loss_change, change_number);
@@ -265,8 +262,7 @@ void aeron_publication_image_on_gap_detected(void *clientd, int32_t term_id, int
     else if (NULL != image->loss_reporter)
     {
         char source[AERON_MAX_PATH];
-
-        aeron_format_source_identity(source, sizeof(source), &image->source_address);
+        size_t source_length = aeron_format_source_identity(source, sizeof(source), &image->source_address);
 
         if (NULL != image->endpoint)
         {
@@ -279,7 +275,7 @@ void aeron_publication_image_on_gap_detected(void *clientd, int32_t term_id, int
                 image->endpoint->conductor_fields.udp_channel->original_uri,
                 image->endpoint->conductor_fields.udp_channel->uri_length,
                 source,
-                strlen(source));
+                source_length);
         }
 
         if (-1 == image->loss_reporter_offset)
@@ -294,14 +290,19 @@ void aeron_publication_image_track_rebuild(
 {
     int64_t hwm_position = aeron_counter_get_volatile(image->rcv_hwm_position.value_addr);
     int64_t min_sub_pos = hwm_position;
-    int64_t max_sub_pos = INT64_MIN;
+    int64_t max_sub_pos = 0;
 
     for (size_t i = 0, length = image->conductor_fields.subscribable.length; i < length; i++)
     {
-        int64_t position = aeron_counter_get_volatile(image->conductor_fields.subscribable.array[i].value_addr);
+        aeron_tetherable_position_t *tetherable_position = &image->conductor_fields.subscribable.array[i];
 
-        min_sub_pos = position < min_sub_pos ? position : min_sub_pos;
-        max_sub_pos = position > max_sub_pos ? position : max_sub_pos;
+        if (AERON_SUBSCRIPTION_TETHER_RESTING != tetherable_position->state)
+        {
+            int64_t position = aeron_counter_get_volatile(tetherable_position->value_addr);
+
+            min_sub_pos = position < min_sub_pos ? position : min_sub_pos;
+            max_sub_pos = position > max_sub_pos ? position : max_sub_pos;
+        }
     }
 
     const int64_t rebuild_position = *image->rcv_pos_position.value_addr > max_sub_pos ?
@@ -518,6 +519,96 @@ int aeron_publication_image_initiate_rttm(aeron_publication_image_t *image, int6
     return work_count;
 }
 
+void aeron_publication_image_check_untethered_subscriptions(
+    aeron_driver_conductor_t *conductor, aeron_publication_image_t *image, int64_t now_ns)
+{
+    int64_t max_sub_pos = 0;
+
+    for (size_t i = 0, length = image->conductor_fields.subscribable.length; i < length; i++)
+    {
+        aeron_tetherable_position_t *tetherable_position = &image->conductor_fields.subscribable.array[i];
+
+        if (tetherable_position->is_tether)
+        {
+            int64_t position = aeron_counter_get_volatile(tetherable_position->value_addr);
+            max_sub_pos = position > max_sub_pos ? position : max_sub_pos;
+        }
+    }
+
+    int64_t window_length = image->next_sm_receiver_window_length;
+    int64_t untethered_window_limit = (max_sub_pos - window_length) + (window_length / 8);
+
+    for (size_t i = 0, length = image->conductor_fields.subscribable.length; i < length; i++)
+    {
+        aeron_tetherable_position_t *tetherable_position = &image->conductor_fields.subscribable.array[i];
+
+        if (tetherable_position->is_tether)
+        {
+            tetherable_position->time_of_last_update_ns = now_ns;
+        }
+        else
+        {
+            int64_t window_limit_timeout_ns = conductor->context->untethered_window_limit_timeout_ns;
+            int64_t resting_timeout_ns = conductor->context->untethered_resting_timeout_ns;
+
+            switch (tetherable_position->state)
+            {
+                case AERON_SUBSCRIPTION_TETHER_ACTIVE:
+                    if (aeron_counter_get_volatile(tetherable_position->value_addr) > untethered_window_limit)
+                    {
+                        tetherable_position->time_of_last_update_ns = now_ns;
+                    }
+                    else if (now_ns > (tetherable_position->time_of_last_update_ns + window_limit_timeout_ns))
+                    {
+                        aeron_driver_conductor_on_unavailable_image(
+                            conductor,
+                            image->conductor_fields.managed_resource.registration_id,
+                            tetherable_position->subscription_registration_id,
+                            image->stream_id,
+                            AERON_IPC_CHANNEL,
+                            AERON_IPC_CHANNEL_LEN);
+
+                        tetherable_position->state = AERON_SUBSCRIPTION_TETHER_LINGER;
+                        tetherable_position->time_of_last_update_ns = now_ns;
+                    }
+                    break;
+
+                case AERON_SUBSCRIPTION_TETHER_LINGER:
+                    if (now_ns > (tetherable_position->time_of_last_update_ns + window_limit_timeout_ns))
+                    {
+                        tetherable_position->state = AERON_SUBSCRIPTION_TETHER_RESTING;
+                        tetherable_position->time_of_last_update_ns = now_ns;
+                    }
+                    break;
+
+                case AERON_SUBSCRIPTION_TETHER_RESTING:
+                    if (now_ns > (tetherable_position->time_of_last_update_ns + resting_timeout_ns))
+                    {
+                        char source_identity[AERON_MAX_PATH];
+                        size_t source_identity_length = aeron_format_source_identity(
+                            source_identity, sizeof(source_identity), &image->source_address);
+
+                        aeron_counter_set_ordered(tetherable_position->value_addr, *image->rcv_pos_position.value_addr);
+                        aeron_driver_conductor_on_available_image(
+                            conductor,
+                            image->conductor_fields.managed_resource.registration_id,
+                            image->stream_id,
+                            image->session_id,
+                            image->log_file_name,
+                            image->log_file_name_length,
+                            tetherable_position->counter_id,
+                            tetherable_position->subscription_registration_id,
+                            source_identity,
+                            source_identity_length);
+                        tetherable_position->state = AERON_SUBSCRIPTION_TETHER_ACTIVE;
+                        tetherable_position->time_of_last_update_ns = now_ns;
+                    }
+                    break;
+            }
+        }
+    }
+}
+
 void aeron_publication_image_on_time_event(
     aeron_driver_conductor_t *conductor, aeron_publication_image_t *image, int64_t now_ns, int64_t now_ms)
 {
@@ -525,6 +616,8 @@ void aeron_publication_image_on_time_event(
     {
         case AERON_PUBLICATION_IMAGE_STATUS_ACTIVE:
         {
+            aeron_publication_image_check_untethered_subscriptions(conductor, image, now_ns);
+
             int64_t last_packet_timestamp_ns;
             AERON_GET_VOLATILE(last_packet_timestamp_ns, image->last_packet_timestamp_ns);
             bool is_end_of_stream;

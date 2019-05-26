@@ -57,6 +57,32 @@
 #include "util/aeron_fileutil.h"
 #include "aeron_driver.h"
 #include "aeron_socket.h"
+#include "util/aeron_dlopen.h"
+
+const char aeron_version_full_str[] = "aeron version " AERON_VERSION_TXT " built " __DATE__ " " __TIME__;
+int aeron_major_version = AERON_VERSION_MAJOR;
+int aeron_minor_version = AERON_VERSION_MINOR;
+int aeron_patch_version = AERON_VERSION_PATCH;
+
+const char *aeron_version_full()
+{
+    return aeron_version_full_str;
+}
+
+int aeron_version_major()
+{
+    return aeron_major_version;
+}
+
+int aeron_version_minor()
+{
+    return aeron_minor_version;
+}
+
+int aeron_version_patch()
+{
+    return aeron_patch_version;
+}
 
 void aeron_log_func_stderr(const char *str)
 {
@@ -295,7 +321,8 @@ void aeron_driver_fill_cnc_metadata(aeron_driver_context_t *context)
     aeron_cnc_metadata_t *metadata = (aeron_cnc_metadata_t *)context->cnc_map.addr;
     metadata->to_driver_buffer_length = (int32_t)context->to_driver_buffer_length;
     metadata->to_clients_buffer_length = (int32_t)context->to_clients_buffer_length;
-    metadata->counter_metadata_buffer_length = (int32_t)context->counters_metadata_buffer_length;
+    metadata->counter_metadata_buffer_length =
+        (int32_t)(AERON_COUNTERS_METADATA_BUFFER_LENGTH(context->counters_values_buffer_length));
     metadata->counter_values_buffer_length = (int32_t)context->counters_values_buffer_length;
     metadata->error_log_buffer_length = (int32_t)context->error_buffer_length;
     metadata->client_liveness_timeout = (int64_t)context->client_liveness_timeout_ns;
@@ -514,6 +541,129 @@ int aeron_driver_validate_page_size(aeron_driver_t *driver)
     return 0;
 }
 
+void aeron_driver_context_print_configuration(aeron_driver_context_t *context)
+{
+    FILE *fpout = stdout;
+    char buffer[1024];
+
+    fprintf(fpout, "aeron_driver_context_t {");
+    fprintf(fpout, "\n    aeron_dir=%s", context->aeron_dir);
+    fprintf(fpout, "\n    driver_timeout_ms=%" PRIu64, context->driver_timeout_ms);
+    fprintf(fpout, "\n    print_configuration_on_start=%d", context->print_configuration_on_start);
+    fprintf(fpout, "\n    warn_if_dirs_exists=%d", context->warn_if_dirs_exist);
+    fprintf(fpout, "\n    term_buffer_sparse_file=%d", context->term_buffer_sparse_file);
+    fprintf(fpout, "\n    perform_storage_checks=%d", context->perform_storage_checks);
+    fprintf(fpout, "\n    spies_simulate_connection=%d", context->spies_simulate_connection);
+    fprintf(fpout, "\n    reliable_stream=%d", context->reliable_stream);
+    fprintf(fpout, "\n    tether_subscriptions=%d", context->tether_subscriptions);
+    fprintf(fpout, "\n    to_driver_buffer_length=%" PRIu64, (uint64_t)context->to_driver_buffer_length);
+    fprintf(fpout, "\n    to_clients_buffer_length=%" PRIu64, (uint64_t)context->to_clients_buffer_length);
+    fprintf(fpout, "\n    counters_values_buffer_length=%" PRIu64, (uint64_t)context->counters_values_buffer_length);
+    fprintf(fpout, "\n    error_buffer_length=%" PRIu64, (uint64_t)context->error_buffer_length);
+    fprintf(fpout, "\n    timer_interval_ns=%" PRIu64, context->timer_interval_ns);
+    fprintf(fpout, "\n    client_liveness_timeout_ns=%" PRIu64, context->client_liveness_timeout_ns);
+    fprintf(fpout, "\n    image_liveness_timeout_ns=%" PRIu64, context->image_liveness_timeout_ns);
+    fprintf(fpout, "\n    publication_unblock_timeout_ns=%" PRIu64, context->publication_unblock_timeout_ns);
+    fprintf(fpout, "\n    publication_connection_timeout_ns=%" PRIu64, context->publication_connection_timeout_ns);
+    fprintf(fpout, "\n    publication_linger_timeout_ns=%" PRIu64, context->publication_linger_timeout_ns);
+    fprintf(fpout, "\n    untethered_window_limit_timeout_ns=%" PRIu64, context->untethered_window_limit_timeout_ns);
+    fprintf(fpout, "\n    untethered_resting_timeout_ns=%" PRIu64, context->untethered_resting_timeout_ns);
+    fprintf(fpout, "\n    retransmit_unicast_delay_ns=%" PRIu64, context->retransmit_unicast_delay_ns);
+    fprintf(fpout, "\n    retransmit_unicast_linger_ns=%" PRIu64, context->retransmit_unicast_linger_ns);
+    fprintf(fpout, "\n    nak_unicast_delay_ns=%" PRIu64, context->nak_unicast_delay_ns);
+    fprintf(fpout, "\n    nak_multicast_max_backoff_ns=%" PRIu64, context->nak_multicast_max_backoff_ns);
+    fprintf(fpout, "\n    nak_multicast_group_size=%" PRIu64, (uint64_t)context->nak_multicast_group_size);
+    fprintf(fpout, "\n    status_message_timeout_ns=%" PRIu64, context->status_message_timeout_ns);
+    fprintf(fpout, "\n    counter_free_to_reuse_ns=%" PRIu64, context->counter_free_to_reuse_ns);
+    fprintf(fpout, "\n    term_buffer_length=%" PRIu64, (uint64_t)context->term_buffer_length);
+    fprintf(fpout, "\n    ipc_term_buffer_length=%" PRIu64, (uint64_t)context->ipc_term_buffer_length);
+    fprintf(fpout, "\n    publication_window_length=%" PRIu64, (uint64_t)context->publication_window_length);
+    fprintf(fpout, "\n    ipc_publication_window_length=%" PRIu64, (uint64_t)context->ipc_publication_window_length);
+    fprintf(fpout, "\n    initial_window_length=%" PRIu64, (uint64_t)context->initial_window_length);
+    fprintf(fpout, "\n    socket_sndbuf=%" PRIu64, (uint64_t)context->socket_sndbuf);
+    fprintf(fpout, "\n    socket_rcvbuf=%" PRIu64, (uint64_t)context->socket_rcvbuf);
+    fprintf(fpout, "\n    multicast_ttl=%" PRIu8, context->multicast_ttl);
+    fprintf(fpout, "\n    mtu_length=%" PRIu64, (uint64_t)context->mtu_length);
+    fprintf(fpout, "\n    ipc_mtu_length=%" PRIu64, (uint64_t)context->ipc_mtu_length);
+    fprintf(fpout, "\n    file_page_size=%" PRIu64, (uint64_t)context->file_page_size);
+    /* publicationReservedSessionIdLow */
+    /* publicationReservedSessionIdHigh */
+    fprintf(fpout, "\n    loss_report_length=%" PRIu64, (uint64_t)context->loss_report_length);
+    fprintf(fpout, "\n    send_to_sm_poll_ratio=%" PRIu64, (uint64_t)context->send_to_sm_poll_ratio);
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
+
+    fprintf(fpout, "\n    epoch_clock=%p%s",
+        (void *)context->epoch_clock,
+        aeron_dlinfo((const void *)context->epoch_clock, buffer, sizeof(buffer)));
+    fprintf(fpout, "\n    nano_clock=%p%s",
+        (void *)context->nano_clock,
+        aeron_dlinfo((const void *)context->nano_clock, buffer, sizeof(buffer)));
+    /* cachedEpochClock */
+    /* cachedNanoClock */
+    fprintf(fpout, "\n    threading_mode=%d", context->threading_mode);
+    fprintf(fpout, "\n    agent_on_start_func=%p%s",
+        (void *)context->agent_on_start_func,
+        aeron_dlinfo((const void *)context->agent_on_start_func, buffer, sizeof(buffer)));
+    fprintf(fpout, "\n    agent_on_start_state=%p", context->agent_on_start_state);
+    fprintf(fpout, "\n    conductor_idle_strategy_func=%p%s",
+        (void *)context->conductor_idle_strategy_func,
+        aeron_dlinfo((const void *)context->conductor_idle_strategy_func, buffer, sizeof(buffer)));
+    fprintf(fpout, "\n    conductor_idle_strategy_init_args=%p%s",
+        (void *)context->conductor_idle_strategy_init_args,
+        context->conductor_idle_strategy_init_args ? context->conductor_idle_strategy_init_args : "");
+    fprintf(fpout, "\n    sender_idle_strategy_func=%p%s",
+        (void *)context->sender_idle_strategy_func,
+        aeron_dlinfo((const void *)context->sender_idle_strategy_func, buffer, sizeof(buffer)));
+    fprintf(fpout, "\n    sender_idle_strategy_init_args=%p%s",
+        (void *)context->sender_idle_strategy_init_args,
+        context->sender_idle_strategy_init_args ? context->sender_idle_strategy_init_args : "");
+    fprintf(fpout, "\n    receiver_idle_strategy_func=%p%s",
+        (void *)context->receiver_idle_strategy_func,
+        aeron_dlinfo((const void *)context->receiver_idle_strategy_func, buffer, sizeof(buffer)));
+    fprintf(fpout, "\n    receiver_idle_strategy_init_args=%p%s",
+        (void *)context->receiver_idle_strategy_init_args,
+        context->receiver_idle_strategy_init_args ? context->receiver_idle_strategy_init_args : "");
+    fprintf(fpout, "\n    shared_network_idle_strategy_func=%p%s",
+        (void *)context->shared_network_idle_strategy_func,
+        aeron_dlinfo((const void *)context->shared_network_idle_strategy_func, buffer, sizeof(buffer)));
+    fprintf(fpout, "\n    shared_network_idle_strategy_init_args=%p%s",
+        (void *)context->shared_network_idle_strategy_init_args,
+        context->shared_network_idle_strategy_init_args ? context->shared_network_idle_strategy_init_args : "");
+    fprintf(fpout, "\n    shared_idle_strategy_func=%p%s",
+        (void *)context->shared_idle_strategy_func,
+        aeron_dlinfo((const void *)context->shared_idle_strategy_func, buffer, sizeof(buffer)));
+    fprintf(fpout, "\n    shared_idle_strategy_init_args=%p%s",
+        (void *)context->shared_idle_strategy_init_args,
+        context->shared_idle_strategy_init_args ? context->shared_idle_strategy_init_args : "");
+    fprintf(fpout, "\n    unicast_flow_control_supplier_func=%p%s",
+        (void *)context->unicast_flow_control_supplier_func,
+        aeron_dlinfo((const void *)context->unicast_flow_control_supplier_func, buffer, sizeof(buffer)));
+    fprintf(fpout, "\n    multicast_flow_control_supplier_func=%p%s",
+        (void *)context->multicast_flow_control_supplier_func,
+        aeron_dlinfo((const void *)context->multicast_flow_control_supplier_func, buffer, sizeof(buffer)));
+    /* applicationSpecificFeedback */
+    fprintf(fpout, "\n    congestion_control_supplier_func=%p%s",
+        (void *)context->congestion_control_supplier_func,
+        aeron_dlinfo((const void *)context->congestion_control_supplier_func, buffer, sizeof(buffer)));
+    fprintf(fpout, "\n    usable_fs_space_func=%p%s",
+        (void *)context->usable_fs_space_func,
+        aeron_dlinfo((const void *)context->usable_fs_space_func, buffer, sizeof(buffer)));
+    fprintf(fpout, "\n    termination_validator_func=%p%s",
+        (void *)context->termination_validator_func,
+        aeron_dlinfo((const void *)context->termination_validator_func, buffer, sizeof(buffer)));
+    fprintf(fpout, "\n    termination_validator_state=%p", context->termination_validator_state);
+    fprintf(fpout, "\n    termination_hook_func=%p%s",
+        (void *)context->termination_hook_func,
+        aeron_dlinfo((const void *)context->termination_hook_func, buffer, sizeof(buffer)));
+    fprintf(fpout, "\n    termination_hook_state=%p", context->termination_hook_state);
+
+#pragma GCC diagnostic pop
+
+    fprintf(fpout, "\n}\n");
+}
+
 int aeron_driver_shared_do_work(void *clientd)
 {
     aeron_driver_t *driver = (aeron_driver_t *)clientd;
@@ -646,6 +796,31 @@ int aeron_driver_init(aeron_driver_t **driver, aeron_driver_context_t *context)
 
     aeron_mpsc_rb_consumer_heartbeat_time(&_driver->conductor.to_driver_commands, aeron_epoch_clock());
     aeron_cnc_version_signal_cnc_ready((aeron_cnc_metadata_t *)context->cnc_map.addr, AERON_CNC_VERSION);
+
+    if (aeron_feedback_delay_state_init(
+        &_driver->context->unicast_delay_feedback_generator,
+        aeron_loss_detector_nak_multicast_delay_generator,
+        _driver->context->nak_unicast_delay_ns,
+        1,
+        true) < 0)
+    {
+        goto error;
+    }
+
+    if (aeron_feedback_delay_state_init(
+        &_driver->context->multicast_delay_feedback_generator,
+        aeron_loss_detector_nak_unicast_delay_generator,
+        _driver->context->nak_multicast_max_backoff_ns,
+        _driver->context->nak_multicast_group_size,
+        false) < 0)
+    {
+        goto error;
+    }
+
+    if (_driver->context->print_configuration_on_start)
+    {
+        aeron_driver_context_print_configuration(_driver->context);
+    }
 
     switch (_driver->context->threading_mode)
     {

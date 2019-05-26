@@ -73,6 +73,14 @@ public:
         {
             if (::execl(m_java.c_str(),
                 "java",
+#if JAVA_MAJOR_VERSION >= 9
+                "--add-opens",
+                "java.base/java.lang.reflect=ALL-UNNAMED",
+                "--add-opens",
+                "java.base/java.net=ALL-UNNAMED",
+                "--add-opens",
+                "java.base/sun.nio.ch=ALL-UNNAMED",
+#endif
                 "-Daeron.dir.delete.on.start=true",
                 "-Daeron.archive.dir.delete.on.start=true",
                 "-Daeron.archive.max.catalog.entries=1024",
@@ -216,11 +224,12 @@ protected:
     pid_t m_pid = 0;
 
     std::ostringstream m_stream;
-    bool m_debug = false;
+    bool m_debug = true;
 };
 
 TEST_F(AeronArchiveTest, shouldSpinUpArchiveAndShutdown)
 {
+    m_stream << "Java " << JAVA_MAJOR_VERSION << "." << JAVA_MINOR_VERSION << std::endl;
     m_stream << m_java << std::endl;
     m_stream << m_aeronAllJar << std::endl;
     m_stream << m_archiveDir << std::endl;

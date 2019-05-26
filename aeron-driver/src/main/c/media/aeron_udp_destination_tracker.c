@@ -33,15 +33,15 @@ struct mmsghdr
 #endif
 
 int aeron_udp_destination_tracker_init(
-    aeron_udp_destination_tracker_t *tracker, aeron_clock_func_t clock, int64_t timeout)
+    aeron_udp_destination_tracker_t *tracker, aeron_clock_func_t clock, int64_t timeout_ns)
 {
     tracker->nano_clock = clock;
-    tracker->destination_timeout_ns = timeout;
+    tracker->destination_timeout_ns = timeout_ns;
     tracker->destinations.array = NULL;
     tracker->destinations.length = 0;
     tracker->destinations.capacity = 0;
     tracker->is_manual_control_mode =
-        timeout == AERON_UDP_DESTINATION_TRACKER_MANUAL_DESTINATION_TIMEOUT_NS ? true : false;
+        timeout_ns == AERON_UDP_DESTINATION_TRACKER_MANUAL_DESTINATION_TIMEOUT_NS ? true : false;
 
     return 0;
 }
@@ -57,7 +57,9 @@ int aeron_udp_destination_tracker_close(aeron_udp_destination_tracker_t *tracker
 }
 
 int aeron_udp_destination_tracker_sendmmsg(
-    aeron_udp_destination_tracker_t *tracker, aeron_udp_channel_transport_t *transport, struct mmsghdr *mmsghdr, size_t vlen)
+    aeron_udp_destination_tracker_t *tracker,
+    aeron_udp_channel_transport_t *transport,
+    struct mmsghdr *mmsghdr, size_t vlen)
 {
     int64_t now_ns = tracker->nano_clock();
     int min_msgs_sent = (int)vlen;
@@ -225,9 +227,9 @@ int aeron_udp_destination_tracker_remove_destination(
             aeron_array_fast_unordered_remove(
                 (uint8_t *) tracker->destinations.array,
                 sizeof(aeron_udp_destination_entry_t),
-                (size_t) i,
-                (size_t) last_index);
-            last_index--;
+                (size_t)i,
+                (size_t)last_index);
+
             tracker->destinations.length--;
             break;
         }

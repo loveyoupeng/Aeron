@@ -30,9 +30,11 @@ import org.agrona.concurrent.status.UnsafeBufferPosition;
 import java.util.ArrayList;
 import java.util.concurrent.locks.Lock;
 
+import static io.aeron.Aeron.Configuration.IDLE_SLEEP_MS;
 import static io.aeron.Aeron.Configuration.IDLE_SLEEP_NS;
 import static java.nio.charset.StandardCharsets.US_ASCII;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
+import static java.util.concurrent.TimeUnit.NANOSECONDS;
 
 /**
  * Client conductor receives responses and notifications from Media Driver and acts on them in addition to forwarding
@@ -42,6 +44,7 @@ class ClientConductor implements Agent, DriverEventsListener
 {
     private static final long NO_CORRELATION_ID = Aeron.NULL_VALUE;
 
+    private final long closeLingerDurationMs;
     private final long keepAliveIntervalNs;
     private final long driverTimeoutMs;
     private final long driverTimeoutNs;
@@ -55,6 +58,7 @@ class ClientConductor implements Agent, DriverEventsListener
     private RegistrationException driverException;
 
     private final Aeron.Context ctx;
+    private final Aeron aeron;
     private final Lock clientLock;
     private final EpochClock epochClock;
     private final NanoClock nanoClock;
@@ -72,9 +76,10 @@ class ClientConductor implements Agent, DriverEventsListener
     private final UnsafeBuffer counterValuesBuffer;
     private final CountersReader countersReader;
 
-    ClientConductor(final Aeron.Context ctx)
+    ClientConductor(final Aeron.Context ctx, final Aeron aeron)
     {
         this.ctx = ctx;
+        this.aeron = aeron;
 
         clientLock = ctx.clientLock();
         epochClock = ctx.epochClock();
@@ -84,6 +89,7 @@ class ClientConductor implements Agent, DriverEventsListener
         keepAliveIntervalNs = ctx.keepAliveIntervalNs();
         driverTimeoutMs = ctx.driverTimeoutMs();
         driverTimeoutNs = MILLISECONDS.toNanos(driverTimeoutMs);
+        closeLingerDurationMs = NANOSECONDS.toMillis(ctx.closeLingerDurationNs());
         interServiceTimeoutNs = ctx.interServiceTimeoutNs();
         defaultAvailableImageHandler = ctx.availableImageHandler();
         defaultUnavailableImageHandler = ctx.unavailableImageHandler();
@@ -108,7 +114,21 @@ class ClientConductor implements Agent, DriverEventsListener
             {
                 isClosed = true;
                 forceCloseResources();
-                Thread.yield();
+
+                try
+                {
+                    if (isTerminating)
+                    {
+                        aeron.internalClose();
+                        Thread.sleep(IDLE_SLEEP_MS);
+                    }
+
+                    Thread.sleep(closeLingerDurationMs);
+                }
+                catch (final InterruptedException ignore)
+                {
+                    Thread.currentThread().interrupt();
+                }
 
                 for (int i = 0, size = lingeringResources.size(); i < size; i++)
                 {
@@ -696,9 +716,14 @@ class ClientConductor implements Agent, DriverEventsListener
 
     private void ensureActive()
     {
-        if (isClosed || isTerminating)
+        if (isClosed)
         {
-            throw new AeronException("Aeron client is closed or terminating");
+            throw new AeronException("Aeron client is closed");
+        }
+
+        if (isTerminating)
+        {
+            throw new AeronException("Aeron client is terminating");
         }
     }
 
@@ -825,9 +850,7 @@ class ClientConductor implements Agent, DriverEventsListener
         if ((timeOfLastServiceNs + interServiceTimeoutNs) - nowNs < 0)
         {
             isTerminating = true;
-
             forceCloseResources();
-            Thread.yield();
 
             throw new ConductorServiceTimeoutException("service interval exceeded (ns): " + interServiceTimeoutNs);
         }
@@ -840,9 +863,7 @@ class ClientConductor implements Agent, DriverEventsListener
             if (epochClock.time() > (driverProxy.timeOfLastDriverKeepaliveMs() + driverTimeoutMs))
             {
                 isTerminating = true;
-
                 forceCloseResources();
-                Thread.yield();
 
                 throw new DriverTimeoutException("MediaDriver keepalive older than (ms): " + driverTimeoutMs);
             }

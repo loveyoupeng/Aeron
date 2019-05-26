@@ -45,14 +45,14 @@ typedef struct aeron_min_flow_control_strategy_state_stct
 {
     struct receiver_stct
     {
-        aeron_min_flow_control_strategy_receiver_t *array;
         size_t length;
         size_t capacity;
+        aeron_min_flow_control_strategy_receiver_t *array;
     }
     receivers;
 
-    int64_t receiver_timeout_ns;
     bool should_linger;
+    int64_t receiver_timeout_ns;
 }
 aeron_min_flow_control_strategy_state_t;
 
@@ -77,8 +77,8 @@ int64_t aeron_min_flow_control_strategy_on_idle(
             aeron_array_fast_unordered_remove(
                 (uint8_t *) strategy_state->receivers.array,
                 sizeof(aeron_min_flow_control_strategy_receiver_t),
-                (size_t) i,
-                (size_t) last_index);
+                (size_t)i,
+                (size_t)last_index);
             last_index--;
             strategy_state->receivers.length--;
         }
@@ -149,7 +149,7 @@ int64_t aeron_min_flow_control_strategy_on_sm(
         if (ensure_capacity_result >= 0)
         {
             aeron_min_flow_control_strategy_receiver_t *receiver =
-                &strategy_state->receivers.array[strategy_state->receivers.length];
+                &strategy_state->receivers.array[strategy_state->receivers.length++];
 
             receiver->last_position = position;
             receiver->last_position_plus_window = position + window_length;
@@ -209,7 +209,7 @@ static void initialize_aeron_min_flow_control_strategy_timeout()
 
 int aeron_min_flow_control_strategy_supplier(
     aeron_flow_control_strategy_t **strategy,
-    int32_t channel_length,
+    size_t channel_length,
     const char *channel,
     int32_t stream_id,
     int64_t registration_id,

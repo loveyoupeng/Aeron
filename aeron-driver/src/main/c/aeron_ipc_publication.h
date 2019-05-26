@@ -37,6 +37,9 @@ typedef struct aeron_ipc_publication_stct
 {
     struct aeron_ipc_publication_conductor_fields_stct
     {
+        bool has_reached_end_of_life;
+        aeron_ipc_publication_status_t status;
+        int32_t refcnt;
         aeron_driver_managed_resource_t managed_resource;
         aeron_subscribable_t subscribable;
         int64_t cleaning_position;
@@ -44,13 +47,8 @@ typedef struct aeron_ipc_publication_stct
         int64_t consumer_position;
         int64_t last_consumer_position;
         int64_t time_of_last_consumer_position_change;
-        int32_t refcnt;
-        bool has_reached_end_of_life;
-        aeron_ipc_publication_status_t status;
     }
     conductor_fields;
-
-    /* uint8_t conductor_fields_pad[(2 * AERON_CACHE_LINE_LENGTH) - sizeof(struct conductor_fields_stct)]; */
 
     aeron_mapped_raw_log_t mapped_raw_log;
     aeron_position_t pub_lmt_position;
@@ -61,7 +59,7 @@ typedef struct aeron_ipc_publication_stct
     char *log_file_name;
     int64_t term_window_length;
     int64_t trip_gain;
-    int64_t linger_timeout_ns;
+    int64_t image_liveness_timeout_ns;
     int64_t unblock_timeout_ns;
     int32_t session_id;
     int32_t stream_id;
@@ -94,7 +92,8 @@ int aeron_ipc_publication_update_pub_lmt(aeron_ipc_publication_t *publication);
 
 void aeron_ipc_publication_clean_buffer(aeron_ipc_publication_t *publication, int64_t min_sub_pos);
 
-void aeron_ipc_publication_on_time_event(aeron_ipc_publication_t *publication, int64_t now_ns, int64_t now_ms);
+void aeron_ipc_publication_on_time_event(
+    aeron_driver_conductor_t *conductor, aeron_ipc_publication_t *publication, int64_t now_ns, int64_t now_ms);
 
 void aeron_ipc_publication_incref(void *clientd);
 

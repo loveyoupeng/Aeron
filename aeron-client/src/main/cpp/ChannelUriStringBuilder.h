@@ -54,11 +54,13 @@ public:
         m_sessionId.reset(nullptr);
         m_linger.reset(nullptr);
         m_sparse.reset(nullptr);
+        m_eos.reset(nullptr);
+        m_tether.reset(nullptr);
         m_isSessionIdTagged = false;
         return *this;
     }
 
-    inline this_t& prefix(const std::string & prefix)
+    inline this_t& prefix(const std::string& prefix)
     {
         if (m_prefix && !m_prefix->empty() && !(m_prefix->compare(SPY_QUALIFIER)))
         {
@@ -221,6 +223,18 @@ public:
         return *this;
     }
 
+    inline this_t& eos(bool eos)
+    {
+        m_eos.reset(new Value(eos ? 1 : 0));
+        return *this;
+    }
+
+    inline this_t& tether(bool tether)
+    {
+        m_tether.reset(new Value(tether ? 1 : 0));
+        return *this;
+    }
+
     inline this_t& isSessionIdTagged(bool isSessionIdTagged)
     {
         m_isSessionIdTagged = isSessionIdTagged;
@@ -318,6 +332,16 @@ public:
             sb << SPARSE_PARAM_NAME << '=' << (m_sparse->value == 1 ? "true" : "false") << '|';
         }
 
+        if (m_eos)
+        {
+            sb << EOS_PARAM_NAME << '=' << (m_eos->value == 1 ? "true" : "false") << '|';
+        }
+
+        if (m_tether)
+        {
+            sb << TETHER_PARAM_NAME << '=' << (m_tether->value == 1 ? "true" : "false") << '|';
+        }
+
         std::string result = sb.str();
         const char lastChar = result.back();
 
@@ -357,6 +381,8 @@ private:
     std::unique_ptr<Value> m_sessionId;
     std::unique_ptr<Value> m_linger;
     std::unique_ptr<Value> m_sparse;
+    std::unique_ptr<Value> m_eos;
+    std::unique_ptr<Value> m_tether;
     bool m_isSessionIdTagged = false;
 
     inline static std::string prefixTag(bool isTagged, Value& value)

@@ -26,10 +26,10 @@ For details of usage, protocol specification, FAQ, etc. please check out the
 [Wiki](https://github.com/real-logic/aeron/wiki).
 
 For those who prefer to watch a video then try [Aeron Messaging](https://www.youtube.com/watch?v=tM4YskS94b0) from
-StrangeLoop 2014. Things have moved on quite a bit with performance and some features but the basic design still applies.
+StrangeLoop 2014. Things have advanced quite a bit with performance and features but the basic design still applies.
 
 For the latest version information and changes see the [Change Log](https://github.com/real-logic/aeron/wiki/Change-Log)
-with **downloads** at [Maven Central](http://search.maven.org/#search%7Cga%7C1%7Caeron).
+with Java **downloads** at [Maven Central](http://search.maven.org/#search%7Cga%7C1%7Caeron).
 
 ### How do I use Aeron?
 
@@ -64,12 +64,10 @@ The project is built with [Gradle](http://gradle.org/) using this
 
 You require the following to build Aeron:
 
-* Latest stable [JDK 8](http://www.oracle.com/technetwork/java/), Java versions before 1.8.0_65 are very buggy and can cause tests to fail.
+* [JDK 8](https://adoptopenjdk.net/index.html) or later, Java versions before 1.8.0_65 are very buggy and can cause tests to fail. Aeron is tested and supported on Java 8 & Java 11.
 
 You must first build and install [Agrona](https://github.com/real-logic/agrona) and
-[Simple Binary Encoding (SBE)](https://github.com/real-logic/simple-binary-encoding) into the local maven repository 
-**if** the current master for Aeron depends on changes to Agrona or SBE. However we will try to not have this as the
-normal case.
+[Simple Binary Encoding (SBE)](https://github.com/real-logic/simple-binary-encoding) into the local maven repository **if** the current master for Aeron depends on changes to Agrona or SBE. However we will try to not have this as the typical case.
 
 ```shell
     $ ./gradlew

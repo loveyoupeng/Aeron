@@ -34,12 +34,6 @@ import static io.aeron.cluster.ClusterMember.compareLog;
 public class Election implements AutoCloseable
 {
     /**
-     * The multiplier applied to the {@link ConsensusModule.Configuration#ELECTION_STATUS_INTERVAL_PROP_NAME}
-     * for the nomination timeout.
-     */
-    static final int NOMINATION_TIMEOUT_MULTIPLIER = 7;
-
-    /**
      * The type id of the {@link Counter} used for the election state.
      */
     static final int ELECTION_STATE_TYPE_ID = 207;
@@ -61,7 +55,9 @@ public class Election implements AutoCloseable
         FOLLOWER_CATCHUP_TRANSITION(9),
         FOLLOWER_CATCHUP(10),
         FOLLOWER_TRANSITION(11),
-        FOLLOWER_READY(12);
+        FOLLOWER_READY(12),
+
+        CLOSE(13);
 
         static final State[] STATES;
 
@@ -88,12 +84,12 @@ public class Election implements AutoCloseable
             this.code = code;
         }
 
-        int code()
+        public int code()
         {
             return code;
         }
 
-        static State get(final int code)
+        public static State get(final int code)
         {
             if (code < 0 || code > (STATES.length - 1))
             {
@@ -128,14 +124,14 @@ public class Election implements AutoCloseable
     private long logLeadershipTermId;
     private long candidateTermId = NULL_VALUE;
     private int logSessionId = CommonContext.NULL_SESSION_ID;
+    private final Counter stateCounter;
     private ClusterMember leaderMember = null;
     private State state = State.INIT;
-    private Counter stateCounter;
     private Subscription logSubscription;
     private String liveLogDestination;
     private LogReplay logReplay = null;
 
-    Election(
+    public Election(
         final boolean isStartup,
         final long leadershipTermId,
         final long logPosition,
@@ -265,6 +261,11 @@ public class Election implements AutoCloseable
             ctx.countedErrorHandler().onError(ex);
             logPosition = ctx.commitPositionCounter().get();
             state(State.INIT, nowMs);
+        }
+
+        if (State.CLOSE == state)
+        {
+            close();
         }
 
         return workCount;
@@ -531,8 +532,7 @@ public class Election implements AutoCloseable
         if (ClusterMember.isUnanimousCandidate(clusterMembers, thisMember) ||
             (ClusterMember.isQuorumCandidate(clusterMembers, thisMember) && nowMs >= canvassDeadlineMs))
         {
-            nominationDeadlineMs =
-                nowMs + random.nextInt((int)electionStatusIntervalMs * NOMINATION_TIMEOUT_MULTIPLIER);
+            nominationDeadlineMs = nowMs + random.nextInt((int)electionTimeoutMs / 2);
             state(State.NOMINATE, nowMs);
             workCount += 1;
         }
@@ -683,7 +683,7 @@ public class Election implements AutoCloseable
             if (consensusModuleAgent.electionComplete(nowMs))
             {
                 consensusModuleAgent.updateMemberDetails(this);
-                close();
+                state(State.CLOSE, nowMs);
             }
 
             workCount += 1;
@@ -739,7 +739,8 @@ public class Election implements AutoCloseable
     {
         if (null == logSubscription)
         {
-            final ChannelUri logChannelUri = followerLogChannel(ctx.logChannel(), logSessionId);
+            final ChannelUri logChannelUri = followerLogChannel(
+                ctx.logChannel(), logSessionId, consensusModuleAgent.logSubscriptionTags());
 
             logSubscription = consensusModuleAgent.createAndRecordLogSubscriptionAsFollower(logChannelUri.toString());
             consensusModuleAgent.awaitServicesReady(logChannelUri, logSessionId, logPosition);
@@ -755,6 +756,7 @@ public class Election implements AutoCloseable
 
         if (catchupPosition(leadershipTermId, logPosition))
         {
+            timeOfLastUpdateMs = nowMs;
             state(State.FOLLOWER_CATCHUP, nowMs);
         }
 
@@ -776,8 +778,17 @@ public class Election implements AutoCloseable
         if (consensusModuleAgent.hasAppendReachedPosition(logSubscription, logSessionId, catchupLogPosition))
         {
             logPosition = catchupLogPosition;
+            timeOfLastUpdateMs = 0;
             state(State.FOLLOWER_TRANSITION, nowMs);
             workCount += 1;
+        }
+        else if (nowMs > (timeOfLastUpdateMs + leaderHeartbeatIntervalMs))
+        {
+            if (consensusModuleAgent.hasReplayDestination() && catchupPosition(leadershipTermId, logPosition))
+            {
+                timeOfLastUpdateMs = nowMs;
+                workCount += 1;
+            }
         }
 
         return workCount;
@@ -787,7 +798,8 @@ public class Election implements AutoCloseable
     {
         if (null == logSubscription)
         {
-            final ChannelUri logChannelUri = followerLogChannel(ctx.logChannel(), logSessionId);
+            final ChannelUri logChannelUri = followerLogChannel(
+                ctx.logChannel(), logSessionId, consensusModuleAgent.logSubscriptionTags());
 
             logSubscription = consensusModuleAgent.createAndRecordLogSubscriptionAsFollower(logChannelUri.toString());
             consensusModuleAgent.awaitServicesReady(logChannelUri, logSessionId, logPosition);
@@ -819,7 +831,7 @@ public class Election implements AutoCloseable
             if (consensusModuleAgent.electionComplete(nowMs))
             {
                 consensusModuleAgent.updateMemberDetails(this);
-                close();
+                state(State.CLOSE, nowMs);
             }
         }
         else if (nowMs >= (timeOfLastStateChangeMs + leaderHeartbeatTimeoutMs))
@@ -881,13 +893,13 @@ public class Election implements AutoCloseable
         consensusModuleAgent.liveLogDestination(liveLogDestination);
     }
 
-    private static ChannelUri followerLogChannel(final String logChannel, final int sessionId)
+    private static ChannelUri followerLogChannel(final String logChannel, final int sessionId, final String tags)
     {
         final ChannelUri channelUri = ChannelUri.parse(logChannel);
         channelUri.remove(CommonContext.MDC_CONTROL_PARAM_NAME);
         channelUri.put(CommonContext.MDC_CONTROL_MODE_PARAM_NAME, CommonContext.MDC_CONTROL_MODE_MANUAL);
         channelUri.put(CommonContext.SESSION_ID_PARAM_NAME, Integer.toString(sessionId));
-        channelUri.put(CommonContext.TAGS_PARAM_NAME, ConsensusModule.Configuration.LOG_SUBSCRIPTION_TAGS);
+        channelUri.put(CommonContext.TAGS_PARAM_NAME, tags);
 
         return channelUri;
     }
@@ -908,6 +920,7 @@ public class Election implements AutoCloseable
         if (State.CANVASS == newState)
         {
             consensusModuleAgent.stopAllCatchups();
+            catchupLogPosition = NULL_POSITION;
 
             ClusterMember.reset(clusterMembers);
             thisMember.leadershipTermId(leadershipTermId).logPosition(logPosition);

@@ -341,15 +341,16 @@ abstract class ArchiveConductor extends SessionWorker<Session> implements Availa
         }
         else
         {
-            addSession(new ListRecordingsSession(
+            final ListRecordingsSession session = new ListRecordingsSession(
                 correlationId,
                 fromId,
                 count,
                 catalog,
                 controlResponseProxy,
                 controlSession,
-                descriptorBuffer));
-            controlSession.hasActiveListing(true);
+                descriptorBuffer);
+            addSession(session);
+            controlSession.activeListing(session);
         }
     }
 
@@ -368,7 +369,7 @@ abstract class ArchiveConductor extends SessionWorker<Session> implements Availa
         }
         else
         {
-            addSession(new ListRecordingsForUriSession(
+            final ListRecordingsForUriSession session = new ListRecordingsForUriSession(
                 correlationId,
                 fromRecordingId,
                 count,
@@ -378,8 +379,9 @@ abstract class ArchiveConductor extends SessionWorker<Session> implements Availa
                 controlResponseProxy,
                 controlSession,
                 descriptorBuffer,
-                recordingDescriptorDecoder));
-            controlSession.hasActiveListing(true);
+                recordingDescriptorDecoder);
+            addSession(session);
+            controlSession.activeListing(session);
         }
     }
 
@@ -691,7 +693,7 @@ abstract class ArchiveConductor extends SessionWorker<Session> implements Availa
         }
         else
         {
-            addSession(new ListRecordingSubscriptionsSession(
+            final ListRecordingSubscriptionsSession session = new ListRecordingSubscriptionsSession(
                 recordingSubscriptionMap,
                 pseudoIndex,
                 subscriptionCount,
@@ -700,8 +702,9 @@ abstract class ArchiveConductor extends SessionWorker<Session> implements Availa
                 channelFragment,
                 correlationId,
                 controlSession,
-                controlResponseProxy));
-            controlSession.hasActiveListing(true);
+                controlResponseProxy);
+            addSession(session);
+            controlSession.activeListing(session);
         }
     }
 
@@ -737,6 +740,7 @@ abstract class ArchiveConductor extends SessionWorker<Session> implements Availa
     private ChannelUriStringBuilder strippedChannelBuilder(final ChannelUri channelUri)
     {
         final String sessionIdStr = channelUri.get(CommonContext.SESSION_ID_PARAM_NAME);
+        final String eosStr = channelUri.get(CommonContext.EOS_PARAM_NAME);
 
         channelBuilder
             .clear()
@@ -757,6 +761,11 @@ abstract class ArchiveConductor extends SessionWorker<Session> implements Availa
             {
                 channelBuilder.sessionId(Integer.valueOf(sessionIdStr));
             }
+        }
+
+        if (null != eosStr)
+        {
+            channelBuilder.eos(Boolean.valueOf(eosStr));
         }
 
         return channelBuilder;
@@ -786,16 +795,16 @@ abstract class ArchiveConductor extends SessionWorker<Session> implements Availa
             sb.append(CommonContext.MDC_CONTROL_PARAM_NAME).append('=').append(controlStr).append('|');
         }
 
+        final String sessionIdStr = channelUri.get(CommonContext.SESSION_ID_PARAM_NAME);
+        if (null != sessionIdStr)
+        {
+            sb.append(CommonContext.SESSION_ID_PARAM_NAME).append('=').append(sessionIdStr).append('|');
+        }
+
         final String tagsStr = channelUri.get(CommonContext.TAGS_PARAM_NAME);
         if (null != tagsStr)
         {
             sb.append(CommonContext.TAGS_PARAM_NAME).append('=').append(tagsStr).append('|');
-        }
-
-        final String sessionIdStr = channelUri.get(CommonContext.SESSION_ID_PARAM_NAME);
-        if (null != tagsStr)
-        {
-            sb.append(CommonContext.SESSION_ID_PARAM_NAME).append('=').append(sessionIdStr).append('|');
         }
 
         sb.setLength(sb.length() - 1);

@@ -16,6 +16,7 @@
 package io.aeron;
 
 import io.aeron.exceptions.AeronException;
+import io.aeron.exceptions.ConcurrentConcludeException;
 import io.aeron.exceptions.ConfigurationException;
 import io.aeron.exceptions.DriverTimeoutException;
 import io.aeron.logbuffer.FragmentHandler;
@@ -69,7 +70,7 @@ public class Aeron implements AutoCloseable
      */
     private static final AtomicIntegerFieldUpdater<Aeron> IS_CLOSED_UPDATER = newUpdater(Aeron.class, "isClosed");
 
-    @SuppressWarnings("unused") private volatile int isClosed;
+    private volatile int isClosed;
     private final long clientId;
     private final ClientConductor conductor;
     private final RingBuffer commandBuffer;
@@ -84,7 +85,7 @@ public class Aeron implements AutoCloseable
         this.ctx = ctx;
         clientId = ctx.clientId();
         commandBuffer = ctx.toDriverBuffer();
-        conductor = new ClientConductor(ctx);
+        conductor = new ClientConductor(ctx, this);
 
         if (ctx.useConductorAgentInvoker())
         {
@@ -133,10 +134,14 @@ public class Aeron implements AutoCloseable
             }
             else
             {
-                AgentRunner.startOnThread(aeron.conductorRunner, ctx.threadFactory);
+                AgentRunner.startOnThread(aeron.conductorRunner, ctx.threadFactory());
             }
 
             return aeron;
+        }
+        catch (final ConcurrentConcludeException ex)
+        {
+            throw ex;
         }
         catch (final Exception ex)
         {
@@ -361,6 +366,14 @@ public class Aeron implements AutoCloseable
     }
 
     /**
+     * Called by the {@link ClientConductor} if the client should be terminated due to timeout.
+     */
+    void internalClose()
+    {
+        isClosed = 1;
+    }
+
+    /**
      * Configuration options for the {@link Aeron} client.
      */
     public static class Configuration
@@ -389,12 +402,23 @@ public class Aeron implements AutoCloseable
         /**
          * Default duration a resource should linger before deletion.
          */
-        public static final long RESOURCE_LINGER_DURATION_DEFAULT = TimeUnit.SECONDS.toNanos(3);
+        public static final long RESOURCE_LINGER_DURATION_DEFAULT_NS = TimeUnit.SECONDS.toNanos(3);
+
+        /**
+         * Duration to linger on close so that publishers subscribers have time to notice closed resources.
+         * This value can be set to a few seconds if the application is likely to experience CPU starvation or
+         * long GC pauses.
+         */
+        public static final String CLOSE_LINGER_DURATION_PROP_NAME = "aeron.client.close.linger.duration";
+
+        /**
+         * Default duration to linger on close so that publishers subscribers have time to notice closed resources.
+         */
+        public static final long CLOSE_LINGER_DURATION_DEFAULT_NS = 0;
 
         /**
          * The Default handler for Aeron runtime exceptions.
-         * When a {@link DriverTimeoutException} is encountered, this handler will
-         * exit the program.
+         * When a {@link DriverTimeoutException} is encountered, this handler will exit the program.
          * <p>
          * The error handler can be overridden by supplying an {@link Context} with a custom handler.
          *
@@ -421,15 +445,27 @@ public class Aeron implements AutoCloseable
          */
         public static long resourceLingerDurationNs()
         {
-            return getDurationInNanos(RESOURCE_LINGER_DURATION_PROP_NAME, RESOURCE_LINGER_DURATION_DEFAULT);
+            return getDurationInNanos(RESOURCE_LINGER_DURATION_PROP_NAME, RESOURCE_LINGER_DURATION_DEFAULT_NS);
+        }
+
+        /**
+         * Duration to wait while lingering a entity such as an {@link Image} before deleting underlying resources
+         * such as memory mapped files.
+         *
+         * @return duration in nanoseconds to wait before deleting a expired resource.
+         * @see #RESOURCE_LINGER_DURATION_PROP_NAME
+         */
+        public static long closeLingerDurationNs()
+        {
+            return getDurationInNanos(CLOSE_LINGER_DURATION_PROP_NAME, CLOSE_LINGER_DURATION_DEFAULT_NS);
         }
     }
 
     /**
-     * This class provides configuration for the {@link Aeron} class via the {@link Aeron#connect(Aeron.Context)}
-     * method and its overloads. It gives applications some control over the interactions with the Aeron Media Driver.
-     * It can also set up error handling as well as application callbacks for image information from the
-     * Media Driver.
+     * Provides a means to override configuration for an {@link Aeron} client via the
+     * {@link Aeron#connect(Aeron.Context)} method and its overloads. It gives applications some control over
+     * the interactions with the Aeron Media Driver. It can also set up error handling as well as application
+     * callbacks for image information from the Media Driver.
      * <p>
      * A number of the properties are for testing and should not be set by end users.
      * <p>
@@ -461,6 +497,7 @@ public class Aeron implements AutoCloseable
         private long keepAliveIntervalNs = Configuration.KEEPALIVE_INTERVAL_NS;
         private long interServiceTimeoutNs = 0;
         private long resourceLingerDurationNs = Configuration.resourceLingerDurationNs();
+        private long closeLingerDurationNs = Configuration.closeLingerDurationNs();
 
         private ThreadFactory threadFactory = Thread::new;
 
@@ -966,7 +1003,7 @@ public class Aeron implements AutoCloseable
         /**
          * Return the timeout between service calls to the duty cycle for the client.
          * <p>
-         * When exceeded, {@link #errorHandler} will be called and the active {@link Publication}s and {@link Image}s
+         * When exceeded, {@link #errorHandler()} will be called and the active {@link Publication}s and {@link Image}s
          * closed.
          * <p>
          * This value is controlled by the driver and included in the CnC file. It can be configured by adjusting
@@ -1003,6 +1040,38 @@ public class Aeron implements AutoCloseable
         public long resourceLingerDurationNs()
         {
             return resourceLingerDurationNs;
+        }
+
+        /**
+         * Duration to linger on closing to allow publishers and subscribers time to notice closed resources.
+         * <p>
+         * This value can be increased from the default to a few seconds to better cope with long GC pauses
+         * or resource starved environments. Issues could manifest as seg faults using files after they have
+         * been unmapped from publishers or subscribers not noticing the close in a timely fashion.
+         *
+         * @param closeLingerDurationNs to wait before deleting resources when closing.
+         * @return this for a fluent API.
+         * @see Configuration#CLOSE_LINGER_DURATION_PROP_NAME
+         */
+        public Context closeLingerDurationNs(final long closeLingerDurationNs)
+        {
+            this.closeLingerDurationNs = closeLingerDurationNs;
+            return this;
+        }
+
+        /**
+         * Duration to linger on closing to allow publishers and subscribers time to notice closed resources.
+         * <p>
+         * This value can be increased from the default to a few seconds to better cope with long GC pauses
+         * or resource starved environments. Issues could manifest as seg faults using files after they have
+         * been unmapped from publishers or subscribers not noticing the close in a timely fashion.
+         *
+         * @return duration in nanoseconds to wait before deleting resources when closing.
+         * @see Configuration#CLOSE_LINGER_DURATION_PROP_NAME
+         */
+        public long closeLingerDurationNs()
+        {
+            return closeLingerDurationNs;
         }
 
         /**

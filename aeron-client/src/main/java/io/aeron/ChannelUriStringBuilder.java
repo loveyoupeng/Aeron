@@ -52,6 +52,8 @@ public class ChannelUriStringBuilder
     private Integer sessionId;
     private Long linger;
     private Boolean sparse;
+    private Boolean eos;
+    private Boolean tether;
     private boolean isSessionIdTagged;
 
     /**
@@ -79,6 +81,8 @@ public class ChannelUriStringBuilder
         sessionId = null;
         linger = null;
         sparse = null;
+        eos = null;
+        tether = null;
         isSessionIdTagged = false;
 
         return this;
@@ -579,7 +583,7 @@ public class ChannelUriStringBuilder
     }
 
     /**
-     * Get if a term log buffer should be sparse on disk or not. Sparse saves space at the potential expense of latency.
+     * Should term log buffer be sparse on disk or not. Sparse saves space at the potential expense of latency.
      *
      * @return true if the term buffer log is sparse on disk.
      * @see CommonContext#SPARSE_PARAM_NAME
@@ -587,6 +591,54 @@ public class ChannelUriStringBuilder
     public Boolean sparse()
     {
         return sparse;
+    }
+
+    /**
+     * Set to indicate if an EOS should be sent on the media or not.
+     *
+     * @param eos true if the EOS should be sent.
+     * @return this for a fluent API.
+     * @see CommonContext#EOS_PARAM_NAME
+     */
+    public ChannelUriStringBuilder eos(final Boolean eos)
+    {
+        this.eos = eos;
+        return this;
+    }
+
+    /**
+     * Should an EOS flag be sent on the media or not.
+     *
+     * @return true if the EOS param should be set.
+     * @see CommonContext#EOS_PARAM_NAME
+     */
+    public Boolean eos()
+    {
+        return eos;
+    }
+
+    /**
+     * Should the subscription channel be tethered or not for local flow control.
+     *
+     * @param tether value to be set for the tether param.
+     * @return this for a fluent API.
+     * @see CommonContext#TETHER_PARAM_NAME
+     */
+    public ChannelUriStringBuilder tether(final Boolean tether)
+    {
+        this.tether = tether;
+        return this;
+    }
+
+    /**
+     * Should the subscription channel be tethered or not for local flow control.
+     *
+     * @return value of the tether param.
+     * @see CommonContext#TETHER_PARAM_NAME
+     */
+    public Boolean tether()
+    {
+        return tether;
     }
 
     /**
@@ -697,6 +749,7 @@ public class ChannelUriStringBuilder
      *
      * @return a channel URI String for the given parameters.
      */
+    @SuppressWarnings("MethodLength")
     public String build()
     {
         sb.setLength(0);
@@ -788,6 +841,16 @@ public class ChannelUriStringBuilder
             sb.append(SPARSE_PARAM_NAME).append('=').append(sparse).append('|');
         }
 
+        if (null != eos)
+        {
+            sb.append(EOS_PARAM_NAME).append('=').append(eos).append('|');
+        }
+
+        if (null != tether)
+        {
+            sb.append(TETHER_PARAM_NAME).append('=').append(tether).append('|');
+        }
+
         final char lastChar = sb.charAt(sb.length() - 1);
         if (lastChar == '|' || lastChar == '?')
         {
@@ -799,6 +862,6 @@ public class ChannelUriStringBuilder
 
     private static String prefixTag(final boolean isTagged, final Integer value)
     {
-        return isTagged ? TAG_PREFIX + value.toString() : value.toString();
+        return isTagged ? TAG_PREFIX + value : value.toString();
     }
 }

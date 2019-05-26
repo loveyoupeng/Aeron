@@ -24,11 +24,12 @@ import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
 
 /**
- * Event logger interface used by interceptors for recording into a {@link RingBuffer}.
+ * Event logger interface used by interceptors for recording into a {@link RingBuffer} for a
+ * {@link io.aeron.driver.MediaDriver} via a Java Agent.
  */
 public class DriverEventLogger
 {
-    public static final long ENABLED_EVENT_CODES = EventConfiguration.getEnabledEventCodes();
+    public static final long ENABLED_EVENT_CODES = EventConfiguration.getEnabledDriverEventCodes();
 
     public static final boolean IS_FRAME_IN_ENABLED =
         (ENABLED_EVENT_CODES & DriverEventCode.FRAME_IN.tagBit()) == DriverEventCode.FRAME_IN.tagBit();
@@ -118,16 +119,16 @@ public class DriverEventLogger
         }
     }
 
+    public static int toEventCodeId(final DriverEventCode code)
+    {
+        return DriverEventCode.EVENT_CODE_TYPE << 16 | (code.id() & 0xFFFF);
+    }
+
     private void logString(final DriverEventCode code, final String value)
     {
         final MutableDirectBuffer encodedBuffer = ENCODING_BUFFER.get();
         final int encodingLength = DriverEventEncoder.encode(encodedBuffer, value);
 
         ringBuffer.write(toEventCodeId(code), encodedBuffer, 0, encodingLength);
-    }
-
-    private static int toEventCodeId(final DriverEventCode code)
-    {
-        return DriverEventCode.EVENT_CODE_TYPE << 16 | (code.id() & 0xFFFF);
     }
 }

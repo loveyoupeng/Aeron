@@ -234,11 +234,14 @@ int aeron_driver_context_init(aeron_driver_context_t **context)
             exit(EXIT_FAILURE);
         }
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
         if ((_original_func = (aeron_driver_context_init_t)aeron_dlsym(aeron_lib, "aeron_driver_context_init")) == NULL)
         {
             fprintf(stderr, "%s\n", aeron_dlerror());
             exit(EXIT_FAILURE);
         }
+#pragma GCC diagnostic pop
 
         printf("hooked aeron_driver_context_init\n");
     }
@@ -304,11 +307,14 @@ ssize_t sendmsg(int socket, const struct msghdr *message, int flags)
 
     if (NULL == _original_func)
     {
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
         if ((_original_func = (aeron_driver_agent_sendmsg_func_t)aeron_dlsym(RTLD_NEXT, "sendmsg")) == NULL)
         {
             fprintf(stderr, "%s\n", aeron_dlerror());
             exit(EXIT_FAILURE);
         }
+#pragma GCC diagnostic pop
 
         printf("hooked sendmsg\n");
     }
@@ -331,11 +337,14 @@ ssize_t recvmsg(int socket, struct msghdr *message, int flags)
 
     if (NULL == _original_func)
     {
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
         if ((_original_func = (aeron_driver_agent_recvmsg_func_t)aeron_dlsym(RTLD_NEXT, "recvmsg")) == NULL)
         {
             fprintf(stderr, "%s\n", aeron_dlerror());
             exit(EXIT_FAILURE);
         }
+#pragma GCC diagnostic pop
 
         printf("hooked recvmsg\n");
     }
@@ -371,11 +380,14 @@ int sendmmsg(int sockfd, struct mmsghdr *msgvec, unsigned int vlen, int flags)
 
     if (NULL == _original_func)
     {
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
         if ((_original_func = (aeron_driver_agent_sendmmsg_func_t)aeron_dlsym(RTLD_NEXT, "sendmmsg")) == NULL)
         {
             fprintf(stderr, "%s\n", aeron_dlerror());
             exit(EXIT_FAILURE);
         }
+#pragma GCC diagnostic pop
 
         printf("hooked sendmmsg\n");
     }
@@ -420,11 +432,14 @@ int recvmmsg(int sockfd, struct mmsghdr *msgvec, unsigned int vlen, int flags, r
 
     if (NULL == _original_func)
     {
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
         if ((_original_func = (aeron_driver_agent_recvmmsg_func_t)aeron_dlsym(RTLD_NEXT, "recvmmsg")) == NULL)
         {
             fprintf(stderr, "%s\n", aeron_dlerror());
             exit(EXIT_FAILURE);
         }
+#pragma GCC diagnostic pop
 
         printf("hooked recvmmsg\n");
     }
@@ -459,14 +474,19 @@ static const char *dissect_msg_type_id(int32_t id)
     {
         case AERON_CMD_IN:
             return "CMD_IN";
+
         case AERON_CMD_OUT:
             return "CMD_OUT";
+
         case AERON_FRAME_IN:
             return "FRAME_IN";
+
         case AERON_FRAME_IN_DROPPED:
             return "FRAME_IN_DROPPED";
+
         case AERON_FRAME_OUT:
             return "FRAME_OUT";
+
         default:
             return "unknown";
     }
@@ -716,9 +736,8 @@ static const char *dissect_cmd_out(int64_t cmd_id, const void *message, size_t l
         {
             aeron_image_buffers_ready_t *command = (aeron_image_buffers_ready_t *)message;
             char *ptr = buffer;
-            int len = 0;
 
-            len = snprintf(buffer, sizeof(buffer) - 1, "ON_AVAILABLE_IMAGE %d:%d [%" PRId32 ":%" PRId64 "]",
+            int len = snprintf(buffer, sizeof(buffer) - 1, "ON_AVAILABLE_IMAGE %d:%d [%" PRId32 ":%" PRId64 "]",
                 command->session_id,
                 command->stream_id,
                 command->subscriber_position_id,
@@ -735,7 +754,7 @@ static const char *dissect_cmd_out(int64_t cmd_id, const void *message, size_t l
             len += snprintf(ptr + len, sizeof(buffer) - 1 - len, " \"%*s\" [%" PRId64 "]\n",
                 *source_identity_length, source_identity, command->correlation_id);
 
-            len += snprintf(ptr + len, sizeof(buffer) - 1 - len, "    \"%*s\"", *log_file_name_length, log_file_name);
+            snprintf(ptr + len, sizeof(buffer) - 1 - len, "    \"%*s\"", *log_file_name_length, log_file_name);
             break;
         }
 
@@ -807,7 +826,7 @@ static const char *dissect_frame(const void *message, size_t length)
             aeron_data_header_t *data = (aeron_data_header_t *)message;
 
             snprintf(buffer, sizeof(buffer) - 1, "%s 0x%x len %d %d:%d:%d @%x",
-                (hdr->type == AERON_HDR_TYPE_DATA) ? "DATA" : "PAD",
+                hdr->type == AERON_HDR_TYPE_DATA ? "DATA" : "PAD",
                 hdr->flags,
                 hdr->frame_length,
                 data->session_id,

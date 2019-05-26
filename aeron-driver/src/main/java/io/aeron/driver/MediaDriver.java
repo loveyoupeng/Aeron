@@ -44,6 +44,7 @@ import static io.aeron.CncFileDescriptor.*;
 import static io.aeron.driver.Configuration.*;
 import static io.aeron.driver.reports.LossReportUtil.mapLossReport;
 import static io.aeron.driver.status.SystemCounterDescriptor.*;
+import static io.aeron.driver.status.SystemCounterDescriptor.CONTROLLABLE_IDLE_STRATEGY;
 import static java.nio.charset.StandardCharsets.US_ASCII;
 import static org.agrona.BitUtil.align;
 import static org.agrona.IoUtil.mapNewFile;
@@ -400,7 +401,7 @@ public final class MediaDriver implements AutoCloseable
     }
 
     /**
-     * Configuration for the {@link MediaDriver} that can be used to override {@link Configuration}.
+     * Context for the {@link MediaDriver} that can be used to provide overrides for {@link Configuration}.
      * <p>
      * <b>Note:</b> Do not reuse instances of this {@link Context} across different {@link MediaDriver}s.
      * <p>
@@ -416,14 +417,18 @@ public final class MediaDriver implements AutoCloseable
         private boolean termBufferSparseFile = Configuration.termBufferSparseFile();
         private boolean performStorageChecks = Configuration.performStorageChecks();
         private boolean spiesSimulateConnection = Configuration.spiesSimulateConnection();
+        private boolean reliableStream = Configuration.reliableStream();
+        private boolean tetherSubscriptions = Configuration.tetherSubscriptions();
 
         private long lowStorageWarningThreshold = Configuration.lowStorageWarningThreshold();
         private long timerIntervalNs = Configuration.timerIntervalNs();
         private long clientLivenessTimeoutNs = Configuration.clientLivenessTimeoutNs();
         private long imageLivenessTimeoutNs = Configuration.imageLivenessTimeoutNs();
-        private long publicationUnblockTimeoutNs = Configuration.publicationUnlockTimeoutNs();
+        private long publicationUnblockTimeoutNs = Configuration.publicationUnblockTimeoutNs();
         private long publicationConnectionTimeoutNs = Configuration.publicationConnectionTimeoutNs();
         private long publicationLingerTimeoutNs = Configuration.publicationLingerTimeoutNs();
+        private long untetheredWindowLimitTimeoutNs = Configuration.untetheredWindowLimitTimeoutNs();
+        private long untetheredRestingTimeoutNs = Configuration.untetheredRestingTimeoutNs();
         private long statusMessageTimeoutNs = Configuration.statusMessageTimeoutNs();
         private long counterFreeToReuseTimeoutNs = Configuration.counterFreeToReuseTimeoutNs();
         private long retransmitUnicastDelayNs = Configuration.retransmitUnicastDelayNs();
@@ -449,6 +454,7 @@ public final class MediaDriver implements AutoCloseable
         private int publicationReservedSessionIdLow = Configuration.publicationReservedSessionIdLow();
         private int publicationReservedSessionIdHigh = Configuration.publicationReservedSessionIdHigh();
         private int lossReportBufferLength = Configuration.lossReportBufferLength();
+        private int sendToStatusMessagePollRatio = Configuration.sendToStatusMessagePollRatio();
 
         private EpochClock epochClock;
         private NanoClock nanoClock;
@@ -747,17 +753,6 @@ public final class MediaDriver implements AutoCloseable
         }
 
         /**
-         * Should the driver perform storage checks when allocating files.
-         *
-         * @return true if the driver should perform storage checks when allocating files.
-         * @see Configuration#PERFORM_STORAGE_CHECKS_PROP_NAME
-         */
-        public boolean performStorageChecks()
-        {
-            return performStorageChecks;
-        }
-
-        /**
          * Length of the {@link RingBuffer} for sending commands to the driver conductor from clients.
          *
          * @return length of the {@link RingBuffer} for sending commands to the driver conductor from clients.
@@ -851,6 +846,17 @@ public final class MediaDriver implements AutoCloseable
         {
             errorBufferLength = length;
             return this;
+        }
+
+        /**
+         * Should the driver perform storage checks when allocating files.
+         *
+         * @return true if the driver should perform storage checks when allocating files.
+         * @see Configuration#PERFORM_STORAGE_CHECKS_PROP_NAME
+         */
+        public boolean performStorageChecks()
+        {
+            return performStorageChecks;
         }
 
         /**
@@ -1011,6 +1017,58 @@ public final class MediaDriver implements AutoCloseable
         }
 
         /**
+         * The timeout for when an untethered subscription that is outside the window will participate
+         * in local flow control.
+         *
+         * @return timeout that a untethered subscription outside the window limit will participate in flow control.
+         * @see Configuration#UNTETHERED_WINDOW_LIMIT_TIMEOUT_PROP_NAME
+         */
+        public long untetheredWindowLimitTimeoutNs()
+        {
+            return untetheredWindowLimitTimeoutNs;
+        }
+
+        /**
+         * The timeout for when an untethered subscription that is outside the window will participate
+         * in local flow control.
+         *
+         * @param timeoutNs that a untethered subscription outside the window limit will participate in flow control.
+         * @return this for a fluent API.
+         * @see Configuration#UNTETHERED_WINDOW_LIMIT_TIMEOUT_PROP_NAME
+         */
+        public Context untetheredWindowLimitTimeoutNs(final long timeoutNs)
+        {
+            this.untetheredWindowLimitTimeoutNs = timeoutNs;
+            return this;
+        }
+
+        /**
+         * Timeout for when an untethered subscription is resting after not being able to keep up before it is allowed
+         * to rejoin a stream.
+         *
+         * @return timeout that a untethered subscription is resting before being allowed to rejoin a stream.
+         * @see Configuration#UNTETHERED_RESTING_TIMEOUT_PROP_NAME
+         */
+        public long untetheredRestingTimeoutNs()
+        {
+            return untetheredRestingTimeoutNs;
+        }
+
+        /**
+         * Timeout for when an untethered subscription is resting after not being able to keep up before it is allowed
+         * to rejoin a stream.
+         *
+         * @param timeoutNs that a untethered subscription is resting before being allowed to rejoin a stream.
+         * @return this for a fluent API.
+         * @see Configuration#UNTETHERED_RESTING_TIMEOUT_PROP_NAME
+         */
+        public Context untetheredRestingTimeoutNs(final long timeoutNs)
+        {
+            this.untetheredRestingTimeoutNs = timeoutNs;
+            return this;
+        }
+
+        /**
          * The delay before retransmitting after a NAK.
          *
          * @return delay before retransmitting after a NAK.
@@ -1081,6 +1139,7 @@ public final class MediaDriver implements AutoCloseable
             this.nakUnicastDelayNs = nakUnicastDelayNs;
             return this;
         }
+
 
         /**
          * The maximum time to backoff before sending a NAK on multicast.
@@ -1279,6 +1338,66 @@ public final class MediaDriver implements AutoCloseable
         }
 
         /**
+         * Does a stream NAK when loss is detected, reliable=true, or gap fill, reliable=false.
+         * <p>
+         * The default can be overridden with a channel param.
+         *
+         * @return true if NAK on loss to be reliable otherwise false for gap fill.
+         * @see Configuration#RELIABLE_STREAM_PROP_NAME
+         * @see CommonContext#RELIABLE_STREAM_PARAM_NAME
+         */
+        public boolean reliableStream()
+        {
+            return reliableStream;
+        }
+
+        /**
+         * Does a stream NAK when loss is detected, reliable=true, or gap fill, reliable=false.
+         * <p>
+         * The default can be overridden with a channel param.
+         *
+         * @param reliableStream true if a stream should NAK on loss otherwise gap fill.
+         * @return this for a fluent API.
+         * @see Configuration#RELIABLE_STREAM_PROP_NAME
+         * @see CommonContext#RELIABLE_STREAM_PARAM_NAME
+         */
+        public Context reliableStream(final boolean reliableStream)
+        {
+            this.reliableStream = reliableStream;
+            return this;
+        }
+
+        /**
+         * Do subscriptions have a tether so they participates in local flow control when more than one.
+         * <p>
+         * The default can be overridden with a channel param.
+         *
+         * @return true if subscriptions should have a tether for local flow control.
+         * @see Configuration#TETHER_SUBSCRIPTIONS_PROP_NAME
+         * @see CommonContext#TETHER_PARAM_NAME
+         */
+        public boolean tetherSubscriptions()
+        {
+            return tetherSubscriptions;
+        }
+
+        /**
+         * Do subscriptions have a tether so they participates in local flow control when more than one.
+         * <p>
+         * The default can be overridden with a channel param.
+         *
+         * @param tetherSubscription true if subscriptions should have a tether for local flow control.
+         * @return this for a fluent API.
+         * @see Configuration#TETHER_SUBSCRIPTIONS_PROP_NAME
+         * @see CommonContext#TETHER_PARAM_NAME
+         */
+        public Context tetherSubscriptions(final boolean tetherSubscription)
+        {
+            this.tetherSubscriptions = tetherSubscription;
+            return this;
+        }
+
+        /**
          * Default length for a term buffer on a network publication.
          *
          * @return default length for a term buffer on a network publication.
@@ -1424,7 +1543,7 @@ public final class MediaDriver implements AutoCloseable
          * @return this for a fluent API.
          * @see Configuration#SOCKET_SNDBUF_LENGTH_PROP_NAME
          */
-        Context socketSndbufLength(final int socketSndbufLength)
+        public Context socketSndbufLength(final int socketSndbufLength)
         {
             this.socketSndbufLength = socketSndbufLength;
             return this;
@@ -1448,7 +1567,7 @@ public final class MediaDriver implements AutoCloseable
          * @return this for a fluent API.
          * @see Configuration#SOCKET_RCVBUF_LENGTH_PROP_NAME
          */
-        Context socketRcvbufLength(final int socketRcvbufLength)
+        public Context socketRcvbufLength(final int socketRcvbufLength)
         {
             this.socketRcvbufLength = socketRcvbufLength;
             return this;
@@ -2446,6 +2565,28 @@ public final class MediaDriver implements AutoCloseable
             return terminationValidator;
         }
 
+        /**
+         * Get the ratio for sending data to polling status messages in the Sender.
+         *
+         * @return ratio for sending data to polling status messages in the Sender.
+         */
+        public int sendToStatusMessagePollRatio()
+        {
+            return sendToStatusMessagePollRatio;
+        }
+
+        /**
+         * Set the ratio for sending data to polling status messages in the Sender.
+         *
+         * @param ratio to use.
+         * @return this for fluent API.
+         */
+        public Context sendToStatusMessagePollRatio(final int ratio)
+        {
+            this.sendToStatusMessagePollRatio = ratio;
+            return this;
+        }
+
         OneToOneConcurrentArrayQueue<Runnable> receiverCommandQueue()
         {
             return receiverCommandQueue;
@@ -2850,6 +2991,8 @@ public final class MediaDriver implements AutoCloseable
                 "\n    termBufferSparseFile=" + termBufferSparseFile +
                 "\n    performStorageChecks=" + performStorageChecks +
                 "\n    spiesSimulateConnection=" + spiesSimulateConnection +
+                "\n    reliableStream=" + reliableStream +
+                "\n    tetherSubscriptions=" + tetherSubscriptions +
                 "\n    conductorBufferLength=" + conductorBufferLength +
                 "\n    toClientsBufferLength=" + toClientsBufferLength +
                 "\n    counterValuesBufferLength=" + counterValuesBufferLength +
@@ -2861,6 +3004,8 @@ public final class MediaDriver implements AutoCloseable
                 "\n    publicationUnblockTimeoutNs=" + publicationUnblockTimeoutNs +
                 "\n    publicationConnectionTimeoutNs=" + publicationConnectionTimeoutNs +
                 "\n    publicationLingerTimeoutNs=" + publicationLingerTimeoutNs +
+                "\n    untetheredWindowLimitTimeoutNs=" + untetheredWindowLimitTimeoutNs +
+                "\n    untetheredRestingTimeoutNs=" + untetheredRestingTimeoutNs +
                 "\n    retransmitUnicastDelayNs=" + retransmitUnicastDelayNs +
                 "\n    retransmitUnicastLingerNs=" + retransmitUnicastLingerNs +
                 "\n    nakUnicastDelayNs=" + nakUnicastDelayNs +
@@ -2905,6 +3050,9 @@ public final class MediaDriver implements AutoCloseable
                 "\n    multicastFlowControlSupplier=" + multicastFlowControlSupplier +
                 "\n    applicationSpecificFeedback=" + Arrays.toString(applicationSpecificFeedback) +
                 "\n    congestionControlSupplier=" + congestionControlSupplier +
+                "\n    terminationValidator=" + terminationValidator +
+                "\n    terminationHook=" + terminationHook +
+                "\n    sendToStatusMessagePollRatio=" + sendToStatusMessagePollRatio +
                 "\n    unicastFeedbackDelayGenerator=" + unicastFeedbackDelayGenerator +
                 "\n    multicastFeedbackDelayGenerator=" + multicastFeedbackDelayGenerator +
                 "\n    retransmitUnicastDelayGenerator=" + retransmitUnicastDelayGenerator +

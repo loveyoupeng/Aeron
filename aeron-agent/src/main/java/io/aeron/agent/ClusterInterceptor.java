@@ -25,13 +25,12 @@ import static io.aeron.agent.ClusterEventLogger.LOGGER;
 /**
  * Intercepts calls in the cluster which relate to state changes.
  */
-final class ClusterEventInterceptor
+final class ClusterInterceptor
 {
     static class ElectionStateChange
     {
         @Advice.OnMethodEnter
-        static void electionStateChangeInterceptor(
-            final Election.State newState, final long nowMs, @Advice.This final Election election)
+        static void state(final Election.State newState, final long nowMs, @Advice.This final Election election)
         {
             LOGGER.logElectionStateChange(newState, nowMs, election);
         }
@@ -40,7 +39,7 @@ final class ClusterEventInterceptor
     static class NewLeadershipTerm
     {
         @Advice.OnMethodEnter
-        static void newLeadershipTermInterceptor(
+        static void onNewLeadershipTerm(
             final long logLeadershipTermId,
             final long logPosition,
             final long leadershipTermId,
@@ -58,7 +57,7 @@ final class ClusterEventInterceptor
         }
     }
 
-    static class StateChange
+    static class ConsensusModuleStateChange
     {
         @Advice.OnMethodEnter
         static void state(final ConsensusModule.State state)
@@ -67,7 +66,7 @@ final class ClusterEventInterceptor
         }
     }
 
-    static class RoleChange
+    static class ConsensusModuleRoleChange
     {
         @Advice.OnMethodEnter
         static void role(final Cluster.Role role)

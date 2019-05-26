@@ -20,7 +20,10 @@ import io.aeron.archive.client.AeronArchive;
 import io.aeron.archive.status.RecordingPos;
 import io.aeron.cluster.client.ClusterException;
 import io.aeron.cluster.codecs.*;
+import io.aeron.driver.Configuration;
+import io.aeron.logbuffer.BufferClaim;
 import io.aeron.logbuffer.Header;
+import io.aeron.protocol.DataHeaderFlyweight;
 import io.aeron.status.ReadableCounter;
 import org.agrona.CloseHelper;
 import org.agrona.DirectBuffer;
@@ -34,13 +37,12 @@ import java.util.Collection;
 import static io.aeron.Aeron.NULL_VALUE;
 import static io.aeron.archive.client.AeronArchive.NULL_POSITION;
 import static io.aeron.archive.codecs.SourceLocation.LOCAL;
+import static io.aeron.cluster.client.AeronCluster.SESSION_HEADER_LENGTH;
 import static java.util.Collections.unmodifiableCollection;
 import static org.agrona.concurrent.status.CountersReader.NULL_COUNTER_ID;
 
 class ClusteredServiceAgent implements Agent, Cluster
 {
-    public static final int SESSION_HEADER_LENGTH =
-        MessageHeaderDecoder.ENCODED_LENGTH + SessionHeaderDecoder.BLOCK_LENGTH;
 
     private final int serviceId;
     private final AeronArchive.Context archiveCtx;
@@ -54,13 +56,15 @@ class ClusteredServiceAgent implements Agent, Cluster
     private final IdleStrategy idleStrategy;
     private final EpochClock epochClock;
     private final ClusterMarkFile markFile;
-    private final UnsafeBuffer headerBuffer = new UnsafeBuffer(new byte[SESSION_HEADER_LENGTH]);
-    private final DirectBufferVector headerVector = new DirectBufferVector(headerBuffer, 0, headerBuffer.capacity());
-    private final EgressMessageHeaderEncoder egressMessageHeaderEncoder = new EgressMessageHeaderEncoder();
+    private final UnsafeBuffer headerBuffer = new UnsafeBuffer(
+        new byte[Configuration.MAX_UDP_PAYLOAD_LENGTH - DataHeaderFlyweight.HEADER_LENGTH]);
+    private final DirectBufferVector headerVector = new DirectBufferVector(headerBuffer, 0, SESSION_HEADER_LENGTH);
+    private final SessionMessageHeaderEncoder sessionMessageHeaderEncoder = new SessionMessageHeaderEncoder();
 
     private long ackId = 0;
     private long clusterTimeMs;
     private long cachedTimeMs;
+    private long clusterLogPosition = NULL_POSITION;
     private long terminationPosition = NULL_POSITION;
     private long roleChangePosition = NULL_POSITION;
     private int memberId = NULL_VALUE;
@@ -89,7 +93,7 @@ class ClusteredServiceAgent implements Agent, Cluster
         consensusModuleProxy = new ConsensusModuleProxy(aeron.addPublication(channel, ctx.consensusModuleStreamId()));
         serviceAdapter = new ServiceAdapter(aeron.addSubscription(channel, ctx.serviceStreamId()), this);
 
-        egressMessageHeaderEncoder.wrapAndApplyHeader(headerBuffer, 0, new MessageHeaderEncoder());
+        sessionMessageHeaderEncoder.wrapAndApplyHeader(headerBuffer, 0, new MessageHeaderEncoder());
     }
 
     public void onStart()
@@ -99,11 +103,10 @@ class ClusteredServiceAgent implements Agent, Cluster
         heartbeatCounter = awaitHeartbeatCounter(counters);
         commitPosition = awaitCommitPositionCounter(counters);
 
-        service.onStart(this);
-        isServiceActive = true;
-
         final int recoveryCounterId = awaitRecoveryCounter(counters);
         heartbeatCounter.setOrdered(epochClock.time());
+
+        isServiceActive = true;
         checkForSnapshot(counters, recoveryCounterId);
         checkForReplay(counters, recoveryCounterId);
     }
@@ -150,12 +153,12 @@ class ClusteredServiceAgent implements Agent, Cluster
 
         if (null != logAdapter)
         {
-            // TODO: limit consumption up to roleChangePosition if set.
             final int polled = logAdapter.poll();
             if (0 == polled)
             {
                 if (logAdapter.isDone())
                 {
+                    checkPosition(logAdapter.position(), activeLogEvent);
                     logAdapter.close();
                     logAdapter = null;
                 }
@@ -229,6 +232,11 @@ class ClusteredServiceAgent implements Agent, Cluster
         return clusterTimeMs;
     }
 
+    public long logPosition()
+    {
+        return clusterLogPosition;
+    }
+
     public boolean scheduleTimer(final long correlationId, final long deadlineMs)
     {
         return consensusModuleProxy.scheduleTimer(correlationId, deadlineMs);
@@ -237,6 +245,28 @@ class ClusteredServiceAgent implements Agent, Cluster
     public boolean cancelTimer(final long correlationId)
     {
         return consensusModuleProxy.cancelTimer(correlationId);
+    }
+
+    public long offer(final DirectBuffer buffer, final int offset, final int length)
+    {
+        sessionMessageHeaderEncoder.clusterSessionId(0);
+
+        return consensusModuleProxy.offer(headerBuffer, 0, SESSION_HEADER_LENGTH, buffer, offset, length);
+    }
+
+    public long offer(final DirectBufferVector[] vectors)
+    {
+        sessionMessageHeaderEncoder.clusterSessionId(0);
+        vectors[0] = headerVector;
+
+        return consensusModuleProxy.offer(vectors);
+    }
+
+    public long tryClaim(final int length, final BufferClaim bufferClaim)
+    {
+        sessionMessageHeaderEncoder.clusterSessionId(0);
+
+        return consensusModuleProxy.tryClaim(length + SESSION_HEADER_LENGTH, bufferClaim, headerBuffer);
     }
 
     public void idle()
@@ -253,54 +283,6 @@ class ClusteredServiceAgent implements Agent, Cluster
         idleStrategy.idle(workCount);
     }
 
-    public long offer(
-        final long clusterSessionId,
-        final Publication publication,
-        final DirectBuffer buffer,
-        final int offset,
-        final int length)
-    {
-        if (role != Cluster.Role.LEADER)
-        {
-            return ClientSession.MOCKED_OFFER;
-        }
-
-        if (null == publication)
-        {
-            return Publication.NOT_CONNECTED;
-        }
-
-        egressMessageHeaderEncoder
-            .clusterSessionId(clusterSessionId)
-            .timestamp(clusterTimeMs);
-
-        return publication.offer(headerBuffer, 0, headerBuffer.capacity(), buffer, offset, length, null);
-    }
-
-    public long offer(final long clusterSessionId, final Publication publication, final DirectBufferVector[] vectors)
-    {
-        if (role != Cluster.Role.LEADER)
-        {
-            return ClientSession.MOCKED_OFFER;
-        }
-
-        if (null == publication)
-        {
-            return Publication.NOT_CONNECTED;
-        }
-
-        egressMessageHeaderEncoder
-            .clusterSessionId(clusterSessionId)
-            .timestamp(clusterTimeMs);
-
-        if (vectors[0] != headerVector)
-        {
-            vectors[0] = headerVector;
-        }
-
-        return publication.offer(vectors, null);
-    }
-
     public void onJoinLog(
         final long leadershipTermId,
         final long logPosition,
@@ -312,6 +294,12 @@ class ClusteredServiceAgent implements Agent, Cluster
     {
         if (null != logAdapter && !logChannel.equals(this.logChannel))
         {
+            final long existingPosition = logAdapter.position();
+            if (existingPosition != logPosition)
+            {
+                throw new ClusterException("existing position " + existingPosition + " new position " + logPosition);
+            }
+
             logAdapter.close();
             logAdapter = null;
         }
@@ -332,6 +320,7 @@ class ClusteredServiceAgent implements Agent, Cluster
     }
 
     void onSessionMessage(
+        final long logPosition,
         final long clusterSessionId,
         final long timestampMs,
         final DirectBuffer buffer,
@@ -339,14 +328,16 @@ class ClusteredServiceAgent implements Agent, Cluster
         final int length,
         final Header header)
     {
+        clusterLogPosition = logPosition;
         clusterTimeMs = timestampMs;
         final ClientSession clientSession = sessionByIdMap.get(clusterSessionId);
 
         service.onSessionMessage(clientSession, timestampMs, buffer, offset, length, header);
     }
 
-    void onTimerEvent(final long correlationId, final long timestampMs)
+    void onTimerEvent(final long logPosition, final long correlationId, final long timestampMs)
     {
+        clusterLogPosition = logPosition;
         clusterTimeMs = timestampMs;
         service.onTimerEvent(correlationId, timestampMs);
     }
@@ -360,6 +351,7 @@ class ClusteredServiceAgent implements Agent, Cluster
         final String responseChannel,
         final byte[] encodedPrincipal)
     {
+        clusterLogPosition = logPosition;
         clusterTimeMs = timestampMs;
 
         if (sessionByIdMap.containsKey(clusterSessionId))
@@ -387,6 +379,7 @@ class ClusteredServiceAgent implements Agent, Cluster
         final long timestampMs,
         final CloseReason closeReason)
     {
+        clusterLogPosition = logPosition;
         clusterTimeMs = timestampMs;
         final ClientSession session = sessionByIdMap.remove(clusterSessionId);
 
@@ -404,6 +397,7 @@ class ClusteredServiceAgent implements Agent, Cluster
     void onServiceAction(
         final long leadershipTermId, final long logPosition, final long timestampMs, final ClusterAction action)
     {
+        clusterLogPosition = logPosition;
         clusterTimeMs = timestampMs;
         executeAction(action, logPosition, leadershipTermId);
     }
@@ -416,7 +410,8 @@ class ClusteredServiceAgent implements Agent, Cluster
         final int leaderMemberId,
         final int logSessionId)
     {
-        egressMessageHeaderEncoder.leadershipTermId(leadershipTermId);
+        sessionMessageHeaderEncoder.leadershipTermId(leadershipTermId);
+        clusterLogPosition = logPosition;
         clusterTimeMs = timestampMs;
     }
 
@@ -431,6 +426,7 @@ class ClusteredServiceAgent implements Agent, Cluster
         final int memberId,
         final String clusterMembers)
     {
+        clusterLogPosition = logPosition;
         clusterTimeMs = timestampMs;
 
         if (memberId == this.memberId && changeType == ChangeType.QUIT)
@@ -454,6 +450,81 @@ class ClusteredServiceAgent implements Agent, Cluster
         ctx.countedErrorHandler().onError(ex);
     }
 
+    long offer(
+        final long clusterSessionId,
+        final Publication publication,
+        final DirectBuffer buffer,
+        final int offset,
+        final int length)
+    {
+        if (role != Cluster.Role.LEADER)
+        {
+            return ClientSession.MOCKED_OFFER;
+        }
+
+        if (null == publication)
+        {
+            return Publication.NOT_CONNECTED;
+        }
+
+        sessionMessageHeaderEncoder
+            .clusterSessionId(clusterSessionId)
+            .timestamp(clusterTimeMs);
+
+        return publication.offer(headerBuffer, 0, SESSION_HEADER_LENGTH, buffer, offset, length, null);
+    }
+
+    long offer(final long clusterSessionId, final Publication publication, final DirectBufferVector[] vectors)
+    {
+        if (role != Cluster.Role.LEADER)
+        {
+            return ClientSession.MOCKED_OFFER;
+        }
+
+        if (null == publication)
+        {
+            return Publication.NOT_CONNECTED;
+        }
+
+        sessionMessageHeaderEncoder
+            .clusterSessionId(clusterSessionId)
+            .timestamp(clusterTimeMs);
+
+        vectors[0] = headerVector;
+
+        return publication.offer(vectors, null);
+    }
+
+    long tryClaim(
+        final long clusterSessionId,
+        final Publication publication,
+        final int length,
+        final BufferClaim bufferClaim)
+    {
+        if (role != Cluster.Role.LEADER)
+        {
+            bufferClaim.wrap(headerBuffer, 0, length);
+            return ClientSession.MOCKED_OFFER;
+        }
+
+        if (null == publication)
+        {
+            return Publication.NOT_CONNECTED;
+        }
+
+        final long offset = publication.tryClaim(length + SESSION_HEADER_LENGTH, bufferClaim);
+        if (offset > 0)
+        {
+            sessionMessageHeaderEncoder
+                .clusterSessionId(clusterSessionId)
+                .timestamp(clusterTimeMs);
+
+            bufferClaim.putBytes(headerBuffer, 0, SESSION_HEADER_LENGTH);
+        }
+
+        return offset;
+    }
+
     private void role(final Role newRole)
     {
         if (newRole != role)
@@ -465,6 +536,7 @@ class ClusteredServiceAgent implements Agent, Cluster
 
     private void checkForSnapshot(final CountersReader counters, final int recoveryCounterId)
     {
+        clusterLogPosition = RecoveryState.getLogPosition(counters, recoveryCounterId);
         clusterTimeMs = RecoveryState.getTimestamp(counters, recoveryCounterId);
         final long leadershipTermId = RecoveryState.getLeadershipTermId(counters, recoveryCounterId);
 
@@ -472,9 +544,16 @@ class ClusteredServiceAgent implements Agent, Cluster
         {
             loadSnapshot(RecoveryState.getSnapshotRecordingId(counters, recoveryCounterId, serviceId));
         }
+        else
+        {
+            service.onStart(this, null);
+        }
 
         heartbeatCounter.setOrdered(epochClock.time());
-        consensusModuleProxy.ack(RecoveryState.getLogPosition(counters, recoveryCounterId), ackId++, serviceId);
+        while (!consensusModuleProxy.ack(clusterLogPosition, ackId++, serviceId))
+        {
+            idle();
+        }
     }
 
     private void checkForReplay(final CountersReader counters, final int recoveryCounterId)
@@ -485,7 +564,10 @@ class ClusteredServiceAgent implements Agent, Cluster
 
             try (Subscription subscription = aeron.addSubscription(activeLogEvent.channel, activeLogEvent.streamId))
             {
-                consensusModuleProxy.ack(activeLogEvent.logPosition, ackId++, serviceId);
+                while (!consensusModuleProxy.ack(activeLogEvent.logPosition, ackId++, serviceId))
+                {
+                    idle();
+                }
 
                 final Image image = awaitImage(activeLogEvent.sessionId, subscription);
                 final BoundedLogAdapter adapter = new BoundedLogAdapter(image, commitPosition, this);
@@ -503,10 +585,8 @@ class ClusteredServiceAgent implements Agent, Cluster
         idleStrategy.reset();
         while (null == activeLogEvent)
         {
+            idle();
             serviceAdapter.poll();
-            checkInterruptedStatus();
-            heartbeatCounter.setOrdered(epochClock.time());
-            idleStrategy.idle();
         }
     }
 
@@ -519,7 +599,10 @@ class ClusteredServiceAgent implements Agent, Cluster
             {
                 if (adapter.position() >= maxLogPosition)
                 {
-                    consensusModuleProxy.ack(image.position(), ackId++, serviceId);
+                    while (!consensusModuleProxy.ack(image.position(), ackId++, serviceId))
+                    {
+                        idle();
+                    }
                     break;
                 }
 
@@ -552,12 +635,16 @@ class ClusteredServiceAgent implements Agent, Cluster
     private void joinActiveLog()
     {
         final Subscription logSubscription = aeron.addSubscription(activeLogEvent.channel, activeLogEvent.streamId);
-        consensusModuleProxy.ack(activeLogEvent.logPosition, ackId++, serviceId);
+
+        while (!consensusModuleProxy.ack(activeLogEvent.logPosition, ackId++, serviceId))
+        {
+            idle();
+        }
 
         final Image image = awaitImage(activeLogEvent.sessionId, logSubscription);
         heartbeatCounter.setOrdered(epochClock.time());
 
-        egressMessageHeaderEncoder.leadershipTermId(activeLogEvent.leadershipTermId);
+        sessionMessageHeaderEncoder.leadershipTermId(activeLogEvent.leadershipTermId);
         memberId = activeLogEvent.memberId;
         ctx.clusterMarkFile().memberId(memberId);
         logChannel = activeLogEvent.channel;
@@ -590,8 +677,7 @@ class ClusteredServiceAgent implements Agent, Cluster
         Image image;
         while ((image = subscription.imageBySessionId(sessionId)) == null)
         {
-            checkInterruptedStatus();
-            idleStrategy.idle();
+            idle();
         }
 
         return image;
@@ -642,7 +728,7 @@ class ClusteredServiceAgent implements Agent, Cluster
 
     private void loadSnapshot(final long recordingId)
     {
-        try (AeronArchive archive = AeronArchive.connect(archiveCtx))
+        try (AeronArchive archive = AeronArchive.connect(archiveCtx.clone()))
         {
             final String channel = ctx.replayChannel();
             final int streamId = ctx.replayStreamId();
@@ -653,7 +739,7 @@ class ClusteredServiceAgent implements Agent, Cluster
             {
                 final Image image = awaitImage(sessionId, subscription);
                 loadState(image);
-                service.onLoadSnapshot(image);
+                service.onStart(this, image);
             }
         }
     }
@@ -687,7 +773,7 @@ class ClusteredServiceAgent implements Agent, Cluster
     {
         final long recordingId;
 
-        try (AeronArchive archive = AeronArchive.connect(archiveCtx);
+        try (AeronArchive archive = AeronArchive.connect(archiveCtx.clone());
             Publication publication = aeron.addExclusivePublication(ctx.snapshotChannel(), ctx.snapshotStreamId()))
         {
             final String channel = ChannelUri.addSessionId(ctx.snapshotChannel(), publication.sessionId());
@@ -722,8 +808,7 @@ class ClusteredServiceAgent implements Agent, Cluster
         idleStrategy.reset();
         do
         {
-            idleStrategy.idle();
-            checkInterruptedStatus();
+            idle();
 
             if (!RecordingPos.isActive(counters, counterId, recordingId))
             {
@@ -753,7 +838,10 @@ class ClusteredServiceAgent implements Agent, Cluster
     {
         if (ClusterAction.SNAPSHOT == action)
         {
-            consensusModuleProxy.ack(position, ackId++, onTakeSnapshot(position, leadershipTermId), serviceId);
+            while (!consensusModuleProxy.ack(position, ackId++, onTakeSnapshot(position, leadershipTermId), serviceId))
+            {
+                idle();
+            }
         }
     }
 
@@ -763,8 +851,7 @@ class ClusteredServiceAgent implements Agent, Cluster
         int counterId = RecordingPos.findCounterIdBySession(counters, sessionId);
         while (NULL_COUNTER_ID == counterId)
         {
-            checkInterruptedStatus();
-            idleStrategy.idle();
+            idle();
             counterId = RecordingPos.findCounterIdBySession(counters, sessionId);
         }
 
@@ -855,7 +942,20 @@ class ClusteredServiceAgent implements Agent, Cluster
             ctx.countedErrorHandler().onError(ex);
         }
 
-        consensusModuleProxy.ack(logPosition, ackId++, serviceId);
+        while (!consensusModuleProxy.ack(logPosition, ackId++, serviceId))
+        {
+            idle();
+        }
+
         ctx.terminationHook().run();
+    }
+
+    private static void checkPosition(final long existingPosition, final ActiveLogEvent activeLogEvent)
+    {
+        if (null != activeLogEvent && existingPosition != activeLogEvent.logPosition)
+        {
+            throw new ClusterException(
+                "existing position " + existingPosition + " new position " + activeLogEvent.logPosition);
+        }
     }
 }

@@ -13,17 +13,17 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.aeron.archive;
+package io.aeron;
 
-import io.aeron.*;
 import io.aeron.driver.MediaDriver;
 import io.aeron.exceptions.AeronException;
+import org.agrona.CloseHelper;
 import org.agrona.ErrorHandler;
 import org.agrona.collections.MutableReference;
 import org.junit.After;
 import org.junit.Test;
 
-import static org.hamcrest.CoreMatchers.instanceOf;
+import static org.hamcrest.Matchers.instanceOf;
 import static org.junit.Assert.assertThat;
 import static org.mockito.Mockito.*;
 
@@ -34,7 +34,7 @@ public class ReentrantClientTest
     @After
     public void after()
     {
-        mediaDriver.close();
+        CloseHelper.close(mediaDriver);
         mediaDriver.context().deleteAeronDirectory();
     }
 

@@ -44,10 +44,10 @@ class TestNode implements AutoCloseable
     private final ClusteredMediaDriver clusteredMediaDriver;
     private final ClusteredServiceContainer container;
     private final TestService service;
-    private final TestNodeContext context;
+    private final Context context;
     private boolean isClosed = false;
 
-    TestNode(final TestNodeContext context)
+    TestNode(final Context context)
     {
         clusteredMediaDriver = ClusteredMediaDriver.launch(
             context.mediaDriverContext,
@@ -93,15 +93,15 @@ class TestNode implements AutoCloseable
 
     void cleanUp()
     {
+        if (null != container)
+        {
+            container.context().deleteDirectory();
+        }
+
         if (null != clusteredMediaDriver)
         {
             clusteredMediaDriver.consensusModule().context().deleteDirectory();
             clusteredMediaDriver.archive().context().deleteArchiveDirectory();
-        }
-
-        if (null != container)
-        {
-            container.context().deleteDirectory();
         }
     }
 
@@ -143,7 +143,7 @@ class TestNode implements AutoCloseable
 
     void terminationExpected(final boolean terminationExpected)
     {
-        context.terminationExpected.lazySet(terminationExpected);
+        context.terminationExpected.set(terminationExpected);
     }
 
     boolean hasServiceTerminated()
@@ -176,7 +176,7 @@ class TestNode implements AutoCloseable
         final ClusterTool.ClusterMembersInfo clusterMembersInfo = new ClusterTool.ClusterMembersInfo();
         final File clusterDir = clusteredMediaDriver.consensusModule().context().clusterDir();
 
-        if (!ClusterTool.listMembers(clusterMembersInfo, clusterDir, TimeUnit.SECONDS.toMillis(1)))
+        if (!ClusterTool.listMembers(clusterMembersInfo, clusterDir, TimeUnit.SECONDS.toMillis(3)))
         {
             throw new IllegalStateException("timeout waiting for cluster members info");
         }
@@ -232,6 +232,31 @@ class TestNode implements AutoCloseable
             return roleChangedTo;
         }
 
+        public void onStart(final Cluster cluster, final Image snapshotImage)
+        {
+            super.onStart(cluster, snapshotImage);
+
+            if (null != snapshotImage)
+            {
+                final FragmentHandler handler =
+                    (buffer, offset, length, header) -> messageCount = buffer.getInt(offset);
+
+                while (true)
+                {
+                    final int fragments = snapshotImage.poll(handler, 1);
+
+                    if (snapshotImage.isClosed() || snapshotImage.isEndOfStream())
+                    {
+                        break;
+                    }
+
+                    cluster.idle(fragments);
+                }
+
+                wasSnapshotLoaded = true;
+            }
+        }
+
         public void onSessionMessage(
             final ClientSession session,
             final long timestampMs,
@@ -243,14 +268,44 @@ class TestNode implements AutoCloseable
             final String message = buffer.getStringWithoutLengthAscii(offset, length);
             if (message.equals(TestMessages.REGISTER_TIMER))
             {
-                cluster.scheduleTimer(1, cluster.timeMs() + 1_000);
+                while (!cluster.scheduleTimer(1, cluster.timeMs() + 1_000))
+                {
+                    cluster.idle();
+                }
             }
 
-            while (session.offer(buffer, offset, length) < 0)
+            if (message.equals(TestMessages.ECHO_IPC_INGRESS))
             {
-                cluster.idle();
+                if (null != session)
+                {
+                    while (cluster.offer(buffer, offset, length) < 0)
+                    {
+                        cluster.idle();
+                    }
+                }
+                else
+                {
+                    for (final ClientSession clientSession : cluster.clientSessions())
+                    {
+                        while (clientSession.offer(buffer, offset, length) < 0)
+                        {
+                            cluster.idle();
+                        }
+                    }
+                }
+            }
+            else
+            {
+                if (null != session)
+                {
+                    while (session.offer(buffer, offset, length) < 0)
+                    {
+                        cluster.idle();
+                    }
+                }
             }
 
+            //noinspection NonAtomicOperationOnVolatileField
             ++messageCount;
         }
 
@@ -266,32 +321,13 @@ class TestNode implements AutoCloseable
             wasSnapshotTaken = true;
         }
 
-        public void onLoadSnapshot(final Image snapshotImage)
-        {
-            final FragmentHandler handler = (buffer, offset, length, header) -> messageCount = buffer.getInt(offset);
-
-            while (true)
-            {
-                final int fragments = snapshotImage.poll(handler, 1);
-
-                if (fragments == 1)
-                {
-                    break;
-                }
-
-                cluster.idle();
-            }
-
-            wasSnapshotLoaded = true;
-        }
-
         public void onRoleChange(final Cluster.Role newRole)
         {
             roleChangedTo = newRole;
         }
     }
 
-    static class TestNodeContext
+    static class Context
     {
         final MediaDriver.Context mediaDriverContext = new MediaDriver.Context();
         final Archive.Context archiveContext = new Archive.Context();
@@ -301,6 +337,11 @@ class TestNode implements AutoCloseable
         final AtomicBoolean terminationExpected = new AtomicBoolean(false);
         final AtomicBoolean memberWasTerminated = new AtomicBoolean(false);
         final AtomicBoolean serviceWasTerminated = new AtomicBoolean(false);
-        TestService service = null;
+        final TestService service;
+
+        Context(final TestService service)
+        {
+            this.service = service;
+        }
     }
 }

@@ -21,6 +21,7 @@ import org.junit.Test;
 
 import static io.aeron.Aeron.NULL_VALUE;
 import static org.hamcrest.core.Is.is;
+import static org.hamcrest.core.IsNot.not;
 import static org.junit.Assert.assertThat;
 
 @Ignore
@@ -47,7 +48,6 @@ public class DynamicClusterTest
         try (TestCluster cluster = TestCluster.startCluster(3, 1))
         {
             final TestNode leader = cluster.awaitLeader();
-
             final TestNode dynamicMember = cluster.startDynamicNode(3, true);
 
             Thread.sleep(1000);
@@ -65,12 +65,9 @@ public class DynamicClusterTest
     @Test(timeout = 10_000)
     public void shouldDynamicallyJoinClusterOfThreeNoSnapshotsThenSend() throws Exception
     {
-        final int messageCount = 10;
-
         try (TestCluster cluster = TestCluster.startCluster(3, 1))
         {
             final TestNode leader = cluster.awaitLeader();
-
             final TestNode dynamicMember = cluster.startDynamicNode(3, true);
 
             Thread.sleep(1000);
@@ -78,6 +75,7 @@ public class DynamicClusterTest
             assertThat(dynamicMember.role(), is(Cluster.Role.FOLLOWER));
 
             cluster.connectClient();
+            final int messageCount = 10;
             cluster.sendMessages(messageCount);
             cluster.awaitResponses(messageCount);
             cluster.awaitMessageCountForService(leader, messageCount);
@@ -88,13 +86,12 @@ public class DynamicClusterTest
     @Test(timeout = 10_000)
     public void shouldDynamicallyJoinClusterOfThreeNoSnapshotsWithCatchup() throws Exception
     {
-        final int messageCount = 10;
-
         try (TestCluster cluster = TestCluster.startCluster(3, 1))
         {
             final TestNode leader = cluster.awaitLeader();
 
             cluster.connectClient();
+            final int messageCount = 10;
             cluster.sendMessages(messageCount);
             cluster.awaitResponses(messageCount);
             cluster.awaitMessageCountForService(leader, messageCount);
@@ -130,13 +127,12 @@ public class DynamicClusterTest
     @Test(timeout = 10_000)
     public void shouldDynamicallyJoinClusterOfThreeWithSnapshot() throws Exception
     {
-        final int messageCount = 10;
-
         try (TestCluster cluster = TestCluster.startCluster(3, 1))
         {
             final TestNode leader = cluster.awaitLeader();
 
             cluster.connectClient();
+            final int messageCount = 10;
             cluster.sendMessages(messageCount);
             cluster.awaitResponses(messageCount);
 
@@ -159,15 +155,14 @@ public class DynamicClusterTest
     @Test(timeout = 10_000)
     public void shouldDynamicallyJoinClusterOfThreeWithSnapshotThenSend() throws Exception
     {
-        final int preSnapshotMessageCount = 10;
-        final int postSnapshotMessageCount = 7;
-        final int totalMessageCount = preSnapshotMessageCount + postSnapshotMessageCount;
-
         try (TestCluster cluster = TestCluster.startCluster(3, 1))
         {
             final TestNode leader = cluster.awaitLeader();
 
             cluster.connectClient();
+            final int preSnapshotMessageCount = 10;
+            final int postSnapshotMessageCount = 7;
+            final int totalMessageCount = preSnapshotMessageCount + postSnapshotMessageCount;
             cluster.sendMessages(preSnapshotMessageCount);
             cluster.awaitResponses(preSnapshotMessageCount);
 
@@ -197,11 +192,9 @@ public class DynamicClusterTest
         try (TestCluster cluster = TestCluster.startThreeNodeStaticCluster(NULL_VALUE))
         {
             final TestNode leader = cluster.awaitLeader();
-
             final TestNode follower = cluster.followers().get(0);
 
             follower.terminationExpected(true);
-
             leader.removeMember(follower.index(), false);
 
             cluster.awaitNodeTermination(follower);
@@ -219,20 +212,19 @@ public class DynamicClusterTest
     {
         try (TestCluster cluster = TestCluster.startThreeNodeStaticCluster(NULL_VALUE))
         {
-            TestNode leader = cluster.awaitLeader();
+            final TestNode initialLeader = cluster.awaitLeader();
 
-            leader.terminationExpected(true);
+            initialLeader.terminationExpected(true);
+            initialLeader.removeMember(initialLeader.index(), false);
 
-            leader.removeMember(leader.index(), false);
+            cluster.awaitNodeTermination(initialLeader);
+            cluster.stopNode(initialLeader);
 
-            cluster.awaitNodeTermination(leader);
-            cluster.stopNode(leader);
+            final TestNode newLeader = cluster.awaitLeader(initialLeader.index());
+            final ClusterTool.ClusterMembersInfo clusterMembersInfo = newLeader.clusterMembersInfo();
 
-            leader = cluster.awaitLeader(leader.index());
-
-            final ClusterTool.ClusterMembersInfo clusterMembersInfo = leader.clusterMembersInfo();
-
-            assertThat(clusterMembersInfo.leaderMemberId, is(leader.index()));
+            assertThat(clusterMembersInfo.leaderMemberId, is(newLeader.index()));
+            assertThat(clusterMembersInfo.leaderMemberId, not(initialLeader.index()));
             assertThat(numberOfMembers(clusterMembersInfo), is(2));
         }
     }

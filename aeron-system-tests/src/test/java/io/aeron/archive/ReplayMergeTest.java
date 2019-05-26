@@ -36,7 +36,7 @@ import java.io.File;
 
 import static io.aeron.archive.codecs.SourceLocation.REMOTE;
 import static org.agrona.concurrent.status.CountersReader.NULL_COUNTER_ID;
-import static org.hamcrest.CoreMatchers.is;
+import static org.hamcrest.Matchers.is;
 import static org.junit.Assert.*;
 
 public class ReplayMergeTest
@@ -111,6 +111,7 @@ public class ReplayMergeTest
             new Archive.Context()
                 .maxCatalogEntries(MAX_CATALOG_ENTRIES)
                 .aeronDirectoryName(mediaDriverContext.aeronDirectoryName())
+                .errorHandler(Throwable::printStackTrace)
                 .archiveDir(archiveDir)
                 .fileSyncLevel(0)
                 .threadingMode(ArchiveThreadingMode.SHARED)
@@ -118,16 +119,23 @@ public class ReplayMergeTest
 
         aeron = Aeron.connect(
             new Aeron.Context()
+                .errorHandler(Throwable::printStackTrace)
                 .aeronDirectoryName(mediaDriverContext.aeronDirectoryName()));
 
         aeronArchive = AeronArchive.connect(
             new AeronArchive.Context()
+                .errorHandler(Throwable::printStackTrace)
                 .aeron(aeron));
     }
 
     @After
     public void after()
     {
+        if (received.get() != MIN_MESSAGES_PER_TERM * 6)
+        {
+            System.out.println("received " + received.get() + "/" + (MIN_MESSAGES_PER_TERM * 6));
+        }
+
         CloseHelper.close(aeronArchive);
         CloseHelper.close(aeron);
         CloseHelper.close(archivingMediaDriver);
@@ -185,7 +193,7 @@ public class ReplayMergeTest
 
                     if (0 == replayMerge.poll(fragmentHandler, FRAGMENT_LIMIT))
                     {
-                        checkInterruptedStatus();
+                        SystemTest.checkInterruptedStatus();
                         Thread.yield();
                     }
                 }
@@ -194,7 +202,7 @@ public class ReplayMergeTest
                 {
                     if (0 == replayMerge.poll(fragmentHandler, FRAGMENT_LIMIT))
                     {
-                        checkInterruptedStatus();
+                        SystemTest.checkInterruptedStatus();
                         Thread.yield();
                     }
                 }
@@ -216,7 +224,7 @@ public class ReplayMergeTest
 
         while (publication.offer(buffer, 0, length) <= 0)
         {
-            checkInterruptedStatus();
+            SystemTest.checkInterruptedStatus();
             Thread.yield();
         }
     }
@@ -230,21 +238,13 @@ public class ReplayMergeTest
         }
     }
 
-    private static void checkInterruptedStatus()
-    {
-        if (Thread.currentThread().isInterrupted())
-        {
-            fail("Unexpected interrupt - Test likely to have timed out");
-        }
-    }
-
     private static int awaitCounterId(final CountersReader counters, final int sessionId)
     {
         int counterId;
 
         while (NULL_COUNTER_ID == (counterId = RecordingPos.findCounterIdBySession(counters, sessionId)))
         {
-            checkInterruptedStatus();
+            SystemTest.checkInterruptedStatus();
             Thread.yield();
         }
 
@@ -255,7 +255,7 @@ public class ReplayMergeTest
     {
         while (counters.getCounterValue(counterId) < position)
         {
-            checkInterruptedStatus();
+            SystemTest.checkInterruptedStatus();
             Thread.yield();
         }
     }

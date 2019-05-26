@@ -23,8 +23,8 @@ import org.agrona.CloseHelper;
 import org.agrona.collections.ArrayUtil;
 import org.agrona.collections.Int2ObjectHashMap;
 
+import static io.aeron.Aeron.NULL_VALUE;
 import static io.aeron.CommonContext.ENDPOINT_PARAM_NAME;
-import static io.aeron.CommonContext.UDP_MEDIA;
 import static io.aeron.archive.client.AeronArchive.NULL_POSITION;
 
 /**
@@ -62,7 +62,7 @@ public final class ClusterMember
      * @param clientFacingEndpoint address and port endpoint to which cluster clients connect.
      * @param memberFacingEndpoint address and port endpoint to which other cluster members connect.
      * @param logEndpoint          address and port endpoint to which the log is replicated.
-     * @param transferEndpoint     address and port endpoint to which a stream is replayed to catchup the leader.
+     * @param transferEndpoint     address and port endpoint to which a stream is replayed to catchup to the leader.
      * @param archiveEndpoint      address and port endpoint to which the archive control channel can be reached.
      * @param endpointsDetail      comma separated list of endpoints.
      */
@@ -180,7 +180,7 @@ public final class ClusterMember
     /**
      * Has this member sent a termination ack?
      *
-     * @return has this member sent a termiantion ack?
+     * @return has this member sent a termination ack?
      */
     public boolean hasSentTerminationAck()
     {
@@ -480,6 +480,15 @@ public final class ClusterMember
     }
 
     /**
+     * Close member status publication and null out reference.
+     */
+    public void closePublication()
+    {
+        CloseHelper.close(publication);
+        publication = null;
+    }
+
+    /**
      * Parse the details for a cluster members from a string.
      * <p>
      * <code>
@@ -597,8 +606,7 @@ public final class ClusterMember
             if (member != exclude)
             {
                 channelUri.put(ENDPOINT_PARAM_NAME, member.memberFacingEndpoint());
-                final String channel = channelUri.toString();
-                member.publication(aeron.addExclusivePublication(channel, streamId));
+                member.publication = aeron.addExclusivePublication(channelUri.toString(), streamId);
             }
         }
     }
@@ -625,14 +633,10 @@ public final class ClusterMember
      * @param aeron      from which the publication will be created.
      */
     public static void addMemberStatusPublication(
-        final ClusterMember member,
-        final ChannelUri channelUri,
-        final int streamId,
-        final Aeron aeron)
+        final ClusterMember member, final ChannelUri channelUri, final int streamId, final Aeron aeron)
     {
         channelUri.put(ENDPOINT_PARAM_NAME, member.memberFacingEndpoint());
-        final String channel = channelUri.toString();
-        member.publication(aeron.addExclusivePublication(channel, streamId));
+        member.publication = aeron.addExclusivePublication(channelUri.toString(), streamId);
     }
 
     /**
@@ -870,25 +874,36 @@ public final class ClusterMember
     }
 
     /**
-     * Check that the archive endpoint is correctly configured for the cluster member.
+     * Determine which member of a cluster this is and check endpoints.
      *
-     * @param member                   to check the configuration.
-     * @param archiveControlRequestUri for the parsed URI string.
+     * @param clusterMembers  for the current cluster which can be null.
+     * @param memberId        for this member.
+     * @param memberEndpoints for this member.
+     * @return the {@link ClusterMember} determined.
      */
-    public static void checkArchiveEndpoint(final ClusterMember member, final ChannelUri archiveControlRequestUri)
+    public static ClusterMember determineMember(
+        final ClusterMember[] clusterMembers, final int memberId, final String memberEndpoints)
     {
-        if (!UDP_MEDIA.equals(archiveControlRequestUri.media()))
+        ClusterMember member = NULL_VALUE != memberId ? ClusterMember.findMember(clusterMembers, memberId) : null;
+
+        if ((null == clusterMembers || 0 == clusterMembers.length) && null == member)
         {
-            throw new ClusterException("archive control request channel must be udp");
+            member = ClusterMember.parseEndpoints(NULL_VALUE, memberEndpoints);
+        }
+        else
+        {
+            if (null == member)
+            {
+                throw new ClusterException("memberId=" + memberId + " not found in clusterMembers");
+            }
+
+            if (!"".equals(memberEndpoints))
+            {
+                ClusterMember.validateMemberEndpoints(member, memberEndpoints);
+            }
         }
 
-        final String archiveEndpoint = archiveControlRequestUri.get(ENDPOINT_PARAM_NAME);
-        if (archiveEndpoint != null && !archiveEndpoint.equals(member.archiveEndpoint))
-        {
-            throw new ClusterException(
-                "archive control request endpoint must match cluster member configuration: " + archiveEndpoint +
-                    " != " + member.archiveEndpoint);
-        }
+        return member;
     }
 
     /**
@@ -906,8 +921,7 @@ public final class ClusterMember
         if (!areSameEndpoints(member, endpointMember))
         {
             throw new ClusterException(
-                "clusterMembers and memberEndpoints differ on endpoints: " +
-                    member.endpointsDetail() + " != " + memberEndpoints);
+                "clusterMembers and memberEndpoints differ: " + member.endpointsDetail() + " != " + memberEndpoints);
         }
     }
 
@@ -1124,6 +1138,30 @@ public final class ClusterMember
         }
 
         return highId;
+    }
+
+    /**
+     * Create a string of member facing endpoints by id in format {@code id=endpoint,id=endpoint, ...}.
+     *
+     * @param members for which the endpoints string will be generated.
+     * @return  a string of member facing endpoints by id.
+     */
+    public static String clientFacingEndpoints(final ClusterMember[] members)
+    {
+        final StringBuilder builder = new StringBuilder(100);
+
+        for (int i = 0, length = members.length; i < length; i++)
+        {
+            if (0 != i)
+            {
+                builder.append(',');
+            }
+
+            final ClusterMember member = members[i];
+            builder.append(member.id()).append('=').append(member.clientFacingEndpoint());
+        }
+
+        return builder.toString();
     }
 
     public String toString()

@@ -1,6 +1,22 @@
+/*
+ * Copyright 2014-2019 Real Logic Ltd.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package io.aeron.archive;
 
 import io.aeron.Aeron;
+import io.aeron.archive.client.AeronArchive;
 import io.aeron.archive.codecs.RecordingDescriptorDecoder;
 import io.aeron.archive.codecs.RecordingDescriptorEncoder;
 import io.aeron.archive.codecs.RecordingDescriptorHeaderDecoder;
@@ -10,12 +26,14 @@ import io.aeron.protocol.DataHeaderFlyweight;
 import org.agrona.AsciiEncoding;
 import org.agrona.BitUtil;
 import org.agrona.BufferUtil;
+import org.agrona.PrintBufferUtil;
 import org.agrona.collections.ArrayUtil;
 
 import java.io.File;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.util.Date;
+import java.util.Scanner;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
@@ -24,6 +42,9 @@ import static io.aeron.archive.Archive.segmentFileName;
 import static io.aeron.archive.Catalog.INVALID;
 import static io.aeron.archive.Catalog.VALID;
 import static io.aeron.archive.client.AeronArchive.NULL_POSITION;
+import static io.aeron.logbuffer.FrameDescriptor.*;
+import static io.aeron.protocol.HeaderFlyweight.HDR_TYPE_DATA;
+import static io.aeron.protocol.HeaderFlyweight.HDR_TYPE_PAD;
 import static java.nio.file.StandardOpenOption.READ;
 
 /**
@@ -55,12 +76,27 @@ public class CatalogTool
 
         if (args.length == 2 && args[1].equals("describe"))
         {
-            try (Catalog catalog = openCatalog();
+            try (Catalog catalog = openCatalogReadOnly();
                 ArchiveMarkFile markFile = openMarkFile(System.out::println))
             {
                 printMarkInformation(markFile);
                 System.out.println("Catalog Max Entries: " + catalog.maxEntries());
                 catalog.forEach((he, hd, e, d) -> System.out.println(d));
+            }
+        }
+        else if (args.length >= 2 && args[1].equals("dump"))
+        {
+            try (Catalog catalog = openCatalog();
+                ArchiveMarkFile markFile = openMarkFile(System.out::println))
+            {
+                printMarkInformation(markFile);
+                System.out.println("Catalog Max Entries: " + catalog.maxEntries());
+
+                System.out.println();
+                final long dataFragmentLimit = args.length >= 3 ? Long.parseLong(args[2]) : Long.MAX_VALUE;
+                System.out.println("Dumping " + dataFragmentLimit + " fragments per recording");
+                catalog.forEach((he, headerDecoder, e, descriptorDecoder) ->
+                    dump(catalog, dataFragmentLimit, headerDecoder, descriptorDecoder));
             }
         }
         else if (args.length == 2 && args[1].equals("pid"))
@@ -72,9 +108,9 @@ public class CatalogTool
         }
         else if (args.length == 3 && args[1].equals("describe"))
         {
-            try (Catalog catalog = openCatalog())
+            try (Catalog catalog = openCatalogReadOnly())
             {
-                catalog.forEntry((he, hd, e, d) -> System.out.println(d), Long.valueOf(args[2]));
+                catalog.forEntry(Long.valueOf(args[2]), (he, hd, e, d) -> System.out.println(d));
             }
         }
         else if (args.length == 2 && args[1].equals("verify"))
@@ -88,19 +124,19 @@ public class CatalogTool
         {
             try (Catalog catalog = openCatalog())
             {
-                catalog.forEntry(CatalogTool::verify, Long.valueOf(args[2]));
+                catalog.forEntry(Long.valueOf(args[2]), CatalogTool::verify);
             }
         }
         else if (args.length == 2 && args[1].equals("count-entries"))
         {
-            try (Catalog catalog = openCatalog())
+            try (Catalog catalog = openCatalogReadOnly())
             {
                 System.out.println(catalog.countEntries());
             }
         }
         else if (args.length == 2 && args[1].equals("max-entries"))
         {
-            try (Catalog catalog = openCatalog())
+            try (Catalog catalog = openCatalogReadOnly())
             {
                 System.out.println(catalog.maxEntries());
             }
@@ -114,8 +150,94 @@ public class CatalogTool
                 System.out.println(catalog.maxEntries());
             }
         }
+    }
 
-        // TODO: add a manual override tool to force mark entries as unusable
+    private static void dump(
+        final Catalog catalog,
+        final long dataFragmentLimit,
+        final RecordingDescriptorHeaderDecoder header,
+        final RecordingDescriptorDecoder descriptor)
+    {
+        final long stopPosition = descriptor.stopPosition();
+        final long streamLength = stopPosition - descriptor.startPosition();
+
+        System.out.printf(
+            "%n%nRecording %d %n  channel: %s%n  streamId: %d%n  stream length: %d%n",
+            descriptor.recordingId(),
+            descriptor.strippedChannel(),
+            descriptor.streamId(),
+            AeronArchive.NULL_POSITION == stopPosition ? AeronArchive.NULL_POSITION : streamLength);
+        System.out.println(header);
+        System.out.println(descriptor);
+
+        if (0 == streamLength)
+        {
+            System.out.println("Recording is empty");
+            return;
+        }
+
+        final RecordingReader reader = new RecordingReader(
+            catalog,
+            catalog.recordingSummary(descriptor.recordingId(), new RecordingSummary()),
+            archiveDir,
+            descriptor.startPosition(),
+            AeronArchive.NULL_POSITION,
+            null);
+
+        boolean isContinue = true;
+        long fragmentCount = dataFragmentLimit;
+        do
+        {
+            System.out.println();
+            System.out.print("Frame at position [" + reader.replayPosition() + "] ");
+            reader.poll(
+                (buffer, offset, length, frameType, flags, reservedValue) ->
+                {
+                    System.out.println("data at offset [" + offset + "] with length = " + length);
+                    if (HDR_TYPE_PAD == frameType)
+                    {
+                        System.out.println("PADDING FRAME");
+                    }
+                    else if (HDR_TYPE_DATA == frameType)
+                    {
+                        if ((flags & UNFRAGMENTED) != UNFRAGMENTED)
+                        {
+                            String suffix = (flags & BEGIN_FRAG_FLAG) == BEGIN_FRAG_FLAG ? "BEGIN_FRAGMENT" : "";
+                            suffix += (flags & END_FRAG_FLAG) == END_FRAG_FLAG ? "END_FRAGMENT" : "";
+                            System.out.println("Fragmented frame. " + suffix);
+                        }
+                        System.out.println(PrintBufferUtil.prettyHexDump(buffer, offset, length));
+                    }
+                    else
+                    {
+                        System.out.println("Unexpected frame type " + frameType);
+                    }
+                },
+                1);
+
+            if (--fragmentCount == 0)
+            {
+                fragmentCount = dataFragmentLimit;
+                if (NULL_POSITION != stopPosition)
+                {
+                    System.out.printf(
+                        "%d bytes (from %d) remaining in recording %d%n",
+                        streamLength - reader.replayPosition(),
+                        streamLength,
+                        descriptor.recordingId());
+                }
+                isContinue = readContinueAnswer();
+            }
+        }
+        while (!reader.isDone() && isContinue);
+    }
+
+    private static boolean readContinueAnswer()
+    {
+        System.out.printf("%nContinue? (y/n): ");
+        final String answer = new Scanner(System.in).nextLine();
+
+        return answer.isEmpty() || answer.equalsIgnoreCase("y") || answer.equalsIgnoreCase("yes");
     }
 
     private static ArchiveMarkFile openMarkFile(final Consumer<String> logger)
@@ -124,9 +246,14 @@ public class CatalogTool
             archiveDir, ArchiveMarkFile.FILENAME, System::currentTimeMillis, TimeUnit.SECONDS.toMillis(5), logger);
     }
 
-    private static Catalog openCatalog()
+    private static Catalog openCatalogReadOnly()
     {
         return new Catalog(archiveDir, System::currentTimeMillis);
+    }
+
+    private static Catalog openCatalog()
+    {
+        return new Catalog(archiveDir, System::currentTimeMillis, true);
     }
 
     private static void printMarkInformation(final ArchiveMarkFile markFile)
@@ -159,8 +286,8 @@ public class CatalogTool
         if (NULL_POSITION == stopPosition)
         {
             final String prefix = recordingId + "-";
-            String[] segmentFiles =
-                archiveDir.list((dir, name) -> name.startsWith(prefix) && name.endsWith(RECORDING_SEGMENT_POSTFIX));
+            String[] segmentFiles = archiveDir.list(
+                (dir, name) -> name.startsWith(prefix) && name.endsWith(RECORDING_SEGMENT_POSTFIX));
 
             if (null == segmentFiles)
             {
@@ -300,6 +427,8 @@ public class CatalogTool
     {
         System.out.println("Usage: <archive-dir> <command>");
         System.out.println("  describe <optional recordingId>: prints out descriptor(s) in the catalog.");
+        System.out.println("  dump <optional data fragment limit per recording>: prints descriptor(s)");
+        System.out.println("     in the catalog and associated recorded data.");
         System.out.println("  pid: prints just PID of archive.");
         System.out.println("  verify <optional recordingId>: verifies descriptor(s) in the catalog, checking");
         System.out.println("     recording files availability and contents. Faulty entries are marked as unusable.");

@@ -166,6 +166,11 @@ if(NOT DEFINED CMAKE_C_EXTENSIONS)
    set(CMAKE_C_EXTENSIONS OFF)
 endif()
 
+add_definitions(-DAERON_VERSION_TXT="${AERON_VERSION_TXT}")
+add_definitions(-DAERON_VERSION_MAJOR=${aeron_VERSION_MAJOR})
+add_definitions(-DAERON_VERSION_MINOR=${aeron_VERSION_MINOR})
+add_definitions(-DAERON_VERSION_PATCH=${aeron_VERSION_PATCH})
+
 # all UNIX-based platform compiler flags
 if(UNIX)
     add_compile_options(-Wall -Wpedantic -Wextra -Wno-unused-parameter)
@@ -296,7 +301,7 @@ if(BUILD_AERON_ARCHIVE_API)
            "${CMAKE_CURRENT_SOURCE_DIR}}/aeron-archive/src/main/java/*.java")
 
        add_custom_command(OUTPUT ${AERON_ALL_JAR}
-           COMMAND ./gradlew -x test -x check -x javadoc
+           COMMAND ./gradlew --no-parallel -x test -x check -x javadoc
            DEPENDS ${AERON_ALL_SOURCES}
            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
            COMMENT "Generating aeron-all jar")

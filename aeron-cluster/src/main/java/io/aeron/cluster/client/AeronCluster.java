@@ -17,6 +17,7 @@ package io.aeron.cluster.client;
 
 import io.aeron.*;
 import io.aeron.cluster.codecs.*;
+import io.aeron.exceptions.ConcurrentConcludeException;
 import io.aeron.exceptions.ConfigurationException;
 import io.aeron.exceptions.TimeoutException;
 import io.aeron.logbuffer.BufferClaim;
@@ -30,7 +31,9 @@ import org.agrona.collections.Int2ObjectHashMap;
 import org.agrona.concurrent.*;
 
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
 
+import static java.util.concurrent.atomic.AtomicIntegerFieldUpdater.newUpdater;
 import static org.agrona.SystemUtil.getDurationInNanos;
 
 /**
@@ -41,13 +44,15 @@ import static org.agrona.SystemUtil.getDurationInNanos;
  * <p>
  * <b>Note:</b> Instances of this class are not threadsafe.
  */
+@SuppressWarnings("unused")
 public final class AeronCluster implements AutoCloseable
 {
-    public static final int INGRESS_HEADER_LENGTH =
-        MessageHeaderEncoder.ENCODED_LENGTH + IngressMessageHeaderEncoder.BLOCK_LENGTH;
+    /**
+     * Length of a session message header for an ingress or egress with a cluster.
+     */
+    public static final int SESSION_HEADER_LENGTH =
+        MessageHeaderEncoder.ENCODED_LENGTH + SessionMessageHeaderEncoder.BLOCK_LENGTH;
 
-    public static final int EGRESS_HEADER_LENGTH =
-        MessageHeaderEncoder.ENCODED_LENGTH + EgressMessageHeaderEncoder.BLOCK_LENGTH;
 
     static final int SEND_ATTEMPTS = 3;
     static final int FRAGMENT_LIMIT = 10;
@@ -60,14 +65,14 @@ public final class AeronCluster implements AutoCloseable
     private Publication publication;
     private final IdleStrategy idleStrategy;
     private final BufferClaim bufferClaim = new BufferClaim();
-    private final UnsafeBuffer headerBuffer = new UnsafeBuffer(new byte[INGRESS_HEADER_LENGTH]);
-    private final DirectBufferVector headerVector = new DirectBufferVector(headerBuffer, 0, INGRESS_HEADER_LENGTH);
+    private final UnsafeBuffer headerBuffer = new UnsafeBuffer(new byte[SESSION_HEADER_LENGTH]);
+    private final DirectBufferVector headerVector = new DirectBufferVector(headerBuffer, 0, SESSION_HEADER_LENGTH);
     private final UnsafeBuffer keepaliveMsgBuffer;
     private final MessageHeaderEncoder messageHeaderEncoder;
-    private final IngressMessageHeaderEncoder ingressMessageHeaderEncoder = new IngressMessageHeaderEncoder();
+    private final SessionMessageHeaderEncoder sessionMessageHeaderEncoder = new SessionMessageHeaderEncoder();
     private final SessionKeepAliveEncoder sessionKeepAliveEncoder = new SessionKeepAliveEncoder();
     private final MessageHeaderDecoder messageHeaderDecoder = new MessageHeaderDecoder();
-    private final EgressMessageHeaderDecoder egressMessageHeaderDecoder = new EgressMessageHeaderDecoder();
+    private final SessionMessageHeaderDecoder sessionMessageHeaderDecoder = new SessionMessageHeaderDecoder();
     private final NewLeaderEventDecoder newLeaderEventDecoder = new NewLeaderEventDecoder();
     private final SessionEventDecoder sessionEventDecoder = new SessionEventDecoder();
     private final FragmentAssembler fragmentAssembler;
@@ -119,6 +124,10 @@ public final class AeronCluster implements AutoCloseable
             }
 
             return aeronCluster;
+        }
+        catch (final ConcurrentConcludeException ex)
+        {
+            throw ex;
         }
         catch (final Exception ex)
         {
@@ -203,7 +212,7 @@ public final class AeronCluster implements AutoCloseable
         this.controlledFragmentAssembler = new ControlledFragmentAssembler(
             this::onControlledFragment, 0, ctx.isDirectAssemblers());
 
-        ingressMessageHeaderEncoder
+        sessionMessageHeaderEncoder
             .wrapAndApplyHeader(headerBuffer, 0, messageHeaderEncoder)
             .clusterSessionId(clusterSessionId)
             .leadershipTermId(leadershipTermId);
@@ -281,7 +290,7 @@ public final class AeronCluster implements AutoCloseable
      * <p>
      * This can be wrapped with a {@link IngressSessionDecorator} for pre-pending the cluster session header to
      * messages.
-     * {@link io.aeron.cluster.codecs.SessionHeaderEncoder} or equivalent should be used to raw access.
+     * {@link io.aeron.cluster.codecs.SessionMessageHeaderEncoder} or should be used for raw access.
      *
      * @return the raw {@link Publication} for connecting to the cluster.
      */
@@ -294,12 +303,58 @@ public final class AeronCluster implements AutoCloseable
      * Get the raw {@link Subscription} for receiving from the cluster.
      * <p>
      * The can be wrapped with a {@link EgressAdapter} for dispatching events from the cluster.
+     * {@link io.aeron.cluster.codecs.SessionMessageHeaderDecoder} or should be used for raw access.
      *
      * @return the raw {@link Subscription} for receiving from the cluster.
      */
     public Subscription egressSubscription()
     {
         return subscription;
+    }
+
+    /**
+     * Try to claim a range in the publication log into which a message can be written with zero copy semantics.
+     * Once the message has been written then {@link BufferClaim#commit()} should be called thus making it available.
+     * <p>
+     * On successful claim, the Cluster ingress header will be written to the start of the claimed buffer section.
+     * Clients <b>MUST</b> write into the claimed buffer region at offset + {@link AeronCluster#SESSION_HEADER_LENGTH}.
+     * <pre>{@code
+     *     final DirectBuffer srcBuffer = acquireMessage();
+     *
+     *     if (aeronCluster.tryClaim(length, bufferClaim) > 0L)
+     *     {
+     *         try
+     *         {
+     *              final MutableDirectBuffer buffer = bufferClaim.buffer();
+     *              final int offset = bufferClaim.offset();
+     *              // ensure that data is written at the correct offset
+     *              buffer.putBytes(offset + AeronCluster.SESSION_HEADER_LENGTH, srcBuffer, 0, length);
+     *         }
+     *         finally
+     *         {
+     *             bufferClaim.commit();
+     *         }
+     *     }
+     * }</pre>
+     *
+     * @param length      of the range to claim, in bytes.
+     * @param bufferClaim to be populated if the claim succeeds.
+     * @return The new stream position, otherwise a negative error value as specified in
+     *         {@link io.aeron.Publication#tryClaim(int, BufferClaim)}.
+     * @throws IllegalArgumentException if the length is greater than {@link io.aeron.Publication#maxPayloadLength()}.
+     * @see Publication#tryClaim(int, BufferClaim)
+     * @see BufferClaim#commit()
+     * @see BufferClaim#abort()
+     */
+    public long tryClaim(final int length, final BufferClaim bufferClaim)
+    {
+        final long offset = publication.tryClaim(length + SESSION_HEADER_LENGTH, bufferClaim);
+        if (offset > 0)
+        {
+            bufferClaim.putBytes(headerBuffer, 0, SESSION_HEADER_LENGTH);
+        }
+
+        return offset;
     }
 
     /**
@@ -314,12 +369,12 @@ public final class AeronCluster implements AutoCloseable
      */
     public long offer(final DirectBuffer buffer, final int offset, final int length)
     {
-        return publication.offer(headerBuffer, 0, INGRESS_HEADER_LENGTH, buffer, offset, length, null);
+        return publication.offer(headerBuffer, 0, SESSION_HEADER_LENGTH, buffer, offset, length, null);
     }
 
     /**
      * Non-blocking publish by gathering buffer vectors into a message. The first vector will be replaced by the cluster
-     * ingress header so must be left unused.
+     * session message header so must be left unused.
      *
      * @param vectors which make up the message.
      * @return the same as {@link Publication#offer(DirectBufferVector[])}.
@@ -327,10 +382,7 @@ public final class AeronCluster implements AutoCloseable
      */
     public long offer(final DirectBufferVector[] vectors)
     {
-        if (headerVector != vectors[0])
-        {
-            vectors[0] = headerVector;
-        }
+        vectors[0] = headerVector;
 
         return publication.offer(vectors, null);
     }
@@ -427,7 +479,7 @@ public final class AeronCluster implements AutoCloseable
 
         this.leadershipTermId = leadershipTermId;
         this.leaderMemberId = leaderMemberId;
-        ingressMessageHeaderEncoder.leadershipTermId(leadershipTermId);
+        sessionMessageHeaderEncoder.leadershipTermId(leadershipTermId);
         sessionKeepAliveEncoder.leadershipTermId(leadershipTermId);
 
         if (ctx.clusterMemberEndpoints() != null)
@@ -496,23 +548,23 @@ public final class AeronCluster implements AutoCloseable
         messageHeaderDecoder.wrap(buffer, offset);
 
         final int templateId = messageHeaderDecoder.templateId();
-        if (EgressMessageHeaderDecoder.TEMPLATE_ID == templateId)
+        if (SessionMessageHeaderDecoder.TEMPLATE_ID == templateId)
         {
-            egressMessageHeaderDecoder.wrap(
+            sessionMessageHeaderDecoder.wrap(
                 buffer,
                 offset + MessageHeaderDecoder.ENCODED_LENGTH,
                 messageHeaderDecoder.blockLength(),
                 messageHeaderDecoder.version());
 
-            final long sessionId = egressMessageHeaderDecoder.clusterSessionId();
+            final long sessionId = sessionMessageHeaderDecoder.clusterSessionId();
             if (sessionId == clusterSessionId)
             {
                 egressListener.onMessage(
                     sessionId,
-                    egressMessageHeaderDecoder.timestamp(),
+                    sessionMessageHeaderDecoder.timestamp(),
                     buffer,
-                    offset + EGRESS_HEADER_LENGTH,
-                    length - EGRESS_HEADER_LENGTH,
+                    offset + SESSION_HEADER_LENGTH,
+                    length - SESSION_HEADER_LENGTH,
                     header);
             }
         }
@@ -562,23 +614,23 @@ public final class AeronCluster implements AutoCloseable
         messageHeaderDecoder.wrap(buffer, offset);
 
         final int templateId = messageHeaderDecoder.templateId();
-        if (EgressMessageHeaderDecoder.TEMPLATE_ID == templateId)
+        if (SessionMessageHeaderDecoder.TEMPLATE_ID == templateId)
         {
-            egressMessageHeaderDecoder.wrap(
+            sessionMessageHeaderDecoder.wrap(
                 buffer,
                 offset + MessageHeaderDecoder.ENCODED_LENGTH,
                 messageHeaderDecoder.blockLength(),
                 messageHeaderDecoder.version());
 
-            final long sessionId = egressMessageHeaderDecoder.clusterSessionId();
+            final long sessionId = sessionMessageHeaderDecoder.clusterSessionId();
             if (sessionId == clusterSessionId)
             {
                 return controlledEgressListener.onMessage(
                     sessionId,
-                    egressMessageHeaderDecoder.timestamp(),
+                    sessionMessageHeaderDecoder.timestamp(),
                     buffer,
-                    offset + EGRESS_HEADER_LENGTH,
-                    length - EGRESS_HEADER_LENGTH,
+                    offset + SESSION_HEADER_LENGTH,
+                    length - SESSION_HEADER_LENGTH,
                     header);
             }
         }
@@ -833,6 +885,13 @@ public final class AeronCluster implements AutoCloseable
      */
     public static class Context implements Cloneable
     {
+        /**
+         * Using an integer because there is no support for boolean. 1 is concluded, 0 is not concluded.
+         */
+        private static final AtomicIntegerFieldUpdater<Context> IS_CONCLUDED_UPDATER = newUpdater(
+            Context.class, "isConcluded");
+        private volatile int isConcluded;
+
         private long messageTimeoutNs = Configuration.messageTimeoutNs();
         private String clusterMemberEndpoints = Configuration.clusterMemberEndpoints();
         private String ingressChannel = Configuration.ingressChannel();
@@ -869,6 +928,11 @@ public final class AeronCluster implements AutoCloseable
 
         public void conclude()
         {
+            if (0 != IS_CONCLUDED_UPDATER.getAndSet(this, 1))
+            {
+                throw new ConcurrentConcludeException();
+            }
+
             if (null == aeron)
             {
                 aeron = Aeron.connect(

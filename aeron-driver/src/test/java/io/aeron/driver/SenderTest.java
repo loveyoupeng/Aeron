@@ -153,11 +153,14 @@ public class SenderTest
             flowControl,
             mockRetransmitHandler,
             new NetworkPublicationThreadLocals(),
-            Configuration.publicationUnlockTimeoutNs(),
+            Configuration.publicationUnblockTimeoutNs(),
             Configuration.publicationConnectionTimeoutNs(),
             Configuration.publicationLingerTimeoutNs(),
+            Configuration.untetheredWindowLimitTimeoutNs(),
+            Configuration.untetheredRestingTimeoutNs(),
             false,
-            false);
+            false,
+            true);
 
         senderCommandQueue.offer(() -> sender.onNewNetworkPublication(publication));
     }

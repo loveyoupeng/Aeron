@@ -23,6 +23,7 @@ import io.aeron.cluster.client.AeronCluster;
 import io.aeron.cluster.client.ClusterException;
 import io.aeron.cluster.codecs.mark.ClusterComponentType;
 import io.aeron.cluster.service.*;
+import io.aeron.exceptions.ConcurrentConcludeException;
 import io.aeron.security.Authenticator;
 import io.aeron.security.AuthenticatorSupplier;
 import org.agrona.*;
@@ -35,18 +36,22 @@ import java.io.File;
 import java.util.Random;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
 import java.util.function.Supplier;
 
 import static io.aeron.cluster.ConsensusModule.Configuration.*;
 import static io.aeron.cluster.service.ClusteredServiceContainer.Configuration.SNAPSHOT_CHANNEL_PROP_NAME;
 import static io.aeron.cluster.service.ClusteredServiceContainer.Configuration.SNAPSHOT_STREAM_ID_PROP_NAME;
 import static io.aeron.driver.status.SystemCounterDescriptor.SYSTEM_COUNTER_TYPE_ID;
+import static java.util.concurrent.atomic.AtomicIntegerFieldUpdater.newUpdater;
 import static org.agrona.SystemUtil.*;
 import static org.agrona.concurrent.status.CountersReader.METADATA_LENGTH;
 
 /**
- * Component which resides on each node and is responsible for coordinating the consensus within a cluster.
+ * Component which resides on each node and is responsible for coordinating consensus within a cluster and the
+ * lifecycle of clustered services.
  */
+@SuppressWarnings("unused")
 public class ConsensusModule implements AutoCloseable
 {
     /**
@@ -563,10 +568,6 @@ public class ConsensusModule implements AutoCloseable
          */
         public static final int ERROR_BUFFER_LENGTH_DEFAULT = 1024 * 1024;
 
-        public static final int LOG_PUBLICATION_SESSION_ID_TAG = 2;
-        public static final String LOG_PUBLICATION_TAGS = "1," + LOG_PUBLICATION_SESSION_ID_TAG;
-        public static final String LOG_SUBSCRIPTION_TAGS = "3,4";
-
         /**
          * Timeout waiting for follower termination by leader.
          */
@@ -795,10 +796,10 @@ public class ConsensusModule implements AutoCloseable
         }
 
         /**
-         * Interval at which a dynamic joining member will send out add lcuster members and snapshot recording
+         * Interval at which a dynamic joining member will send out add cluster members and snapshot recording
          * queries.
          *
-         * @return Interval at which a dynamic joining member will send out add lcuster members and snapshot recording
+         * @return Interval at which a dynamic joining member will send out add cluster members and snapshot recording
          * queries.
          * @see #DYNAMIC_JOIN_INTERVAL_PROP_NAME
          */
@@ -887,6 +888,13 @@ public class ConsensusModule implements AutoCloseable
      */
     public static class Context implements Cloneable
     {
+        /**
+         * Using an integer because there is no support for boolean. 1 is concluded, 0 is not concluded.
+         */
+        private static final AtomicIntegerFieldUpdater<Context> IS_CONCLUDED_UPDATER = newUpdater(
+            Context.class, "isConcluded");
+        private volatile int isConcluded;
+
         private boolean ownsAeronClient = false;
         private String aeronDirectoryName = CommonContext.getAeronDirectoryName();
         private Aeron aeron;
@@ -977,6 +985,11 @@ public class ConsensusModule implements AutoCloseable
         @SuppressWarnings("MethodLength")
         public void conclude()
         {
+            if (0 != IS_CONCLUDED_UPDATER.getAndSet(this, 1))
+            {
+                throw new ConcurrentConcludeException();
+            }
+
             if (null == clusterDir)
             {
                 clusterDir = new File(clusterDirectoryName);
@@ -1120,7 +1133,10 @@ public class ConsensusModule implements AutoCloseable
 
             if (null == archiveContext)
             {
-                archiveContext = new AeronArchive.Context();
+                archiveContext = new AeronArchive.Context()
+                    .controlRequestChannel(AeronArchive.Configuration.localControlChannel())
+                    .controlResponseChannel(AeronArchive.Configuration.localControlChannel())
+                    .controlRequestStreamId(AeronArchive.Configuration.localControlStreamId());
             }
 
             archiveContext
