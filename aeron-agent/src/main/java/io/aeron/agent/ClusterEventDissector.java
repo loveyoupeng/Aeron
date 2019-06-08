@@ -18,7 +18,10 @@ package io.aeron.agent;
 import org.agrona.BitUtil;
 import org.agrona.MutableDirectBuffer;
 
-final class ClusterEventDissector
+import static org.agrona.BitUtil.SIZE_OF_INT;
+import static org.agrona.BitUtil.SIZE_OF_LONG;
+
+class ClusterEventDissector
 {
     static void electionStateChange(
         @SuppressWarnings("unused") final ClusterEventCode event,
@@ -26,9 +29,15 @@ final class ClusterEventDissector
         final int offset,
         final StringBuilder builder)
     {
-        final String stateName = buffer.getStringAscii(offset);
-        final long timestampMs = buffer.getLong(offset + BitUtil.SIZE_OF_INT + stateName.length());
-        builder.append("CLUSTER: Election State -> ").append(stateName).append(' ').append(timestampMs);
+        int eventOffset = 0;
+
+        final int memberId = buffer.getInt(offset + eventOffset);
+        eventOffset += SIZE_OF_INT;
+
+        final String stateChange = buffer.getStringAscii(offset + eventOffset);
+        builder
+            .append("CLUSTER: Election State ").append(stateChange)
+            .append(", memberId=").append(memberId);
     }
 
     static void newLeadershipTerm(
@@ -39,13 +48,13 @@ final class ClusterEventDissector
     {
         int relativeOffset = offset;
         final long logLeadershipTermId = buffer.getLong(relativeOffset);
-        relativeOffset += BitUtil.SIZE_OF_LONG;
+        relativeOffset += SIZE_OF_LONG;
         final long logPosition = buffer.getLong(relativeOffset);
-        relativeOffset += BitUtil.SIZE_OF_LONG;
+        relativeOffset += SIZE_OF_LONG;
         final long leadershipTermId = buffer.getLong(relativeOffset);
-        relativeOffset += BitUtil.SIZE_OF_LONG;
+        relativeOffset += SIZE_OF_LONG;
         final long maxLogPosition = buffer.getLong(relativeOffset);
-        relativeOffset += BitUtil.SIZE_OF_LONG;
+        relativeOffset += SIZE_OF_LONG;
         final int leaderMemberId = buffer.getInt(relativeOffset);
         relativeOffset += BitUtil.SIZE_OF_INT;
         final int logSessionId = buffer.getInt(relativeOffset);
@@ -64,7 +73,15 @@ final class ClusterEventDissector
         final int offset,
         final StringBuilder builder)
     {
-        builder.append("CLUSTER: ConsensusModule State -> ").append(buffer.getStringAscii(offset));
+        int eventOffset = 0;
+
+        final int memberId = buffer.getInt(offset + eventOffset);
+        eventOffset += SIZE_OF_INT;
+
+        final String stateChange = buffer.getStringAscii(offset + eventOffset);
+        builder
+            .append("CLUSTER: ConsensusModule State ").append(stateChange)
+            .append(", memberId=").append(memberId);
     }
 
     static void roleChange(
@@ -73,6 +90,6 @@ final class ClusterEventDissector
         final int offset,
         final StringBuilder builder)
     {
-        builder.append("CLUSTER: Role -> ").append(buffer.getStringAscii(offset));
+        builder.append("CLUSTER: ConsensusModule Role ").append(buffer.getStringAscii(offset));
     }
 }

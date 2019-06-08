@@ -39,7 +39,6 @@ import static net.bytebuddy.matcher.ElementMatchers.*;
  * which is consumed and appended asynchronous to a log as defined by the class {@link #READER_CLASSNAME_PROP_NAME}
  * which defaults to {@link EventLogReaderAgent}.
  */
-@SuppressWarnings("unused")
 public class EventLogAgent
 {
     /**
@@ -239,15 +238,15 @@ public class EventLogAgent
             .type(nameEndsWith("Election"))
             .transform(((builder, typeDescription, classLoader, module) -> builder
                 .visit(to(ClusterInterceptor.ElectionStateChange.class)
-                    .on(named("state").and(takesArgument(0, nameEndsWith("State")))))))
+                    .on(named("stateChange")))))
             .type(nameEndsWith("ConsensusModuleAgent"))
             .transform(((builder, typeDescription, classLoader, module) -> builder
                 .visit(to(ClusterInterceptor.NewLeadershipTerm.class)
                     .on(named("onNewLeadershipTerm")))
                 .visit(to(ClusterInterceptor.ConsensusModuleStateChange.class)
-                    .on(named("state")))
+                    .on(named("stateChange")))
                 .visit(to(ClusterInterceptor.ConsensusModuleRoleChange.class)
-                    .on(named("role").and(takesArgument(0, nameEndsWith("Role")))))));
+                    .on(named("roleChange")))));
     }
 
     private static Agent getReaderAgent()

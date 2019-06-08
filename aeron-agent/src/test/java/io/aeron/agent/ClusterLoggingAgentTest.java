@@ -17,6 +17,7 @@ package io.aeron.agent;
 
 import static io.aeron.agent.EventConfiguration.EVENT_READER_FRAME_LIMIT;
 import static io.aeron.agent.EventConfiguration.EVENT_RING_BUFFER;
+import static org.agrona.BitUtil.SIZE_OF_INT;
 import static org.mockito.Mockito.mock;
 
 import io.aeron.archive.Archive;
@@ -35,22 +36,39 @@ import java.nio.file.Paths;
 import java.util.concurrent.CountDownLatch;
 
 import net.bytebuddy.agent.ByteBuddyAgent;
+import org.agrona.CloseHelper;
 import org.agrona.IoUtil;
 import org.agrona.MutableDirectBuffer;
 import org.agrona.concurrent.Agent;
 import org.agrona.concurrent.MessageHandler;
 import org.junit.*;
 
-@Ignore
 public class ClusterLoggingAgentTest
 {
-    private static final CountDownLatch LATCH = new CountDownLatch(1);
+    private static final CountDownLatch LATCH = new CountDownLatch(3);
 
     private String testDirName;
+    private ClusteredMediaDriver clusteredMediaDriver;
+    private ClusteredServiceContainer clusteredServiceContainer;
+
+    @Before
+    public void before()
+    {
+        System.setProperty(EventConfiguration.ENABLED_CLUSTER_EVENT_CODES_PROP_NAME, "all");
+        System.setProperty(EventLogAgent.READER_CLASSNAME_PROP_NAME, StubEventLogReaderAgent.class.getName());
+        EventLogAgent.agentmain("", ByteBuddyAgent.install());
+    }
 
     @After
     public void after()
     {
+        EventLogAgent.removeTransformer();
+        System.clearProperty(EventConfiguration.ENABLED_CLUSTER_EVENT_CODES_PROP_NAME);
+        System.clearProperty(EventLogAgent.READER_CLASSNAME_PROP_NAME);
+
+        CloseHelper.close(clusteredServiceContainer);
+        CloseHelper.close(clusteredMediaDriver);
+
         if (testDirName != null)
         {
             IoUtil.delete(new File(testDirName), false);
@@ -99,30 +117,16 @@ public class ClusterLoggingAgentTest
             .clusterMembers("0,localhost:20110,localhost:20220,localhost:20330,localhost:20440,localhost:8010")
             .logChannel("aeron:udp?term-length=256k|control-mode=manual|control=localhost:20550");
 
-        try (ClusteredMediaDriver clusteredMediaDriver = ClusteredMediaDriver.launch(
-            mediaDriverCtx, archiveCtx, consensusModuleCtx))
-        {
-            System.setProperty(EventConfiguration.ENABLED_CLUSTER_EVENT_CODES_PROP_NAME, "all");
-            System.setProperty(EventLogAgent.READER_CLASSNAME_PROP_NAME, StubEventLogReaderAgent.class.getName());
-            EventLogAgent.agentmain("", ByteBuddyAgent.install());
+        final ClusteredServiceContainer.Context clusteredServiceCtx = new ClusteredServiceContainer.Context()
+            .aeronDirectoryName(aeronDirectoryName)
+            .archiveContext(aeronArchiveContext.clone())
+            .clusterDir(new File(testDirName, "service"))
+            .clusteredService(mock(ClusteredService.class));
 
-            final ClusteredServiceContainer.Context clusteredServiceCtx = new ClusteredServiceContainer.Context()
-                .aeronDirectoryName(aeronDirectoryName)
-                .archiveContext(aeronArchiveContext.clone())
-                .clusterDir(new File(testDirName, "service"))
-                .clusteredService(mock(ClusteredService.class));
+        clusteredMediaDriver = ClusteredMediaDriver.launch(mediaDriverCtx, archiveCtx, consensusModuleCtx);
+        clusteredServiceContainer = ClusteredServiceContainer.launch(clusteredServiceCtx);
 
-            try (ClusteredServiceContainer container = ClusteredServiceContainer.launch(clusteredServiceCtx))
-            {
-                LATCH.await();
-            }
-            finally
-            {
-                EventLogAgent.removeTransformer();
-                System.clearProperty(EventConfiguration.ENABLED_CLUSTER_EVENT_CODES_PROP_NAME);
-                System.clearProperty(EventLogAgent.READER_CLASSNAME_PROP_NAME);
-            }
-        }
+        LATCH.await();
     }
 
     public static class StubEventLogReaderAgent implements Agent, MessageHandler
@@ -141,8 +145,26 @@ public class ClusterLoggingAgentTest
         {
             if (ClusterEventLogger.toEventCodeId(ClusterEventCode.ROLE_CHANGE) == msgTypeId)
             {
-                final String roleString = buffer.getStringAscii(index, length);
-                if (roleString.contains("LEADER"))
+                final String roleChange = buffer.getStringAscii(index + SIZE_OF_INT);
+                if (roleChange.contains("LEADER"))
+                {
+                    LATCH.countDown();
+                }
+            }
+
+            if (ClusterEventLogger.toEventCodeId(ClusterEventCode.STATE_CHANGE) == msgTypeId)
+            {
+                final String stateChange = buffer.getStringAscii(index + SIZE_OF_INT);
+                if (stateChange.contains("ACTIVE"))
+                {
+                    LATCH.countDown();
+                }
+            }
+
+            if (ClusterEventLogger.toEventCodeId(ClusterEventCode.ELECTION_STATE_CHANGE) == msgTypeId)
+            {
+                final String stateChange = buffer.getStringAscii(index + SIZE_OF_INT);
+                if (stateChange.contains("CLOSE"))
                 {
                     LATCH.countDown();
                 }

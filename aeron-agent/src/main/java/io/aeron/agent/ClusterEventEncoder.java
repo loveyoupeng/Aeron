@@ -25,23 +25,24 @@ final class ClusterEventEncoder
 {
     static int encodeElectionStateChange(
         final MutableDirectBuffer encodedBuffer,
-        final Election election,
+        final Election.State oldState,
         final Election.State newState,
-        final long nowMs)
+        final int memberId)
     {
-        final String currentStateName = election.state().name();
-        final int stringLength = currentStateName.length() + " -> ".length() + newState.name().length();
+        int offset = 0;
 
-        encodedBuffer.putInt(0, stringLength);
-        int offset = BitUtil.SIZE_OF_INT;
+        encodedBuffer.putInt(offset, memberId);
+        offset += BitUtil.SIZE_OF_INT;
 
-        offset += encodedBuffer.putStringWithoutLengthAscii(offset, currentStateName);
+        final int stringLength = oldState.name().length() + " -> ".length() + newState.name().length();
+        encodedBuffer.putInt(offset, stringLength);
+        offset += BitUtil.SIZE_OF_INT;
+
+        offset += encodedBuffer.putStringWithoutLengthAscii(offset, oldState.name());
         offset += encodedBuffer.putStringWithoutLengthAscii(offset, " -> ");
         offset += encodedBuffer.putStringWithoutLengthAscii(offset, newState.name());
 
-        encodedBuffer.putLong(offset, nowMs);
-
-        return offset + BitUtil.SIZE_OF_LONG;
+        return offset;
     }
 
     static int newLeadershipTerm(
@@ -69,13 +70,47 @@ final class ClusterEventEncoder
         return offset + BitUtil.SIZE_OF_INT;
     }
 
-    static int stateChange(final MutableDirectBuffer encodedBuffer, final ConsensusModule.State state)
+    static int stateChange(
+        final MutableDirectBuffer encodedBuffer,
+        final ConsensusModule.State oldState,
+        final ConsensusModule.State newState,
+        final int memberId)
     {
-        return encodedBuffer.putStringAscii(0, state.name());
+        int offset = 0;
+
+        encodedBuffer.putInt(offset, memberId);
+        offset += BitUtil.SIZE_OF_INT;
+
+        final int stringLength = oldState.name().length() + " -> ".length() + newState.name().length();
+        encodedBuffer.putInt(offset, stringLength);
+        offset += BitUtil.SIZE_OF_INT;
+
+        offset += encodedBuffer.putStringWithoutLengthAscii(offset, oldState.name());
+        offset += encodedBuffer.putStringWithoutLengthAscii(offset, " -> ");
+        offset += encodedBuffer.putStringWithoutLengthAscii(offset, newState.name());
+
+        return offset;
     }
 
-    static int roleChange(final MutableDirectBuffer encodedBuffer, final Cluster.Role role)
+    static int roleChange(
+        final MutableDirectBuffer encodedBuffer,
+        final Cluster.Role oldRole,
+        final Cluster.Role newRole,
+        final int memberId)
     {
-        return encodedBuffer.putStringAscii(0, role.name());
+        int offset = 0;
+
+        encodedBuffer.putInt(offset, memberId);
+        offset += BitUtil.SIZE_OF_INT;
+
+        final int stringLength = oldRole.name().length() + " -> ".length() + newRole.name().length();
+        encodedBuffer.putInt(offset, stringLength);
+        offset += BitUtil.SIZE_OF_INT;
+
+        offset += encodedBuffer.putStringWithoutLengthAscii(offset, oldRole.name());
+        offset += encodedBuffer.putStringWithoutLengthAscii(offset, " -> ");
+        offset += encodedBuffer.putStringWithoutLengthAscii(offset, newRole.name());
+
+        return offset;
     }
 }
