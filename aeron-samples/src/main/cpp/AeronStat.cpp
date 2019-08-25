@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -21,12 +21,13 @@
 #include <iostream>
 #include <atomic>
 #include <thread>
-#include <signal.h>
-#include <Context.h>
 #include <cstdio>
+#include <signal.h>
 
 #define __STDC_FORMAT_MACROS
 #include <inttypes.h>
+
+#include "Context.h"
 
 using namespace aeron;
 using namespace aeron::util;
@@ -112,7 +113,7 @@ int main (int argc, char** argv)
             struct tm localTm;
 
 #ifdef _MSC_VER
-            _localtime_s(&localTm, &rawTime);
+            localtime_s(&localTm, &rawtime);
 #else
             ::localtime_r(&rawtime, &localTm);
 #endif
@@ -121,8 +122,11 @@ int main (int argc, char** argv)
             std::printf("\033[H\033[2J");
 
             std::printf(
-                "%s - Aeron Stat (CnC v%" PRId32 "), pid %" PRId64 ", client liveness %s ns\n",
-                currentTime, cncVersion, pid, toStringWithCommas(clientLivenessTimeoutNs).c_str());
+                "%s - Aeron Stat (CnC v%s), pid %" PRId64 ", client liveness %s ns\n",
+                currentTime,
+                semanticVersionToString(cncVersion).c_str(),
+                pid,
+                toStringWithCommas(clientLivenessTimeoutNs).c_str());
             std::printf("===========================\n");
 
             counters.forEach([&](std::int32_t counterId, std::int32_t, const AtomicBuffer&, const std::string& l)

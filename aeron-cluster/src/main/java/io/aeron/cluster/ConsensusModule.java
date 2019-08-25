@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -20,6 +20,7 @@ import io.aeron.CommonContext;
 import io.aeron.Counter;
 import io.aeron.archive.client.AeronArchive;
 import io.aeron.cluster.client.AeronCluster;
+import io.aeron.cluster.client.ClusterClock;
 import io.aeron.cluster.client.ClusterException;
 import io.aeron.cluster.codecs.mark.ClusterComponentType;
 import io.aeron.cluster.service.*;
@@ -48,8 +49,8 @@ import static org.agrona.SystemUtil.*;
 import static org.agrona.concurrent.status.CountersReader.METADATA_LENGTH;
 
 /**
- * Component which resides on each node and is responsible for coordinating consensus within a cluster and the
- * lifecycle of clustered services.
+ * Component which resides on each node and is responsible for coordinating consensus within a cluster in concert
+ * with the lifecycle of clustered services.
  */
 @SuppressWarnings("unused")
 public class ConsensusModule implements AutoCloseable
@@ -135,13 +136,24 @@ public class ConsensusModule implements AutoCloseable
         public static State get(final AtomicCounter counter)
         {
             final long code = counter.get();
+            return get((int)code);
+        }
 
+        /**
+         * Get the {@link State} corresponding to a particular code.
+         *
+         * @param code representing a {@link State}.
+         * @return the {@link State} corresponding to the provided code.
+         * @throws ClusterException if the code does not correspond to a valid State.
+         */
+        public static State get(final int code)
+        {
             if (code < 0 || code > (STATES.length - 1))
             {
                 throw new ClusterException("invalid state counter code: " + code);
             }
 
-            return STATES[(int)code];
+            return STATES[code];
         }
     }
 
@@ -235,8 +247,6 @@ public class ConsensusModule implements AutoCloseable
      */
     public static class Configuration
     {
-        static final int TIMER_POLL_LIMIT = 10;
-
         /**
          * Type of snapshot for this component.
          */
@@ -434,11 +444,6 @@ public class ConsensusModule implements AutoCloseable
         public static final int SNAPSHOT_COUNTER_TYPE_ID = 205;
 
         /**
-         * Type id for the clustered services heartbeat counter.
-         */
-        public static final int SERVICE_HEARTBEAT_TYPE_ID = ServiceHeartbeat.SERVICE_HEARTBEAT_TYPE_ID;
-
-        /**
          * Type id for election state counter.
          */
         public static final int ELECTION_STATE_TYPE_ID = Election.ELECTION_STATE_TYPE_ID;
@@ -494,16 +499,6 @@ public class ConsensusModule implements AutoCloseable
         public static final long LEADER_HEARTBEAT_INTERVAL_DEFAULT_NS = TimeUnit.MILLISECONDS.toNanos(200);
 
         /**
-         * Timeout after which a clustered service is considered inactive or not present.
-         */
-        public static final String SERVICE_HEARTBEAT_TIMEOUT_PROP_NAME = "aeron.cluster.service.heartbeat.timeout";
-
-        /**
-         * Timeout after which a clustered service is considered inactive or not present.
-         */
-        public static final long SERVICE_HEARTBEAT_TIMEOUT_DEFAULT_NS = TimeUnit.SECONDS.toNanos(10);
-
-        /**
          * Timeout after which an election vote will be attempted after startup while waiting to canvass the status
          * of members if a majority has been heard from.
          */
@@ -550,7 +545,7 @@ public class ConsensusModule implements AutoCloseable
         /**
          * Name of class to use as a supplier of {@link Authenticator} for the cluster.
          */
-        public static final String AUTHENTICATOR_SUPPLIER_PROP_NAME = "aeron.cluster.Authenticator.supplier";
+        public static final String AUTHENTICATOR_SUPPLIER_PROP_NAME = "aeron.cluster.authenticator.supplier";
 
         /**
          * Name of the class to use as a supplier of {@link Authenticator} for the cluster. Default is
@@ -574,9 +569,31 @@ public class ConsensusModule implements AutoCloseable
         public static final String TERMINATION_TIMEOUT_PROP_NAME = "aeron.cluster.termination.timeout";
 
         /**
-         * Timeout waiting for follower termination by leader.
+         * Timeout waiting for follower termination by leader default value.
          */
         public static final long TERMINATION_TIMEOUT_DEFAULT_NS = TimeUnit.SECONDS.toNanos(5);
+
+        /**
+         * Resolution in nanoseconds for each tick of the timer wheel for scheduling deadlines.
+         */
+        public static final String WHEEL_TICK_RESOLUTION_PROP_NAME = "aeron.cluster.wheel.tick.resolution";
+
+        /**
+         * Resolution in nanoseconds for each tick of the timer wheel for scheduling deadlines. Defaults to 8ms.
+         */
+        public static final long WHEEL_TICK_RESOLUTION_DEFAULT_NS = TimeUnit.MILLISECONDS.toNanos(8);
+
+        /**
+         * Number of ticks, or spokes, on the timer wheel. Higher number of ticks reduces potential conflicts
+         * traded off against memory usage.
+         */
+        public static final String TICKS_PER_WHEEL_PROP_NAME = "aeron.cluster.ticks.per.wheel";
+
+        /**
+         * Number of ticks, or spokes, on the timer wheel. Higher number of ticks reduces potential conflicts
+         * traded off against memory usage. Defaults to 128 per wheel.
+         */
+        public static final int TICKS_PER_WHEEL_DEFAULT = 128;
 
         /**
          * The value {@link #CLUSTER_MEMBER_ID_DEFAULT} or system property
@@ -752,17 +769,6 @@ public class ConsensusModule implements AutoCloseable
         }
 
         /**
-         * Timeout after which a service will be considered inactive or not present.
-         *
-         * @return timeout in nanoseconds after which a service will be considered inactive or not present.
-         * @see #SERVICE_HEARTBEAT_TIMEOUT_PROP_NAME
-         */
-        public static long serviceHeartbeatTimeoutNs()
-        {
-            return getDurationInNanos(SERVICE_HEARTBEAT_TIMEOUT_PROP_NAME, SERVICE_HEARTBEAT_TIMEOUT_DEFAULT_NS);
-        }
-
-        /**
          * Timeout waiting to canvass the status of cluster members before voting if a majority have been heard from.
          *
          * @return timeout in nanoseconds to wait for the status of other cluster members before voting.
@@ -878,6 +884,30 @@ public class ConsensusModule implements AutoCloseable
         {
             return Integer.getInteger(MEMBER_STATUS_STREAM_ID_PROP_NAME, MEMBER_STATUS_STREAM_ID_DEFAULT);
         }
+
+        /**
+         * The value {@link #WHEEL_TICK_RESOLUTION_DEFAULT_NS} or system property
+         * {@link #WHEEL_TICK_RESOLUTION_PROP_NAME} if set.
+         *
+         * @return {@link #WHEEL_TICK_RESOLUTION_DEFAULT_NS} or system property
+         * {@link #WHEEL_TICK_RESOLUTION_PROP_NAME} if set.
+         */
+        public static long wheelTickResolutionNs()
+        {
+            return getDurationInNanos(WHEEL_TICK_RESOLUTION_PROP_NAME, WHEEL_TICK_RESOLUTION_DEFAULT_NS);
+        }
+
+        /**
+         * The value {@link #TICKS_PER_WHEEL_DEFAULT} or system property
+         * {@link #CLUSTER_MEMBER_ID_PROP_NAME} if set.
+         *
+         * @return {@link #TICKS_PER_WHEEL_DEFAULT} or system property
+         * {@link #TICKS_PER_WHEEL_PROP_NAME} if set.
+         */
+        public static int ticksPerWheel()
+        {
+            return Integer.getInteger(TICKS_PER_WHEEL_PROP_NAME, TICKS_PER_WHEEL_DEFAULT);
+        }
     }
 
     /**
@@ -906,6 +936,7 @@ public class ConsensusModule implements AutoCloseable
         private ClusterMarkFile markFile;
         private MutableDirectBuffer tempBuffer;
 
+        private int appVersion = SemanticVersion.compose(0, 0, 1);
         private int clusterMemberId = Configuration.clusterMemberId();
         private int appointedLeaderId = Configuration.appointedLeaderId();
         private String clusterMembers = Configuration.clusterMembers();
@@ -927,13 +958,13 @@ public class ConsensusModule implements AutoCloseable
         private int memberStatusStreamId = Configuration.memberStatusStreamId();
 
         private int serviceCount = Configuration.serviceCount();
-        private Counter[] serviceHeartbeatCounters;
         private int errorBufferLength = Configuration.errorBufferLength();
         private int maxConcurrentSessions = Configuration.maxConcurrentSessions();
+        private int ticksPerWheel = Configuration.ticksPerWheel();
+        private long wheelTickResolutionNs = Configuration.wheelTickResolutionNs();
         private long sessionTimeoutNs = Configuration.sessionTimeoutNs();
         private long leaderHeartbeatTimeoutNs = Configuration.leaderHeartbeatTimeoutNs();
         private long leaderHeartbeatIntervalNs = Configuration.leaderHeartbeatIntervalNs();
-        private long serviceHeartbeatTimeoutNs = Configuration.serviceHeartbeatTimeoutNs();
         private long startupCanvassTimeoutNs = Configuration.startupCanvassTimeoutNs();
         private long electionTimeoutNs = Configuration.electionTimeoutNs();
         private long electionStatusIntervalNs = Configuration.electionStatusIntervalNs();
@@ -942,6 +973,7 @@ public class ConsensusModule implements AutoCloseable
 
         private ThreadFactory threadFactory;
         private Supplier<IdleStrategy> idleStrategySupplier;
+        private ClusterClock clusterClock;
         private EpochClock epochClock;
         private Random random;
 
@@ -1010,6 +1042,11 @@ public class ConsensusModule implements AutoCloseable
                 tempBuffer = new UnsafeBuffer(new byte[METADATA_LENGTH]);
             }
 
+            if (null == clusterClock)
+            {
+                clusterClock = new MillisecondClusterClock();
+            }
+
             if (null == epochClock)
             {
                 epochClock = new SystemEpochClock();
@@ -1050,6 +1087,7 @@ public class ConsensusModule implements AutoCloseable
                         .errorHandler(errorHandler)
                         .epochClock(epochClock)
                         .useConductorAgentInvoker(true)
+                        .awaitingIdleStrategy(new YieldingIdleStrategy())
                         .clientLock(new NoOpLock()));
 
                 if (null == errorCounter)
@@ -1105,15 +1143,6 @@ public class ConsensusModule implements AutoCloseable
             if (null == timedOutClientCounter)
             {
                 timedOutClientCounter = aeron.addCounter(SYSTEM_COUNTER_TYPE_ID, "Timed out cluster client count");
-            }
-
-            if (null == serviceHeartbeatCounters)
-            {
-                serviceHeartbeatCounters = new Counter[serviceCount];
-                for (int i = 0; i < serviceCount; i++)
-                {
-                    serviceHeartbeatCounters[i] = ServiceHeartbeat.allocate(aeron, tempBuffer, i);
-                }
             }
 
             if (null == clusterNodeRole)
@@ -1290,6 +1319,34 @@ public class ConsensusModule implements AutoCloseable
         public RecordingLog recordingLog()
         {
             return recordingLog;
+        }
+
+        /**
+         * User assigned application version which appended to the log as the appVersion in new leadership events.
+         * <p>
+         * This can be validated using {@link org.agrona.SemanticVersion} to ensure only application nodes of the same
+         * major version communicate with each other.
+         *
+         * @param appVersion for user application.
+         * @return this for a fluent API.
+         */
+        public Context appVersion(final int appVersion)
+        {
+            this.appVersion = appVersion;
+            return this;
+        }
+
+        /**
+         * User assigned application version which appended to the log as the appVersion in new leadership events.
+         * <p>
+         * This can be validated using {@link org.agrona.SemanticVersion} to ensure only application nodes of the same
+         * major version communicate with each other.
+         *
+         * @return appVersion for user application.
+         */
+        public int appVersion()
+        {
+            return appVersion;
         }
 
         /**
@@ -1767,6 +1824,56 @@ public class ConsensusModule implements AutoCloseable
         }
 
         /**
+         * Resolution in nanoseconds for each tick of the timer wheel for scheduling deadlines.
+         *
+         * @param wheelTickResolutionNs the resolution in nanoseconds of each tick on the timer wheel.
+         * @return this for a fluent API
+         * @see Configuration#WHEEL_TICK_RESOLUTION_PROP_NAME
+         */
+        public Context wheelTickResolutionNs(final long wheelTickResolutionNs)
+        {
+            this.wheelTickResolutionNs = wheelTickResolutionNs;
+            return this;
+        }
+
+        /**
+         * Resolution in nanoseconds for each tick of the timer wheel for scheduling deadlines.
+         *
+         * @return the resolution in nanoseconds for each tick on the timer wheel.
+         * @see Configuration#WHEEL_TICK_RESOLUTION_PROP_NAME
+         */
+        public long wheelTickResolutionNs()
+        {
+            return wheelTickResolutionNs;
+        }
+
+        /**
+         * Number of ticks, or spokes, on the timer wheel. Higher number of ticks reduces potential conflicts
+         * traded off against memory usage.
+         *
+         * @param ticksPerWheel the number of ticks on the timer wheel.
+         * @return this for a fluent API
+         * @see Configuration#TICKS_PER_WHEEL_PROP_NAME
+         */
+        public Context ticksPerWheel(final int ticksPerWheel)
+        {
+            this.ticksPerWheel = ticksPerWheel;
+            return this;
+        }
+
+        /**
+         * Number of ticks, or spokes, on the timer wheel. Higher number of ticks reduces potential conflicts
+         * traded off against memory usage.
+         *
+         * @return the number of ticks on the timer wheel.
+         * @see Configuration#TICKS_PER_WHEEL_PROP_NAME
+         */
+        public int ticksPerWheel()
+        {
+            return ticksPerWheel;
+        }
+
+        /**
          * Set the number of clustered services in this cluster instance.
          *
          * @param serviceCount the number of clustered services in this cluster instance.
@@ -1788,28 +1895,6 @@ public class ConsensusModule implements AutoCloseable
         public int serviceCount()
         {
             return serviceCount;
-        }
-
-        /**
-         * Set the array of counters which represent the heartbeats of the clustered services.
-         *
-         * @param serviceHeartbeatCounters which represent the heartbeats of the clustered services.
-         * @return this for a fluent API.
-         */
-        public Context serviceHeartbeatCounters(final Counter... serviceHeartbeatCounters)
-        {
-            this.serviceHeartbeatCounters = serviceHeartbeatCounters;
-            return this;
-        }
-
-        /**
-         * Get the array of counters which represent the heartbeats of the clustered services.
-         *
-         * @return the array of counters which represent the heartbeats of the clustered services.
-         */
-        public Counter[] serviceHeartbeatCounters()
-        {
-            return serviceHeartbeatCounters;
         }
 
         /**
@@ -1906,30 +1991,6 @@ public class ConsensusModule implements AutoCloseable
         public long leaderHeartbeatIntervalNs()
         {
             return leaderHeartbeatIntervalNs;
-        }
-
-        /**
-         * Timeout after which a service will be considered inactive or not present.
-         *
-         * @param heartbeatTimeoutNs after which a service will be considered inactive or not present.
-         * @return this for a fluent API.
-         * @see Configuration#SERVICE_HEARTBEAT_TIMEOUT_PROP_NAME
-         */
-        public Context serviceHeartbeatTimeoutNs(final long heartbeatTimeoutNs)
-        {
-            this.serviceHeartbeatTimeoutNs = heartbeatTimeoutNs;
-            return this;
-        }
-
-        /**
-         * Timeout after which a service will be considered inactive or not present.
-         *
-         * @return the timeout after which a service will be consider inactive or not present.
-         * @see Configuration#SERVICE_HEARTBEAT_TIMEOUT_PROP_NAME
-         */
-        public long serviceHeartbeatTimeoutNs()
-        {
-            return serviceHeartbeatTimeoutNs;
         }
 
         /**
@@ -2084,9 +2145,9 @@ public class ConsensusModule implements AutoCloseable
         }
 
         /**
-         * Provides an {@link IdleStrategy} supplier for the thread responsible for publication/subscription backoff.
+         * Provides an {@link IdleStrategy} supplier for the idle strategy for the agent duty cycle.
          *
-         * @param idleStrategySupplier supplier of thread idle strategy for publication/subscription backoff.
+         * @param idleStrategySupplier supplier for the idle strategy for the agent duty cycle.
          * @return this for a fluent API.
          */
         public Context idleStrategySupplier(final Supplier<IdleStrategy> idleStrategySupplier)
@@ -2103,6 +2164,28 @@ public class ConsensusModule implements AutoCloseable
         public IdleStrategy idleStrategy()
         {
             return idleStrategySupplier.get();
+        }
+
+        /**
+         * Set the {@link ClusterClock} to be used for timestamping messages.
+         *
+         * @param clock {@link ClusterClock} to be used for timestamping message
+         * @return this for a fluent API.
+         */
+        public Context clusterClock(final ClusterClock clock)
+        {
+            this.clusterClock = clock;
+            return this;
+        }
+
+        /**
+         * Get the {@link ClusterClock} to used for timestamping message
+         *
+         * @return the {@link ClusterClock} to used for timestamping message
+         */
+        public ClusterClock clusterClock()
+        {
+            return clusterClock;
         }
 
         /**
@@ -2613,6 +2696,41 @@ public class ConsensusModule implements AutoCloseable
             return random;
         }
 
+        /**
+         * Delete the cluster directory.
+         */
+        public void deleteDirectory()
+        {
+            if (null != clusterDir)
+            {
+                IoUtil.delete(clusterDir, false);
+            }
+        }
+
+        /**
+         * Close the context and free applicable resources.
+         * <p>
+         * If {@link #ownsAeronClient()} is true then the {@link #aeron()} client will be closed.
+         */
+        public void close()
+        {
+            CloseHelper.close(recordingLog);
+            CloseHelper.close(markFile);
+
+            if (ownsAeronClient)
+            {
+                CloseHelper.close(aeron);
+            }
+            else if (!aeron.isClosed())
+            {
+                CloseHelper.close(moduleState);
+                CloseHelper.close(commitPosition);
+                CloseHelper.close(clusterNodeRole);
+                CloseHelper.close(controlToggle);
+                CloseHelper.close(snapshotCounter);
+            }
+        }
+
         Context logPublisher(final LogPublisher logPublisher)
         {
             this.logPublisher = logPublisher;
@@ -2633,41 +2751,6 @@ public class ConsensusModule implements AutoCloseable
         EgressPublisher egressPublisher()
         {
             return egressPublisher;
-        }
-
-        /**
-         * Delete the cluster directory.
-         */
-        public void deleteDirectory()
-        {
-            if (null != clusterDir)
-            {
-                IoUtil.delete(clusterDir, false);
-            }
-        }
-
-        /**
-         * Close the context and free applicable resources.
-         * <p>
-         * If {@link #ownsAeronClient()} is true then the {@link #aeron()} client will be closed.
-         */
-        public void close()
-        {
-            if (ownsAeronClient)
-            {
-                CloseHelper.close(aeron);
-            }
-            else
-            {
-                CloseHelper.close(moduleState);
-                CloseHelper.close(commitPosition);
-                CloseHelper.close(clusterNodeRole);
-                CloseHelper.close(controlToggle);
-                CloseHelper.close(snapshotCounter);
-            }
-
-            CloseHelper.close(recordingLog);
-            CloseHelper.close(markFile);
         }
 
         private void concludeMarkFile()

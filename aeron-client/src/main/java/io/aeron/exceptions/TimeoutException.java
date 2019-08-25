@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -22,30 +22,35 @@ public class TimeoutException extends AeronException
 {
     public TimeoutException()
     {
-        super();
     }
 
-    public TimeoutException(final String message)
+    public TimeoutException(final Category category)
     {
-        super(message);
+        super(category);
     }
 
-    public TimeoutException(final String message, final Throwable cause)
+    public TimeoutException(final String message, final Category category)
     {
-        super(message, cause);
+        super(message, category);
     }
 
-    public TimeoutException(final Throwable cause)
+    public TimeoutException(final String message, final Throwable cause, final Category category)
     {
-        super(cause);
+        super(message, cause, category);
+    }
+
+    public TimeoutException(final Throwable cause, final Category category)
+    {
+        super(cause, category);
     }
 
     protected TimeoutException(
         final String message,
         final Throwable cause,
         final boolean enableSuppression,
-        final boolean writableStackTrace)
+        final boolean writableStackTrace,
+        final Category category)
     {
-        super(message, cause, enableSuppression, writableStackTrace);
+        super(message, cause, enableSuppression, writableStackTrace, category);
     }
 }

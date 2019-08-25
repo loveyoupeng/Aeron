@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -146,8 +146,9 @@ int aeron_publication_image_create(
     _image->rcv_hwm_position.value_addr = rcv_hwm_position->value_addr;
     _image->rcv_pos_position.counter_id = rcv_pos_position->counter_id;
     _image->rcv_pos_position.value_addr = rcv_pos_position->value_addr;
+    _image->term_length = term_buffer_length;
     _image->initial_term_id = initial_term_id;
-    _image->term_length_mask = (int32_t)term_buffer_length - 1;
+    _image->term_length_mask = term_buffer_length - 1;
     _image->position_bits_to_shift = (size_t)aeron_number_of_trailing_zeroes((int32_t)term_buffer_length);
     _image->mtu_length = sender_mtu_length;
     _image->last_sm_change_number = -1;
@@ -225,19 +226,27 @@ int aeron_publication_image_close(aeron_counters_manager_t *counters_manager, ae
     return 0;
 }
 
-void aeron_publication_image_clean_buffer_to(aeron_publication_image_t *image, int64_t new_clean_position)
+void aeron_publication_image_clean_buffer_to(aeron_publication_image_t *image, int64_t position)
 {
-    const int64_t clean_position = image->conductor_fields.clean_position;
-    const int32_t bytes_for_cleaning = (int32_t)(new_clean_position - clean_position);
-    const size_t dirty_term_index = aeron_logbuffer_index_by_position(clean_position, image->position_bits_to_shift);
-    const int32_t term_offset = (int32_t)(clean_position & image->term_length_mask);
-    const int32_t bytes_left_in_term = (int32_t)image->term_length_mask + 1 - term_offset;
-    const int32_t length = bytes_for_cleaning < bytes_left_in_term ? bytes_for_cleaning : bytes_left_in_term;
-
-    if (length > 0)
+    int64_t clean_position = image->conductor_fields.clean_position;
+    if (position > clean_position)
     {
-        memset(image->mapped_raw_log.term_buffers[dirty_term_index].addr + term_offset, 0, (size_t)length);
-        image->conductor_fields.clean_position = clean_position + (int64_t)length;
+        size_t dirty_index = aeron_logbuffer_index_by_position(clean_position, image->position_bits_to_shift);
+        size_t bytes_to_clean = position - clean_position;
+        size_t term_length = image->term_length;
+        size_t term_offset = (size_t)(clean_position & image->term_length_mask);
+        size_t bytes_left_in_term = term_length - term_offset;
+        size_t length = bytes_to_clean < bytes_left_in_term ? bytes_to_clean : bytes_left_in_term;
+
+        memset(
+            image->mapped_raw_log.term_buffers[dirty_index].addr + term_offset + sizeof(int64_t),
+            0,
+            length - sizeof(int64_t));
+
+        uint64_t *ptr = (uint64_t *)(image->mapped_raw_log.term_buffers[dirty_index].addr + term_offset);
+        AERON_PUT_ORDERED(*ptr, (uint64_t)0);
+
+        image->conductor_fields.clean_position = clean_position + length;
     }
 }
 
@@ -344,8 +353,8 @@ void aeron_publication_image_track_rebuild(
         (now_ns > (image->last_status_message_timestamp + status_message_timeout)) ||
         (min_sub_pos > (image->next_sm_position + threshold)))
     {
+        aeron_publication_image_clean_buffer_to(image, min_sub_pos - image->term_length);
         aeron_publication_image_schedule_status_message(image, now_ns, min_sub_pos, window_length);
-        aeron_publication_image_clean_buffer_to(image, min_sub_pos - (image->term_length_mask + 1));
     }
 }
 
@@ -454,7 +463,7 @@ int aeron_publication_image_send_pending_loss(aeron_publication_image_t *image)
         {
             const int32_t term_id = image->loss_term_id;
             const int32_t term_offset = image->loss_term_offset;
-            const int32_t length = (int32_t)image->loss_length;
+            const int32_t length = image->loss_length;
 
             aeron_acquire();
 

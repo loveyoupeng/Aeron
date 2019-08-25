@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -28,8 +28,7 @@ Publication::Publication(
     std::int32_t sessionId,
     UnsafeBufferPosition& publicationLimit,
     std::int32_t channelStatusId,
-    std::shared_ptr<LogBuffers> logBuffers)
-    :
+    std::shared_ptr<LogBuffers> logBuffers) :
     m_conductor(conductor),
     m_logMetaDataBuffer(logBuffers->atomicBuffer(LogBufferDescriptor::LOG_META_DATA_SECTION_INDEX)),
     m_channel(channel),
@@ -50,8 +49,8 @@ Publication::Publication(
     for (int i = 0; i < LogBufferDescriptor::PARTITION_COUNT; i++)
     {
         /*
-         * perhaps allow copy-construction and be able to move appenders and AtomicBuffers directly into Publication for
-         * locality.
+         * perhaps allow copy-construction and be able to move appenders and AtomicBuffers directly into Publication
+         * for locality.
          */
         m_appenders[i] = std::unique_ptr<TermAppender>(new TermAppender(
             m_logBuffers->atomicBuffer(i),
@@ -62,6 +61,7 @@ Publication::Publication(
 
 Publication::~Publication()
 {
+    std::atomic_store_explicit(&m_isClosed, true, std::memory_order_release);
     m_conductor.releasePublication(m_registrationId);
 }
 
@@ -94,4 +94,5 @@ std::int64_t Publication::channelStatus()
 
     return m_conductor.channelStatus(m_channelStatusId);
 }
+
 }

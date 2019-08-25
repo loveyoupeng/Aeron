@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -36,7 +36,7 @@ int32_t aeron_channel_endpoint_status_allocate(
     size_t channel_length,
     const char *channel);
 
-int32_t aeron_heartbeat_status_allocate(
+int32_t aeron_heartbeat_timestamp_allocate(
     aeron_counters_manager_t *counters_manager,
     const char *name,
     int32_t type_id,
@@ -130,14 +130,14 @@ int32_t aeron_counter_receive_channel_status_allocate(
     size_t channel_length,
     const char *channel);
 
-#define AERON_COUNTER_CLIENT_HEARTBEAT_STATUS_NAME "client-heartbeat"
-#define AERON_COUNTER_CLIENT_HEARTBEAT_STATUS_TYPE_ID (11)
+#define AERON_COUNTER_CLIENT_HEARTBEAT_TIMESTAMP_NAME "client-heartbeat"
+#define AERON_COUNTER_CLIENT_HEARTBEAT_TIMESTAMP_TYPE_ID (11)
 
-int32_t aeron_counter_client_heartbeat_status_allocate(
+int32_t aeron_counter_client_heartbeat_timestamp_allocate(
     aeron_counters_manager_t *counters_manager,
     int64_t client_id);
 
-#define AERON_COUNTER_PUBLISHER_POSITION_NAME "pub-pos"
+#define AERON_COUNTER_PUBLISHER_POSITION_NAME "pub-pos (sampled)"
 #define AERON_COUNTER_PUBLISHER_POSITION_TYPE_ID (12)
 
 int32_t aeron_counter_publisher_position_allocate(

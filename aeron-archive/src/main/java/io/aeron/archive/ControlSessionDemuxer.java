@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -70,17 +70,15 @@ class ControlSessionDemuxer implements Session, ControlRequestListener
 
         if (state == State.ACTIVE)
         {
-            if (image.isClosed())
+            workCount += image.poll(adapter, FRAGMENT_LIMIT);
+
+            if (0 == workCount && image.isClosed())
             {
                 state = State.INACTIVE;
-                for (final Session session : controlSessionByIdMap.values())
+                for (final ControlSession session : controlSessionByIdMap.values())
                 {
                     session.abort();
                 }
-            }
-            else
-            {
-                workCount += image.poll(adapter, FRAGMENT_LIMIT);
             }
         }
 
@@ -140,10 +138,31 @@ class ControlSessionDemuxer implements Session, ControlRequestListener
         controlSession.onStartReplay(correlationId, recordingId, position, length, replayStreamId, replayChannel);
     }
 
+    public void onBoundedStartReplay(
+        final long controlSessionId,
+        final long correlationId,
+        final long recordingId,
+        final long position,
+        final long length,
+        final int limitCounterId,
+        final int replayStreamId,
+        final String replayChannel)
+    {
+        final ControlSession controlSession = getControlSession(controlSessionId, correlationId);
+        controlSession.onBoundedStartReplay(
+            correlationId, recordingId, position, length, limitCounterId, replayStreamId, replayChannel);
+    }
+
     public void onStopReplay(final long controlSessionId, final long correlationId, final long replaySessionId)
     {
         final ControlSession controlSession = getControlSession(controlSessionId, correlationId);
         controlSession.onStopReplay(correlationId, replaySessionId);
+    }
+
+    public void onStopAllReplays(final long controlSessionId, final long correlationId, final long recordingId)
+    {
+        final ControlSession controlSession = getControlSession(controlSessionId, correlationId);
+        controlSession.onStopAllReplays(correlationId, recordingId);
     }
 
     public void onListRecordingsForUri(

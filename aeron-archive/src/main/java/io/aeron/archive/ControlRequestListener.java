@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -44,6 +44,16 @@ interface ControlRequestListener
         int replayStreamId,
         String replayChannel);
 
+    void onBoundedStartReplay(
+        long controlSessionId,
+        long correlationId,
+        long recordingId,
+        long position,
+        long length,
+        int boundCounterId,
+        int replayStreamId,
+        String replayChannel);
+
     void onListRecordings(long controlSessionId, long correlationId, long fromRecordingId, int recordCount);
 
     void onListRecordingsForUri(
@@ -57,6 +67,8 @@ interface ControlRequestListener
     void onListRecording(long controlSessionId, long correlationId, long recordingId);
 
     void onStopReplay(long controlSessionId, long correlationId, long replaySessionId);
+
+    void onStopAllReplays(long controlSessionId, long correlationId, long recordingId);
 
     void onExtendRecording(
         long controlSessionId,

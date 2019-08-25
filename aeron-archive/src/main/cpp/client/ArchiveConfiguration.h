@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -42,7 +42,7 @@ constexpr const std::int64_t NULL_LENGTH = aeron::NULL_VALUE;
 namespace Configuration
 {
 constexpr const std::uint8_t ARCHIVE_MAJOR_VERSION = 0;
-constexpr const std::uint8_t ARCHIVE_MINOR_VERSION = 1;
+constexpr const std::uint8_t ARCHIVE_MINOR_VERSION = 2;
 constexpr const std::uint8_t ARCHIVE_PATCH_VERSION = 1;
 constexpr const std::int32_t ARCHIVE_SEMANTIC_VERSION = aeron::util::semanticVersionCompose(
     ARCHIVE_MAJOR_VERSION, ARCHIVE_MINOR_VERSION, ARCHIVE_PATCH_VERSION);

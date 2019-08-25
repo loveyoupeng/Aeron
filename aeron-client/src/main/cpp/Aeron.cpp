@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -51,9 +51,11 @@ Aeron::Aeron(Context &context) :
         m_context.m_exceptionHandler,
         m_context.m_onAvailableCounterHandler,
         m_context.m_onUnavailableCounterHandler,
+        m_context.m_onCloseClientHandler,
         m_context.m_mediaDriverTimeout,
         m_context.m_resourceLingerTimeout,
-        CncFileDescriptor::clientLivenessTimeout(m_cncBuffer)),
+        CncFileDescriptor::clientLivenessTimeout(m_cncBuffer),
+        m_context.m_preTouchMappedMemory),
     m_idleStrategy(IDLE_SLEEP_MS),
     m_conductorRunner(m_conductor, m_idleStrategy, m_context.m_exceptionHandler, AGENT_NAME),
     m_conductorInvoker(m_conductor, m_context.m_exceptionHandler)

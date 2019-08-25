@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -34,19 +34,19 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.channels.FileChannel;
 import java.util.Objects;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
 import java.util.function.Supplier;
 
+import static io.aeron.archive.ArchiveThreadingMode.DEDICATED;
 import static io.aeron.driver.status.SystemCounterDescriptor.SYSTEM_COUNTER_TYPE_ID;
 import static io.aeron.logbuffer.LogBufferDescriptor.TERM_MAX_LENGTH;
 import static io.aeron.logbuffer.LogBufferDescriptor.TERM_MIN_LENGTH;
 import static java.lang.System.getProperty;
 import static java.util.concurrent.atomic.AtomicIntegerFieldUpdater.newUpdater;
-import static org.agrona.SystemUtil.getDurationInNanos;
-import static org.agrona.SystemUtil.getSizeAsInt;
-import static org.agrona.SystemUtil.loadPropertiesFiles;
+import static org.agrona.SystemUtil.*;
 
 /**
  * The Aeron Archive which allows for the recording and replay of local and remote {@link io.aeron.Publication}s .
@@ -62,7 +62,7 @@ public class Archive implements AutoCloseable
         this.ctx = ctx;
         ctx.conclude();
 
-        final ArchiveConductor conductor = ArchiveThreadingMode.DEDICATED == ctx.threadingMode() ?
+        final ArchiveConductor conductor = DEDICATED == ctx.threadingMode() ?
             new DedicatedModeArchiveConductor(ctx) :
             new SharedModeArchiveConductor(ctx);
 
@@ -263,7 +263,7 @@ public class Archive implements AutoCloseable
         public static ArchiveThreadingMode threadingMode()
         {
             return ArchiveThreadingMode.valueOf(System.getProperty(
-                THREADING_MODE_PROP_NAME, ArchiveThreadingMode.DEDICATED.name()));
+                THREADING_MODE_PROP_NAME, DEDICATED.name()));
         }
 
         /**
@@ -390,6 +390,7 @@ public class Archive implements AutoCloseable
 
         private ArchiveThreadingMode threadingMode = Configuration.threadingMode();
         private ThreadFactory threadFactory;
+        private CountDownLatch abortLatch;
 
         private Supplier<IdleStrategy> idleStrategySupplier;
         private EpochClock epochClock;
@@ -447,17 +448,13 @@ public class Archive implements AutoCloseable
                         .epochClock(epochClock)
                         .driverAgentInvoker(mediaDriverAgentInvoker)
                         .useConductorAgentInvoker(true)
+                        .awaitingIdleStrategy(new YieldingIdleStrategy())
                         .clientLock(new NoOpLock()));
 
                 if (null == errorCounter)
                 {
                     errorCounter = aeron.addCounter(SYSTEM_COUNTER_TYPE_ID, "Archive errors");
                 }
-            }
-
-            if (null == aeron.conductorAgentInvoker())
-            {
-                throw new ArchiveException("Aeron client must use conductor agent invoker");
             }
 
             Objects.requireNonNull(errorCounter, "Error counter must be supplied if aeron client is");
@@ -518,6 +515,10 @@ public class Archive implements AutoCloseable
                 catalog = new Catalog(
                     archiveDir, archiveDirChannel, catalogFileSyncLevel, maxCatalogEntries, epochClock);
             }
+
+            int expectedCount = DEDICATED == threadingMode ? 2 : 0;
+            expectedCount += aeron.conductorAgentInvoker() == null ? 1 : 0;
+            abortLatch = new CountDownLatch(expectedCount);
         }
 
         /**
@@ -870,9 +871,9 @@ public class Archive implements AutoCloseable
         }
 
         /**
-         * Provides an {@link IdleStrategy} supplier for the thread responsible for publication/subscription backoff.
+         * Provides an {@link IdleStrategy} supplier for idling the conductor.
          *
-         * @param idleStrategySupplier supplier of thread idle strategy for publication/subscription backoff.
+         * @param idleStrategySupplier supplier for idling the conductor.
          * @return this for a fluent API.
          */
         public Context idleStrategySupplier(final Supplier<IdleStrategy> idleStrategySupplier)
@@ -1328,6 +1329,11 @@ public class Archive implements AutoCloseable
             return maxCatalogEntries;
         }
 
+        CountDownLatch abortLatch()
+        {
+            return abortLatch;
+        }
+
         /**
          * Close the context and free applicable resources.
          * <p>
@@ -1335,15 +1341,15 @@ public class Archive implements AutoCloseable
          */
         public void close()
         {
-            if (ownsAeronClient)
-            {
-                CloseHelper.close(aeron);
-            }
-
             CloseHelper.close(catalog);
             CloseHelper.close(markFile);
             CloseHelper.close(archiveDirChannel);
             archiveDirChannel = null;
+
+            if (ownsAeronClient)
+            {
+                CloseHelper.close(aeron);
+            }
         }
     }
 

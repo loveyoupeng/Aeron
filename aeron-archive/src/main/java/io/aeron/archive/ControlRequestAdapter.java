@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -23,8 +23,6 @@ import org.agrona.collections.ArrayUtil;
 
 class ControlRequestAdapter implements FragmentHandler
 {
-    private static final boolean IS_STRICT = !Boolean.getBoolean("aeron.archive.lenient.control.schema");
-
     private final ControlRequestListener listener;
     private final MessageHeaderDecoder headerDecoder = new MessageHeaderDecoder();
     private final ConnectRequestDecoder connectRequestDecoder = new ConnectRequestDecoder();
@@ -49,6 +47,10 @@ class ControlRequestAdapter implements FragmentHandler
         new FindLastMatchingRecordingRequestDecoder();
     private final ListRecordingSubscriptionsRequestDecoder listRecordingSubscriptionsRequestDecoder =
         new ListRecordingSubscriptionsRequestDecoder();
+    private final BoundedReplayRequestDecoder boundedReplayRequestDecoder =
+        new BoundedReplayRequestDecoder();
+    private final StopAllReplaysRequestDecoder stopAllReplaysRequestDecoder =
+        new StopAllReplaysRequestDecoder();
 
     ControlRequestAdapter(final ControlRequestListener listener)
     {
@@ -61,7 +63,7 @@ class ControlRequestAdapter implements FragmentHandler
         headerDecoder.wrap(buffer, offset);
 
         final int schemaId = headerDecoder.schemaId();
-        if (IS_STRICT && schemaId != MessageHeaderDecoder.SCHEMA_ID)
+        if (schemaId != MessageHeaderDecoder.SCHEMA_ID)
         {
             throw new ArchiveException("expected schemaId=" + MessageHeaderDecoder.SCHEMA_ID + ", actual=" + schemaId);
         }
@@ -334,6 +336,42 @@ class ControlRequestAdapter implements FragmentHandler
                     listRecordingSubscriptionsRequestDecoder.applyStreamId() == BooleanType.TRUE,
                     listRecordingSubscriptionsRequestDecoder.streamId(),
                     listRecordingSubscriptionsRequestDecoder.channel());
+                break;
+            }
+
+            case BoundedReplayRequestDecoder.TEMPLATE_ID:
+            {
+                boundedReplayRequestDecoder.wrap(
+                    buffer,
+                    offset + MessageHeaderDecoder.ENCODED_LENGTH,
+                    headerDecoder.blockLength(),
+                    headerDecoder.version());
+
+                listener.onBoundedStartReplay(
+                    boundedReplayRequestDecoder.controlSessionId(),
+                    boundedReplayRequestDecoder.correlationId(),
+                    boundedReplayRequestDecoder.recordingId(),
+                    boundedReplayRequestDecoder.position(),
+                    boundedReplayRequestDecoder.length(),
+                    boundedReplayRequestDecoder.limitCounterId(),
+                    boundedReplayRequestDecoder.replayStreamId(),
+                    boundedReplayRequestDecoder.replayChannel());
+                break;
+            }
+
+            case StopAllReplaysRequestDecoder.TEMPLATE_ID:
+            {
+                stopAllReplaysRequestDecoder.wrap(
+                    buffer,
+                    offset + MessageHeaderDecoder.ENCODED_LENGTH,
+                    headerDecoder.blockLength(),
+                    headerDecoder.version());
+
+                listener.onStopAllReplays(
+                    stopAllReplaysRequestDecoder.controlSessionId(),
+                    stopAllReplaysRequestDecoder.correlationId(),
+                    stopAllReplaysRequestDecoder.recordingId());
+                break;
             }
         }
     }

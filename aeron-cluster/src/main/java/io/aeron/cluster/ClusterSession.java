@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -43,7 +43,8 @@ class ClusterSession
     private final long id;
     private long correlationId;
     private long openedLogPosition = Aeron.NULL_VALUE;
-    private long timeOfLastActivityMs;
+    private long timeOfLastActivityNs;
+    private boolean isBackupQuery = false;
     private final int responseStreamId;
     private final String responseChannel;
     private Publication responsePublication;
@@ -64,7 +65,7 @@ class ClusterSession
         final long sessionId,
         final long correlationId,
         final long openedLogPosition,
-        final long timeOfLastActivityMs,
+        final long timeOfLastActivityNs,
         final int responseStreamId,
         final String responseChannel,
         final CloseReason closeReason)
@@ -73,7 +74,7 @@ class ClusterSession
         this.responseStreamId = responseStreamId;
         this.responseChannel = responseChannel;
         this.openedLogPosition = openedLogPosition;
-        this.timeOfLastActivityMs = timeOfLastActivityMs;
+        this.timeOfLastActivityNs = timeOfLastActivityNs;
         this.correlationId = correlationId;
         this.closeReason = closeReason;
 
@@ -197,9 +198,9 @@ class ClusterSession
         return encodedPrincipal;
     }
 
-    void lastActivity(final long timeMs, final long correlationId)
+    void lastActivity(final long timeNs, final long correlationId)
     {
-        timeOfLastActivityMs = timeMs;
+        timeOfLastActivityNs = timeNs;
         this.correlationId = correlationId;
     }
 
@@ -220,14 +221,14 @@ class ClusterSession
         return responseDetail;
     }
 
-    long timeOfLastActivityMs()
+    long timeOfLastActivityNs()
     {
-        return timeOfLastActivityMs;
+        return timeOfLastActivityNs;
     }
 
-    void timeOfLastActivityMs(final long timeMs)
+    void timeOfLastActivityNs(final long timeNs)
     {
-        timeOfLastActivityMs = timeMs;
+        timeOfLastActivityNs = timeNs;
     }
 
     long correlationId()
@@ -250,6 +251,21 @@ class ClusterSession
         return hasNewLeaderEventPending;
     }
 
+    boolean isBackupQuery()
+    {
+        return isBackupQuery;
+    }
+
+    void isBackupQuery(final boolean isBackupQuery)
+    {
+        this.isBackupQuery = isBackupQuery;
+    }
+
+    Publication responsePublication()
+    {
+        return responsePublication;
+    }
+
     static void checkEncodedPrincipalLength(final byte[] encodedPrincipal)
     {
         if (null != encodedPrincipal && encodedPrincipal.length > MAX_ENCODED_PRINCIPAL_LENGTH)
@@ -268,7 +284,7 @@ class ClusterSession
             "id=" + id +
             ", correlationId=" + correlationId +
             ", openedLogPosition=" + openedLogPosition +
-            ", timeOfLastActivityMs=" + timeOfLastActivityMs +
+            ", timeOfLastActivityNs=" + timeOfLastActivityNs +
             ", responseStreamId=" + responseStreamId +
             ", responseChannel='" + responseChannel + '\'' +
             ", closeReason=" + closeReason +

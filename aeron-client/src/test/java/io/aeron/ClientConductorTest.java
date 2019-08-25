@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -100,6 +100,7 @@ public class ClientConductorTest
     private final DriverProxy driverProxy = mock(DriverProxy.class);
     private final AvailableImageHandler mockAvailableImageHandler = mock(AvailableImageHandler.class);
     private final UnavailableImageHandler mockUnavailableImageHandler = mock(UnavailableImageHandler.class);
+    private final Runnable mockCloseHandler = mock(Runnable.class);
     private final LogBuffersFactory logBuffersFactory = mock(LogBuffersFactory.class);
     private final Lock mockClientLock = mock(Lock.class);
     private final Aeron mockAeron = mock(Aeron.class);
@@ -112,12 +113,14 @@ public class ClientConductorTest
             .clientLock(mockClientLock)
             .epochClock(epochClock)
             .nanoClock(nanoClock)
+            .awaitingIdleStrategy(new NoOpIdleStrategy())
             .toClientBuffer(mockToClientReceiver)
             .driverProxy(driverProxy)
             .logBuffersFactory(logBuffersFactory)
             .errorHandler(mockClientErrorHandler)
             .availableImageHandler(mockAvailableImageHandler)
             .unavailableImageHandler(mockUnavailableImageHandler)
+            .closeHandler(mockCloseHandler)
             .keepAliveIntervalNs(KEEP_ALIVE_INTERVAL)
             .driverTimeoutMs(AWAIT_TIMEOUT)
             .interServiceTimeoutNs(TimeUnit.MILLISECONDS.toNanos(INTER_SERVICE_TIMEOUT_MS));
@@ -552,6 +555,9 @@ public class ClientConductorTest
 
         assertTrue(threwException);
         assertTrue(conductor.isTerminating());
+
+        conductor.onClose();
+        verify(mockCloseHandler).run();
     }
 
     @Test

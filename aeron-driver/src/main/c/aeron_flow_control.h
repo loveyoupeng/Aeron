@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -40,15 +40,12 @@ typedef int64_t (*aeron_flow_control_strategy_on_sm_func_t)(
     size_t position_bits_to_shift,
     int64_t now_ns);
 
-typedef bool (*aeron_flow_control_strategy_should_linger_func_t)(void *state, int64_t now_ns);
-
 typedef int (*aeron_flow_control_strategy_fini_func_t)(aeron_flow_control_strategy_t *strategy);
 
 typedef struct aeron_flow_control_strategy_stct
 {
     aeron_flow_control_strategy_on_sm_func_t on_status_message;
     aeron_flow_control_strategy_on_idle_func_t on_idle;
-    aeron_flow_control_strategy_should_linger_func_t should_linger;
     aeron_flow_control_strategy_fini_func_t fini;
     void *state;
 }

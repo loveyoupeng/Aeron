@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -25,7 +25,7 @@ import static org.hamcrest.core.IsNot.not;
 import static org.junit.Assert.assertThat;
 
 @Ignore
-public class DynamicClusterTest
+public class DynamicMembershipTest
 {
     @Test(timeout = 10_000)
     public void shouldQueryClusterMembers() throws Exception
@@ -34,11 +34,11 @@ public class DynamicClusterTest
         {
             final TestNode leader = cluster.awaitLeader();
 
-            final ClusterTool.ClusterMembersInfo clusterMembersInfo = leader.clusterMembersInfo();
+            final ClusterTool.ClusterMembership clusterMembership = leader.clusterMembership();
 
-            assertThat(clusterMembersInfo.leaderMemberId, is(leader.index()));
-            assertThat(clusterMembersInfo.passiveMembers, is(""));
-            assertThat(clusterMembersInfo.activeMembers, is(cluster.staticClusterMembers()));
+            assertThat(clusterMembership.leaderMemberId, is(leader.index()));
+            assertThat(clusterMembership.passiveMembers, is(""));
+            assertThat(clusterMembership.activeMembers, is(cluster.staticClusterMembers()));
         }
     }
 
@@ -54,11 +54,11 @@ public class DynamicClusterTest
 
             assertThat(dynamicMember.role(), is(Cluster.Role.FOLLOWER));
 
-            final ClusterTool.ClusterMembersInfo clusterMembersInfo = leader.clusterMembersInfo();
+            final ClusterTool.ClusterMembership clusterMembership = leader.clusterMembership();
 
-            assertThat(clusterMembersInfo.leaderMemberId, is(leader.index()));
-            assertThat(clusterMembersInfo.passiveMembers, is(""));
-            assertThat(numberOfMembers(clusterMembersInfo), is(4));
+            assertThat(clusterMembership.leaderMemberId, is(leader.index()));
+            assertThat(clusterMembership.passiveMembers, is(""));
+            assertThat(numberOfMembers(clusterMembership), is(4));
         }
     }
 
@@ -200,10 +200,10 @@ public class DynamicClusterTest
             cluster.awaitNodeTermination(follower);
             cluster.stopNode(follower);
 
-            final ClusterTool.ClusterMembersInfo clusterMembersInfo = leader.clusterMembersInfo();
+            final ClusterTool.ClusterMembership clusterMembership = leader.clusterMembership();
 
-            assertThat(clusterMembersInfo.leaderMemberId, is(leader.index()));
-            assertThat(numberOfMembers(clusterMembersInfo), is(2));
+            assertThat(clusterMembership.leaderMemberId, is(leader.index()));
+            assertThat(numberOfMembers(clusterMembership), is(2));
         }
     }
 
@@ -221,17 +221,17 @@ public class DynamicClusterTest
             cluster.stopNode(initialLeader);
 
             final TestNode newLeader = cluster.awaitLeader(initialLeader.index());
-            final ClusterTool.ClusterMembersInfo clusterMembersInfo = newLeader.clusterMembersInfo();
+            final ClusterTool.ClusterMembership clusterMembership = newLeader.clusterMembership();
 
-            assertThat(clusterMembersInfo.leaderMemberId, is(newLeader.index()));
-            assertThat(clusterMembersInfo.leaderMemberId, not(initialLeader.index()));
-            assertThat(numberOfMembers(clusterMembersInfo), is(2));
+            assertThat(clusterMembership.leaderMemberId, is(newLeader.index()));
+            assertThat(clusterMembership.leaderMemberId, not(initialLeader.index()));
+            assertThat(numberOfMembers(clusterMembership), is(2));
         }
     }
 
-    private int numberOfMembers(final ClusterTool.ClusterMembersInfo clusterMembersInfo)
+    private int numberOfMembers(final ClusterTool.ClusterMembership clusterMembership)
     {
-        final String[] members = clusterMembersInfo.activeMembers.split("\\|");
+        final String[] members = clusterMembership.activeMembers.split("\\|");
 
         return members.length;
     }

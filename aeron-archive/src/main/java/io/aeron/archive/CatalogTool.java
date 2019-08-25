@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -110,7 +110,7 @@ public class CatalogTool
         {
             try (Catalog catalog = openCatalogReadOnly())
             {
-                catalog.forEntry(Long.valueOf(args[2]), (he, hd, e, d) -> System.out.println(d));
+                catalog.forEntry(Long.parseLong(args[2]), (he, hd, e, d) -> System.out.println(d));
             }
         }
         else if (args.length == 2 && args[1].equals("verify"))
@@ -124,7 +124,7 @@ public class CatalogTool
         {
             try (Catalog catalog = openCatalog())
             {
-                catalog.forEntry(Long.valueOf(args[2]), CatalogTool::verify);
+                catalog.forEntry(Long.parseLong(args[2]), CatalogTool::verify);
             }
         }
         else if (args.length == 2 && args[1].equals("count-entries"))

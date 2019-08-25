@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -27,26 +27,39 @@ import io.aeron.protocol.DataHeaderFlyweight;
 import io.aeron.status.ReadableCounter;
 import org.agrona.CloseHelper;
 import org.agrona.DirectBuffer;
+import org.agrona.SemanticVersion;
 import org.agrona.collections.Long2ObjectHashMap;
 import org.agrona.concurrent.*;
-import org.agrona.concurrent.status.AtomicCounter;
 import org.agrona.concurrent.status.CountersReader;
 
 import java.util.Collection;
+import java.util.concurrent.TimeUnit;
 
 import static io.aeron.Aeron.NULL_VALUE;
 import static io.aeron.archive.client.AeronArchive.NULL_POSITION;
 import static io.aeron.archive.codecs.SourceLocation.LOCAL;
 import static io.aeron.cluster.client.AeronCluster.SESSION_HEADER_LENGTH;
+import static io.aeron.cluster.service.ClusteredServiceContainer.SNAPSHOT_TYPE_ID;
 import static java.util.Collections.unmodifiableCollection;
 import static org.agrona.concurrent.status.CountersReader.NULL_COUNTER_ID;
 
 class ClusteredServiceAgent implements Agent, Cluster
 {
     private final int serviceId;
+    private int memberId = NULL_VALUE;
+    private long ackId = 0;
+    private long cachedTimeMs;
+    private long clusterTime;
+    private long clusterLogPosition = NULL_POSITION;
+    private long terminationPosition = NULL_POSITION;
+    private long roleChangePosition = NULL_POSITION;
+    private boolean isServiceActive;
+    private volatile boolean isAbort;
+
     private final AeronArchive.Context archiveCtx;
     private final ClusteredServiceContainer.Context ctx;
     private final Aeron aeron;
+    private final AgentInvoker aeronAgentInvoker;
     private final Long2ObjectHashMap<ClientSession> sessionByIdMap = new Long2ObjectHashMap<>();
     private final Collection<ClientSession> readOnlyClientSessions = unmodifiableCollection(sessionByIdMap.values());
     private final ClusteredService service;
@@ -59,22 +72,15 @@ class ClusteredServiceAgent implements Agent, Cluster
         new byte[Configuration.MAX_UDP_PAYLOAD_LENGTH - DataHeaderFlyweight.HEADER_LENGTH]);
     private final DirectBufferVector headerVector = new DirectBufferVector(headerBuffer, 0, SESSION_HEADER_LENGTH);
     private final SessionMessageHeaderEncoder sessionMessageHeaderEncoder = new SessionMessageHeaderEncoder();
+    private final Runnable abortHandler = this::abort;
 
-    private long ackId = 0;
-    private long clusterTimeMs;
-    private long cachedTimeMs;
-    private long clusterLogPosition = NULL_POSITION;
-    private long terminationPosition = NULL_POSITION;
-    private long roleChangePosition = NULL_POSITION;
-    private int memberId = NULL_VALUE;
-    private boolean isServiceActive;
     private BoundedLogAdapter logAdapter;
-    private AtomicCounter heartbeatCounter;
     private ReadableCounter roleCounter;
     private ReadableCounter commitPosition;
     private ActiveLogEvent activeLogEvent;
     private Role role = Role.FOLLOWER;
     private String logChannel = null;
+    private TimeUnit timeUnit = null;
 
     ClusteredServiceAgent(final ClusteredServiceContainer.Context ctx)
     {
@@ -82,6 +88,7 @@ class ClusteredServiceAgent implements Agent, Cluster
 
         archiveCtx = ctx.archiveContext();
         aeron = ctx.aeron();
+        aeronAgentInvoker = ctx.aeron().conductorAgentInvoker();
         service = ctx.clusteredService();
         idleStrategy = ctx.idleStrategy();
         serviceId = ctx.serviceId();
@@ -91,19 +98,17 @@ class ClusteredServiceAgent implements Agent, Cluster
         final String channel = ctx.serviceControlChannel();
         consensusModuleProxy = new ConsensusModuleProxy(aeron.addPublication(channel, ctx.consensusModuleStreamId()));
         serviceAdapter = new ServiceAdapter(aeron.addSubscription(channel, ctx.serviceStreamId()), this);
-
         sessionMessageHeaderEncoder.wrapAndApplyHeader(headerBuffer, 0, new MessageHeaderEncoder());
+        aeron.addCloseHandler(abortHandler);
     }
 
     public void onStart()
     {
         final CountersReader counters = aeron.countersReader();
         roleCounter = awaitClusterRoleCounter(counters);
-        heartbeatCounter = awaitHeartbeatCounter(counters);
         commitPosition = awaitCommitPositionCounter(counters);
 
         final int recoveryCounterId = awaitRecoveryCounter(counters);
-        heartbeatCounter.setOrdered(epochClock.time());
 
         isServiceActive = true;
         checkForSnapshot(counters, recoveryCounterId);
@@ -112,29 +117,38 @@ class ClusteredServiceAgent implements Agent, Cluster
 
     public void onClose()
     {
-        if (isServiceActive)
+        if (isAbort)
         {
-            isServiceActive = false;
-            try
-            {
-                service.onTerminate(this);
-            }
-            catch (final Exception ex)
-            {
-                ctx.countedErrorHandler().onError(ex);
-            }
+            ctx.abortLatch().countDown();
         }
-
-        if (!ctx.ownsAeronClient())
+        else
         {
-            for (final ClientSession session : sessionByIdMap.values())
+            aeron.removeCloseHandler(abortHandler);
+
+            if (isServiceActive)
             {
-                session.disconnect();
+                isServiceActive = false;
+                try
+                {
+                    service.onTerminate(this);
+                }
+                catch (final Exception ex)
+                {
+                    ctx.countedErrorHandler().onError(ex);
+                }
             }
 
-            CloseHelper.close(logAdapter);
-            CloseHelper.close(serviceAdapter);
-            CloseHelper.close(consensusModuleProxy);
+            if (!ctx.ownsAeronClient())
+            {
+                for (final ClientSession session : sessionByIdMap.values())
+                {
+                    session.disconnect();
+                }
+
+                CloseHelper.close(logAdapter);
+                CloseHelper.close(serviceAdapter);
+                CloseHelper.close(consensusModuleProxy);
+            }
         }
 
         ctx.close();
@@ -226,9 +240,14 @@ class ClusteredServiceAgent implements Agent, Cluster
         return false;
     }
 
-    public long timeMs()
+    public TimeUnit timeUnit()
     {
-        return clusterTimeMs;
+        return timeUnit;
+    }
+
+    public long time()
+    {
+        return clusterTime;
     }
 
     public long logPosition()
@@ -236,9 +255,9 @@ class ClusteredServiceAgent implements Agent, Cluster
         return clusterLogPosition;
     }
 
-    public boolean scheduleTimer(final long correlationId, final long deadlineMs)
+    public boolean scheduleTimer(final long correlationId, final long deadline)
     {
-        return consensusModuleProxy.scheduleTimer(correlationId, deadlineMs);
+        return consensusModuleProxy.scheduleTimer(correlationId, deadline);
     }
 
     public boolean cancelTimer(final long correlationId)
@@ -270,14 +289,12 @@ class ClusteredServiceAgent implements Agent, Cluster
 
     public void idle()
     {
-        checkInterruptedStatus();
         checkForClockTick();
         idleStrategy.idle();
     }
 
     public void idle(final int workCount)
     {
-        checkInterruptedStatus();
         checkForClockTick();
         idleStrategy.idle(workCount);
     }
@@ -321,37 +338,37 @@ class ClusteredServiceAgent implements Agent, Cluster
     void onSessionMessage(
         final long logPosition,
         final long clusterSessionId,
-        final long timestampMs,
+        final long timestamp,
         final DirectBuffer buffer,
         final int offset,
         final int length,
         final Header header)
     {
         clusterLogPosition = logPosition;
-        clusterTimeMs = timestampMs;
+        clusterTime = timestamp;
         final ClientSession clientSession = sessionByIdMap.get(clusterSessionId);
 
-        service.onSessionMessage(clientSession, timestampMs, buffer, offset, length, header);
+        service.onSessionMessage(clientSession, timestamp, buffer, offset, length, header);
     }
 
-    void onTimerEvent(final long logPosition, final long correlationId, final long timestampMs)
+    void onTimerEvent(final long logPosition, final long correlationId, final long timestamp)
     {
         clusterLogPosition = logPosition;
-        clusterTimeMs = timestampMs;
-        service.onTimerEvent(correlationId, timestampMs);
+        clusterTime = timestamp;
+        service.onTimerEvent(correlationId, timestamp);
     }
 
     void onSessionOpen(
         final long leadershipTermId,
         final long logPosition,
         final long clusterSessionId,
-        final long timestampMs,
+        final long timestamp,
         final int responseStreamId,
         final String responseChannel,
         final byte[] encodedPrincipal)
     {
         clusterLogPosition = logPosition;
-        clusterTimeMs = timestampMs;
+        clusterTime = timestamp;
 
         if (sessionByIdMap.containsKey(clusterSessionId))
         {
@@ -368,18 +385,18 @@ class ClusteredServiceAgent implements Agent, Cluster
         }
 
         sessionByIdMap.put(clusterSessionId, session);
-        service.onSessionOpen(session, timestampMs);
+        service.onSessionOpen(session, timestamp);
     }
 
     void onSessionClose(
         final long leadershipTermId,
         final long logPosition,
         final long clusterSessionId,
-        final long timestampMs,
+        final long timestamp,
         final CloseReason closeReason)
     {
         clusterLogPosition = logPosition;
-        clusterTimeMs = timestampMs;
+        clusterTime = timestamp;
         final ClientSession session = sessionByIdMap.remove(clusterSessionId);
 
         if (null == session)
@@ -390,35 +407,47 @@ class ClusteredServiceAgent implements Agent, Cluster
         }
 
         session.disconnect();
-        service.onSessionClose(session, timestampMs, closeReason);
+        service.onSessionClose(session, timestamp, closeReason);
     }
 
     void onServiceAction(
-        final long leadershipTermId, final long logPosition, final long timestampMs, final ClusterAction action)
+        final long leadershipTermId, final long logPosition, final long timestamp, final ClusterAction action)
     {
         clusterLogPosition = logPosition;
-        clusterTimeMs = timestampMs;
+        clusterTime = timestamp;
         executeAction(action, logPosition, leadershipTermId);
     }
 
-    @SuppressWarnings("unused")
     void onNewLeadershipTermEvent(
         final long leadershipTermId,
         final long logPosition,
-        final long timestampMs,
-        final int leaderMemberId,
-        final int logSessionId)
+        final long timestamp,
+        @SuppressWarnings("unused") final long termBaseLogPosition,
+        @SuppressWarnings("unused") final int leaderMemberId,
+        @SuppressWarnings("unused") final int logSessionId,
+        final TimeUnit timeUnit,
+        final int appVersion)
     {
+        if (SemanticVersion.major(ctx.appVersion()) != SemanticVersion.major(appVersion))
+        {
+            ctx.errorHandler().onError(new ClusterException(
+                "incompatible version: " + SemanticVersion.toString(ctx.appVersion()) +
+                " log=" + SemanticVersion.toString(appVersion)));
+            ctx.terminationHook().run();
+            return;
+        }
+
         sessionMessageHeaderEncoder.leadershipTermId(leadershipTermId);
         clusterLogPosition = logPosition;
-        clusterTimeMs = timestampMs;
+        clusterTime = timestamp;
+        this.timeUnit = timeUnit;
     }
 
     @SuppressWarnings("unused")
     void onMembershipChange(
         final long leadershipTermId,
         final long logPosition,
-        final long timestampMs,
+        final long timestamp,
         final int leaderMemberId,
         final int clusterSize,
         final ChangeType changeType,
@@ -426,7 +455,7 @@ class ClusteredServiceAgent implements Agent, Cluster
         final String clusterMembers)
     {
         clusterLogPosition = logPosition;
-        clusterTimeMs = timestampMs;
+        clusterTime = timestamp;
 
         if (memberId == this.memberId && changeType == ChangeType.QUIT)
         {
@@ -468,7 +497,7 @@ class ClusteredServiceAgent implements Agent, Cluster
 
         sessionMessageHeaderEncoder
             .clusterSessionId(clusterSessionId)
-            .timestamp(clusterTimeMs);
+            .timestamp(clusterTime);
 
         return publication.offer(headerBuffer, 0, SESSION_HEADER_LENGTH, buffer, offset, length, null);
     }
@@ -487,7 +516,7 @@ class ClusteredServiceAgent implements Agent, Cluster
 
         sessionMessageHeaderEncoder
             .clusterSessionId(clusterSessionId)
-            .timestamp(clusterTimeMs);
+            .timestamp(clusterTime);
 
         vectors[0] = headerVector;
 
@@ -516,7 +545,7 @@ class ClusteredServiceAgent implements Agent, Cluster
         {
             sessionMessageHeaderEncoder
                 .clusterSessionId(clusterSessionId)
-                .timestamp(clusterTimeMs);
+                .timestamp(clusterTime);
 
             bufferClaim.putBytes(headerBuffer, 0, SESSION_HEADER_LENGTH);
         }
@@ -536,7 +565,7 @@ class ClusteredServiceAgent implements Agent, Cluster
     private void checkForSnapshot(final CountersReader counters, final int recoveryCounterId)
     {
         clusterLogPosition = RecoveryState.getLogPosition(counters, recoveryCounterId);
-        clusterTimeMs = RecoveryState.getTimestamp(counters, recoveryCounterId);
+        clusterTime = RecoveryState.getTimestamp(counters, recoveryCounterId);
         final long leadershipTermId = RecoveryState.getLeadershipTermId(counters, recoveryCounterId);
 
         if (NULL_VALUE != leadershipTermId)
@@ -548,8 +577,9 @@ class ClusteredServiceAgent implements Agent, Cluster
             service.onStart(this, null);
         }
 
-        heartbeatCounter.setOrdered(epochClock.time());
-        while (!consensusModuleProxy.ack(clusterLogPosition, ackId++, serviceId))
+        final long id = ackId++;
+        idleStrategy.reset();
+        while (!consensusModuleProxy.ack(clusterLogPosition, clusterTime, id, NULL_VALUE, serviceId))
         {
             idle();
         }
@@ -563,19 +593,19 @@ class ClusteredServiceAgent implements Agent, Cluster
 
             try (Subscription subscription = aeron.addSubscription(activeLogEvent.channel, activeLogEvent.streamId))
             {
-                while (!consensusModuleProxy.ack(activeLogEvent.logPosition, ackId++, serviceId))
+                final long id = ackId++;
+                idleStrategy.reset();
+                while (!consensusModuleProxy.ack(activeLogEvent.logPosition, clusterTime, id, NULL_VALUE, serviceId))
                 {
                     idle();
                 }
 
                 final Image image = awaitImage(activeLogEvent.sessionId, subscription);
                 final BoundedLogAdapter adapter = new BoundedLogAdapter(image, commitPosition, this);
-
                 consumeImage(image, adapter, activeLogEvent.maxLogPosition);
             }
 
             activeLogEvent = null;
-            heartbeatCounter.setOrdered(epochClock.time());
         }
     }
 
@@ -598,10 +628,12 @@ class ClusteredServiceAgent implements Agent, Cluster
             {
                 if (adapter.position() >= maxLogPosition)
                 {
-                    while (!consensusModuleProxy.ack(image.position(), ackId++, serviceId))
+                    final long id = ackId++;
+                    while (!consensusModuleProxy.ack(image.position(), clusterTime, id, NULL_VALUE, serviceId))
                     {
                         idle();
                     }
+
                     break;
                 }
 
@@ -621,10 +653,7 @@ class ClusteredServiceAgent implements Agent, Cluster
         int counterId = RecoveryState.findCounterId(counters);
         while (NULL_COUNTER_ID == counterId)
         {
-            checkInterruptedStatus();
-            idleStrategy.idle();
-
-            heartbeatCounter.setOrdered(epochClock.time());
+            idle();
             counterId = RecoveryState.findCounterId(counters);
         }
 
@@ -635,13 +664,14 @@ class ClusteredServiceAgent implements Agent, Cluster
     {
         final Subscription logSubscription = aeron.addSubscription(activeLogEvent.channel, activeLogEvent.streamId);
 
-        while (!consensusModuleProxy.ack(activeLogEvent.logPosition, ackId++, serviceId))
+        final long id = ackId++;
+        idleStrategy.reset();
+        while (!consensusModuleProxy.ack(activeLogEvent.logPosition, clusterTime, id, NULL_VALUE, serviceId))
         {
             idle();
         }
 
         final Image image = awaitImage(activeLogEvent.sessionId, logSubscription);
-        heartbeatCounter.setOrdered(epochClock.time());
 
         sessionMessageHeaderEncoder.leadershipTermId(activeLogEvent.leadershipTermId);
         memberId = activeLogEvent.memberId;
@@ -688,8 +718,7 @@ class ClusteredServiceAgent implements Agent, Cluster
         int counterId = ClusterNodeRole.findCounterId(counters);
         while (NULL_COUNTER_ID == counterId)
         {
-            checkInterruptedStatus();
-            idleStrategy.idle();
+            idle();
             counterId = ClusterNodeRole.findCounterId(counters);
         }
 
@@ -702,27 +731,11 @@ class ClusteredServiceAgent implements Agent, Cluster
         int counterId = CommitPos.findCounterId(counters);
         while (NULL_COUNTER_ID == counterId)
         {
-            checkInterruptedStatus();
-            idleStrategy.idle();
-            heartbeatCounter.setOrdered(epochClock.time());
+            idle();
             counterId = CommitPos.findCounterId(counters);
         }
 
         return new ReadableCounter(counters, counterId);
-    }
-
-    private AtomicCounter awaitHeartbeatCounter(final CountersReader counters)
-    {
-        idleStrategy.reset();
-        int counterId = ServiceHeartbeat.findCounterId(counters, ctx.serviceId());
-        while (NULL_COUNTER_ID == counterId)
-        {
-            checkInterruptedStatus();
-            idleStrategy.idle();
-            counterId = ServiceHeartbeat.findCounterId(counters, ctx.serviceId());
-        }
-
-        return new AtomicCounter(counters.valuesBuffer(), counterId);
     }
 
     private void loadSnapshot(final long recordingId)
@@ -756,16 +769,24 @@ class ClusteredServiceAgent implements Agent, Cluster
 
             if (fragments == 0)
             {
-                checkInterruptedStatus();
-
                 if (image.isClosed())
                 {
                     throw new ClusterException("snapshot ended unexpectedly");
                 }
-
-                idleStrategy.idle(fragments);
             }
+
+            idle(fragments);
         }
+
+        final int appVersion = snapshotLoader.appVersion();
+        if (SemanticVersion.major(ctx.appVersion()) != SemanticVersion.major(appVersion))
+        {
+            throw new ClusterException(
+                "incompatible version: " + SemanticVersion.toString(ctx.appVersion()) +
+                " snapshot=" + SemanticVersion.toString(appVersion));
+        }
+
+        timeUnit = snapshotLoader.timeUnit();
     }
 
     private long onTakeSnapshot(final long logPosition, final long leadershipTermId)
@@ -784,6 +805,8 @@ class ClusteredServiceAgent implements Agent, Cluster
 
                 recordingId = RecordingPos.getRecordingId(counters, counterId);
                 snapshotState(publication, logPosition, leadershipTermId);
+
+                checkForClockTick();
                 service.onTakeSnapshot(publication);
 
                 awaitRecordingComplete(recordingId, publication.position(), counters, counterId, archive);
@@ -821,23 +844,27 @@ class ClusteredServiceAgent implements Agent, Cluster
 
     private void snapshotState(final Publication publication, final long logPosition, final long leadershipTermId)
     {
-        final ServiceSnapshotTaker snapshotTaker = new ServiceSnapshotTaker(publication, idleStrategy, null);
+        final ServiceSnapshotTaker snapshotTaker = new ServiceSnapshotTaker(
+            publication, idleStrategy, aeronAgentInvoker);
 
-        snapshotTaker.markBegin(ClusteredServiceContainer.SNAPSHOT_TYPE_ID, logPosition, leadershipTermId, 0);
+        snapshotTaker.markBegin(SNAPSHOT_TYPE_ID, logPosition, leadershipTermId, 0, timeUnit, ctx.appVersion());
 
         for (final ClientSession clientSession : sessionByIdMap.values())
         {
             snapshotTaker.snapshotSession(clientSession);
         }
 
-        snapshotTaker.markEnd(ClusteredServiceContainer.SNAPSHOT_TYPE_ID, logPosition, leadershipTermId, 0);
+        snapshotTaker.markEnd(SNAPSHOT_TYPE_ID, logPosition, leadershipTermId, 0, timeUnit, ctx.appVersion());
     }
 
     private void executeAction(final ClusterAction action, final long position, final long leadershipTermId)
     {
         if (ClusterAction.SNAPSHOT == action)
         {
-            while (!consensusModuleProxy.ack(position, ackId++, onTakeSnapshot(position, leadershipTermId), serviceId))
+            final long recordingId = onTakeSnapshot(position, leadershipTermId);
+            final long id = ackId++;
+            idleStrategy.reset();
+            while (!consensusModuleProxy.ack(position, clusterTime, id, recordingId, serviceId))
             {
                 idle();
             }
@@ -857,32 +884,33 @@ class ClusteredServiceAgent implements Agent, Cluster
         return counterId;
     }
 
-    private static void checkInterruptedStatus()
-    {
-        if (Thread.currentThread().isInterrupted())
-        {
-            throw new AgentTerminationException("unexpected interrupt during operation");
-        }
-    }
-
     private boolean checkForClockTick()
     {
-        final long nowMs = epochClock.time();
+        if (isAbort)
+        {
+            throw new AgentTerminationException("unexpected Aeron close");
+        }
 
+        final long nowMs = epochClock.time();
         if (cachedTimeMs != nowMs)
         {
             cachedTimeMs = nowMs;
 
-            if (consensusModuleProxy.isConnected())
+            if (Thread.currentThread().isInterrupted())
             {
-                markFile.updateActivityTimestamp(nowMs);
-                heartbeatCounter.setOrdered(nowMs);
+                throw new AgentTerminationException("unexpected interrupt");
             }
-            else
+
+            if (null != aeronAgentInvoker)
             {
-                ctx.countedErrorHandler().onError(new ClusterException("Consensus Module not connected"));
-                ctx.terminationHook().run();
+                aeronAgentInvoker.invoke();
+                if (isAbort)
+                {
+                    throw new AgentTerminationException("unexpected Aeron close");
+                }
             }
+
+            markFile.updateActivityTimestamp(nowMs);
 
             return true;
         }
@@ -941,12 +969,27 @@ class ClusteredServiceAgent implements Agent, Cluster
             ctx.countedErrorHandler().onError(ex);
         }
 
-        while (!consensusModuleProxy.ack(logPosition, ackId++, serviceId))
+        final long id = ackId++;
+        while (!consensusModuleProxy.ack(logPosition, clusterTime, id, NULL_VALUE, serviceId))
         {
             idle();
         }
 
         ctx.terminationHook().run();
+    }
+
+    private void abort()
+    {
+        isAbort = true;
+
+        try
+        {
+            ctx.abortLatch().await(AgentRunner.RETRY_CLOSE_TIMEOUT_MS * 2L, TimeUnit.MILLISECONDS);
+        }
+        catch (final InterruptedException ignore)
+        {
+            Thread.currentThread().interrupt();
+        }
     }
 
     private static void checkPosition(final long existingPosition, final ActiveLogEvent activeLogEvent)

@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -15,7 +15,6 @@
  */
 package io.aeron.cluster.service;
 
-import io.aeron.Aeron;
 import io.aeron.DirectBufferVector;
 import io.aeron.Publication;
 import io.aeron.cluster.client.AeronCluster;
@@ -25,6 +24,11 @@ import io.aeron.logbuffer.BufferClaim;
 import org.agrona.CloseHelper;
 import org.agrona.DirectBuffer;
 
+/**
+ * Proxy for communicating with the Consensus Module over IPC.
+ * <p>
+ * This class is not for public use.
+ */
 public final class ConsensusModuleProxy implements AutoCloseable
 {
     private static final int SEND_ATTEMPTS = 3;
@@ -47,11 +51,6 @@ public final class ConsensusModuleProxy implements AutoCloseable
     public void close()
     {
         CloseHelper.close(publication);
-    }
-
-    public boolean isConnected()
-    {
-        return publication.isConnected();
     }
 
     public boolean scheduleTimer(final long correlationId, final long deadlineMs)
@@ -134,12 +133,8 @@ public final class ConsensusModuleProxy implements AutoCloseable
         return result;
     }
 
-    public boolean ack(final long logPosition, final long ackId, final int serviceId)
-    {
-        return ack(logPosition, ackId, Aeron.NULL_VALUE, serviceId);
-    }
-
-    public boolean ack(final long logPosition, final long ackId, final long relevantId, final int serviceId)
+    public boolean ack(
+        final long logPosition, final long timestamp, final long ackId, final long relevantId, final int serviceId)
     {
         final int length = MessageHeaderEncoder.ENCODED_LENGTH + ServiceAckEncoder.BLOCK_LENGTH;
 
@@ -152,6 +147,7 @@ public final class ConsensusModuleProxy implements AutoCloseable
                 serviceAckEncoder
                     .wrapAndApplyHeader(bufferClaim.buffer(), bufferClaim.offset(), messageHeaderEncoder)
                     .logPosition(logPosition)
+                    .timestamp(timestamp)
                     .ackId(ackId)
                     .relevantId(relevantId)
                     .serviceId(serviceId);

@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -16,11 +16,14 @@
 package io.aeron.cluster.service;
 
 import io.aeron.Image;
+import io.aeron.cluster.client.ClusterClock;
 import io.aeron.cluster.client.ClusterException;
 import io.aeron.cluster.codecs.*;
 import io.aeron.logbuffer.ControlledFragmentHandler;
 import io.aeron.logbuffer.Header;
 import org.agrona.DirectBuffer;
+
+import java.util.concurrent.TimeUnit;
 
 import static io.aeron.cluster.service.ClusteredServiceContainer.SNAPSHOT_TYPE_ID;
 
@@ -30,6 +33,9 @@ class ServiceSnapshotLoader implements ControlledFragmentHandler
 
     private boolean inSnapshot = false;
     private boolean isDone = false;
+    private int appVersion;
+    private TimeUnit timeUnit;
+
     private final MessageHeaderDecoder messageHeaderDecoder = new MessageHeaderDecoder();
     private final SnapshotMarkerDecoder snapshotMarkerDecoder = new SnapshotMarkerDecoder();
     private final ClientSessionDecoder clientSessionDecoder = new ClientSessionDecoder();
@@ -45,6 +51,16 @@ class ServiceSnapshotLoader implements ControlledFragmentHandler
     public boolean isDone()
     {
         return isDone;
+    }
+
+    public int appVersion()
+    {
+        return appVersion;
+    }
+
+    public TimeUnit timeUnit()
+    {
+        return timeUnit;
     }
 
     public int poll()
@@ -86,6 +102,8 @@ class ServiceSnapshotLoader implements ControlledFragmentHandler
                             throw new ClusterException("already in snapshot");
                         }
                         inSnapshot = true;
+                        appVersion = snapshotMarkerDecoder.appVersion();
+                        timeUnit = ClusterClock.map(snapshotMarkerDecoder.timeUnit());
                         return Action.CONTINUE;
 
                     case END:

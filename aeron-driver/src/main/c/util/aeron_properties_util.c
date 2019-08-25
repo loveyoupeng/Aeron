@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -171,11 +171,19 @@ int aeron_properties_setenv(const char *name, const char *value)
 
     if ('\0' == *value)
     {
+#if !defined(WIN32)
         unsetenv(env_name);
+#else
+        _putenv_s(env_name, "");
+#endif
     }
     else
     {
+#if !defined(WIN32)
         setenv(env_name, value, true);
+#else
+        _putenv_s(env_name, value);
+#endif
     }
 
     return 0;

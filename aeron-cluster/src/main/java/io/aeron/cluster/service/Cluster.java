@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -25,6 +25,7 @@ import io.aeron.logbuffer.Header;
 import org.agrona.DirectBuffer;
 
 import java.util.Collection;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Interface for a {@link ClusteredService} to interact with cluster hosting it.
@@ -153,11 +154,18 @@ public interface Cluster
     boolean closeSession(long clusterSessionId);
 
     /**
-     * Current Epoch time in milliseconds.
+     * Cluster time as {@link #timeUnit()}s since 1 Jan 1970 UTC.
      *
-     * @return Epoch time in milliseconds.
+     * @return time as {@link #timeUnit()}s since 1 Jan 1970 UTC.
      */
-    long timeMs();
+    long time();
+
+    /**
+     * The unit of time applied to timestamps and {@link #time()}.
+     *
+     * @return the unit of time applied to timestamps and {@link #time()}.
+     */
+    TimeUnit timeUnit();
 
     /**
      * Position the log has reached in bytes as of the current message.
@@ -168,7 +176,7 @@ public interface Cluster
 
     /**
      * Schedule a timer for a given deadline and provide a correlation id to identify the timer when it expires or
-     * for cancellation.
+     * for cancellation. This action asynchronous and will race with the timer expiring.
      * <p>
      * If the correlationId is for an existing scheduled timer then it will be reschedule to the new deadline. However
      * it is best do generate correlationIds in a monotonic fashion and be aware of potential clashes with other
@@ -181,15 +189,15 @@ public interface Cluster
      * {@link ClusteredService#onSessionClose(ClientSession, long, CloseReason)}.
      * If applied to other events then they are not guaranteed to be reliable.
      *
-     * @param correlationId to identify the timer when it expires.
-     * @param deadlineMs    epoch time in milliseconds after which the timer will fire.
+     * @param correlationId to identify the timer when it expires. {@link Long#MAX_VALUE} not supported.
+     * @param deadline      time in after which the timer will fire. {@link Long#MAX_VALUE} not supported.
      * @return true if the event to schedule a timer request has been sent or false if back pressure is applied.
      * @see #cancelTimer(long)
      */
-    boolean scheduleTimer(long correlationId, long deadlineMs);
+    boolean scheduleTimer(long correlationId, long deadline);
 
     /**
-     * Cancel a previous scheduled timer.
+     * Cancel a previous scheduled timer. This action asynchronous and will race with the timer expiring.
      * <p>
      * Timers should only be scheduled or cancelled in the context of processing a
      * {@link ClusteredService#onSessionMessage(ClientSession, long, DirectBuffer, int, int, Header)},
@@ -198,7 +206,7 @@ public interface Cluster
      * {@link ClusteredService#onSessionClose(ClientSession, long, CloseReason)}.
      * If applied to other events then they are not guaranteed to be reliable.
      *
-     * @param correlationId for the timer provided when it was scheduled.
+     * @param correlationId for the timer provided when it was scheduled. {@link Long#MAX_VALUE} not supported.
      * @return true if the event to cancel request has been sent or false if back pressure is applied.
      * @see #scheduleTimer(long, long)
      */
@@ -266,14 +274,14 @@ public interface Cluster
     long tryClaim(int length, BufferClaim bufferClaim);
 
     /**
-     * Should be called by the service when it experiences back-pressure on egress, closing sessions, or making
-     * timer requests.
+     * Should be called by the service when it experiences back-pressure on egress, closing sessions, making
+     * timer requests, or any long running actions.
      */
     void idle();
 
     /**
      * Should be called by the service when it experiences back-pressure on egress, closing sessions, or making
-     * timer requests.
+     * timer requests, or any long running actions.
      *
      * @param workCount a value of 0 will reset the idle strategy is a progressive back-off has been applied.
      */

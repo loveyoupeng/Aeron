@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -22,6 +22,7 @@ import io.aeron.archive.client.AeronArchive;
 import io.aeron.cluster.service.ClientSession;
 import io.aeron.cluster.service.Cluster;
 import io.aeron.cluster.service.ClusteredServiceContainer;
+import io.aeron.cluster.service.CommitPos;
 import io.aeron.driver.MediaDriver;
 import io.aeron.driver.status.SystemCounterDescriptor;
 import io.aeron.logbuffer.FragmentHandler;
@@ -30,6 +31,7 @@ import org.agrona.CloseHelper;
 import org.agrona.DirectBuffer;
 import org.agrona.ExpandableArrayBuffer;
 import org.agrona.collections.MutableInteger;
+import org.agrona.collections.MutableLong;
 import org.agrona.concurrent.status.CountersReader;
 
 import java.io.File;
@@ -131,6 +133,22 @@ class TestNode implements AutoCloseable
         return NULL_VALUE != electionStateValue.value ? Election.State.get(electionStateValue.value) : null;
     }
 
+    long commitPosition()
+    {
+        final MutableLong commitPosition = new MutableLong(NULL_VALUE);
+
+        countersReader().forEach(
+            (counterId, typeId, keyBuffer, label) ->
+            {
+                if (typeId == CommitPos.COMMIT_POSITION_TYPE_ID)
+                {
+                    commitPosition.value = countersReader().getCounterValue(counterId);
+                }
+            });
+
+        return commitPosition.value;
+    }
+
     boolean isLeader()
     {
         return role() == Cluster.Role.LEADER;
@@ -171,17 +189,17 @@ class TestNode implements AutoCloseable
         return countersReader().getCounterValue(SystemCounterDescriptor.ERRORS.id());
     }
 
-    ClusterTool.ClusterMembersInfo clusterMembersInfo()
+    ClusterTool.ClusterMembership clusterMembership()
     {
-        final ClusterTool.ClusterMembersInfo clusterMembersInfo = new ClusterTool.ClusterMembersInfo();
+        final ClusterTool.ClusterMembership clusterMembership = new ClusterTool.ClusterMembership();
         final File clusterDir = clusteredMediaDriver.consensusModule().context().clusterDir();
 
-        if (!ClusterTool.listMembers(clusterMembersInfo, clusterDir, TimeUnit.SECONDS.toMillis(3)))
+        if (!ClusterTool.listMembers(clusterMembership, clusterDir, TimeUnit.SECONDS.toMillis(3)))
         {
             throw new IllegalStateException("timeout waiting for cluster members info");
         }
 
-        return clusterMembersInfo;
+        return clusterMembership;
     }
 
     void removeMember(final int followerMemberId, final boolean isPassive)
@@ -196,15 +214,17 @@ class TestNode implements AutoCloseable
 
     static class TestService extends StubClusteredService
     {
+        private int index;
         private volatile int messageCount;
         private volatile boolean wasSnapshotTaken = false;
         private volatile boolean wasSnapshotLoaded = false;
+        private volatile boolean wasOnStartCalled = false;
         private volatile Cluster.Role roleChangedTo = null;
-        private final int index;
 
-        TestService(final int index)
+        TestService index(final int index)
         {
             this.index = index;
+            return this;
         }
 
         int index()
@@ -222,14 +242,29 @@ class TestNode implements AutoCloseable
             return wasSnapshotTaken;
         }
 
+        void resetSnapshotTaken()
+        {
+            wasSnapshotTaken = false;
+        }
+
         boolean wasSnapshotLoaded()
         {
             return wasSnapshotLoaded;
         }
 
+        boolean wasOnStartCalled()
+        {
+            return wasOnStartCalled;
+        }
+
         Cluster.Role roleChangedTo()
         {
             return roleChangedTo;
+        }
+
+        Cluster cluster()
+        {
+            return cluster;
         }
 
         public void onStart(final Cluster cluster, final Image snapshotImage)
@@ -255,11 +290,13 @@ class TestNode implements AutoCloseable
 
                 wasSnapshotLoaded = true;
             }
+
+            wasOnStartCalled = true;
         }
 
         public void onSessionMessage(
             final ClientSession session,
-            final long timestampMs,
+            final long timestamp,
             final DirectBuffer buffer,
             final int offset,
             final int length,
@@ -268,7 +305,7 @@ class TestNode implements AutoCloseable
             final String message = buffer.getStringWithoutLengthAscii(offset, length);
             if (message.equals(TestMessages.REGISTER_TIMER))
             {
-                while (!cluster.scheduleTimer(1, cluster.timeMs() + 1_000))
+                while (!cluster.scheduleTimer(1, cluster.time() + 1_000))
                 {
                     cluster.idle();
                 }

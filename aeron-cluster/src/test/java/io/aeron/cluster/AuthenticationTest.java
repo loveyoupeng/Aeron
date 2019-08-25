@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -433,7 +433,7 @@ public class AuthenticationTest
             {
                 private int counterValue = 0;
 
-                public void onSessionOpen(final ClientSession session, final long timestampMs)
+                public void onSessionOpen(final ClientSession session, final long timestamp)
                 {
                     sessionId.value = session.id();
                     encodedPrincipal.set(session.encodedPrincipal());
@@ -441,7 +441,7 @@ public class AuthenticationTest
 
                 public void onSessionMessage(
                     final ClientSession session,
-                    final long timestampMs,
+                    final long timestamp,
                     final DirectBuffer buffer,
                     final int offset,
                     final int length,

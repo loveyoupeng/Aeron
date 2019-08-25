@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -64,6 +64,10 @@ public class ArchiveProxy
         new FindLastMatchingRecordingRequestEncoder();
     private final ListRecordingSubscriptionsRequestEncoder listRecordingSubscriptionsRequestEncoder =
         new ListRecordingSubscriptionsRequestEncoder();
+    private final BoundedReplayRequestEncoder boundedReplayRequestEncoder =
+        new BoundedReplayRequestEncoder();
+    private final StopAllReplaysRequestEncoder stopAllReplaysRequestEncoder =
+        new StopAllReplaysRequestEncoder();
 
     /**
      * Create a proxy with a {@link Publication} for sending control message requests.
@@ -310,6 +314,43 @@ public class ArchiveProxy
     }
 
     /**
+     * Replay a recording from a given position bounded by a position counter.
+     *
+     * @param recordingId      to be replayed.
+     * @param position         from which the replay should be started.
+     * @param length           of the stream to be replayed. Use {@link Long#MAX_VALUE} to follow a live stream.
+     * @param limitCounterId   to use as the replay bound.
+     * @param replayChannel    to which the replay should be sent.
+     * @param replayStreamId   to which the replay should be sent.
+     * @param correlationId    for this request.
+     * @param controlSessionId for this request.
+     * @return true if successfully offered otherwise false.
+     */
+    public boolean boundedReplay(
+        final long recordingId,
+        final long position,
+        final long length,
+        final int limitCounterId,
+        final String replayChannel,
+        final int replayStreamId,
+        final long correlationId,
+        final long controlSessionId)
+    {
+        boundedReplayRequestEncoder
+            .wrapAndApplyHeader(buffer, 0, messageHeaderEncoder)
+            .controlSessionId(controlSessionId)
+            .correlationId(correlationId)
+            .recordingId(recordingId)
+            .position(position)
+            .length(length)
+            .limitCounterId(limitCounterId)
+            .replayStreamId(replayStreamId)
+            .replayChannel(replayChannel);
+
+        return offer(boundedReplayRequestEncoder.encodedLength());
+    }
+
+    /**
      * Stop an existing replay session.
      *
      * @param replaySessionId  that should be stopped.
@@ -325,7 +366,26 @@ public class ArchiveProxy
             .correlationId(correlationId)
             .replaySessionId(replaySessionId);
 
-        return offer(replayRequestEncoder.encodedLength());
+        return offer(stopReplayRequestEncoder.encodedLength());
+    }
+
+    /**
+     * Stop any existing replay sessions for recording Id or all replay sessions regardless of recording Id.
+     *
+     * @param recordingId      that should be stopped.
+     * @param correlationId    for this request.
+     * @param controlSessionId for this request.
+     * @return true if successfully offered otherwise false.
+     */
+    public boolean stopAllReplays(final long recordingId, final long correlationId, final long controlSessionId)
+    {
+        stopAllReplaysRequestEncoder
+            .wrapAndApplyHeader(buffer, 0, messageHeaderEncoder)
+            .controlSessionId(controlSessionId)
+            .correlationId(correlationId)
+            .recordingId(recordingId);
+
+        return offer(stopAllReplaysRequestEncoder.encodedLength());
     }
 
     /**

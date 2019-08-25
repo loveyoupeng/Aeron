@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -14,20 +14,20 @@
  * limitations under the License.
  */
 
-#include <util/MemoryMappedFile.h>
-#include <concurrent/errors/ErrorLogReader.h>
-#include <util/CommandOptionParser.h>
-
 #include <iostream>
 #include <atomic>
 #include <thread>
 #include <signal.h>
-#include <Context.h>
 #include <cstdio>
 
 #define __STDC_FORMAT_MACROS
 #include <inttypes.h>
 #include <iomanip>
+
+#include "util/MemoryMappedFile.h"
+#include "util/CommandOptionParser.h"
+#include "concurrent/errors/ErrorLogReader.h"
+#include "Context.h"
 
 using namespace aeron;
 using namespace aeron::util;
@@ -74,7 +74,7 @@ std::string formatDate(std::int64_t millisecondsSinceEpoch)
     struct tm localTm;
 
 #ifdef _MSC_VER
-    _localtime_s(&localTm, &tm);
+    localtime_s(&localTm, &tm);
 #else
     ::localtime_r(&tm, &localTm);
 #endif
@@ -89,8 +89,8 @@ std::string formatDate(std::int64_t millisecondsSinceEpoch)
 int main (int argc, char** argv)
 {
     CommandOptionParser cp;
-    cp.addOption(CommandOption(optHelp,   0, 0, "                Displays help information."));
-    cp.addOption(CommandOption(optPath,   1, 1, "basePath        Base Path to shared memory. Default: " + Context::defaultAeronPath()));
+    cp.addOption(CommandOption(optHelp,   0, 0, "              Displays help information."));
+    cp.addOption(CommandOption(optPath,   1, 1, "basePath      Base Path to shared memory. Default: " + Context::defaultAeronPath()));
 
     try
     {

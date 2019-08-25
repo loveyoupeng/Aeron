@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -451,7 +451,10 @@ public class Subscription extends SubscriptionFields implements AutoCloseable
     void internalClose()
     {
         isClosed = true;
-        closeImages();
+        final Image[] images = this.images;
+        this.images = EMPTY_ARRAY;
+
+        conductor.closeImages(images, unavailableImageHandler);
     }
 
     void addImage(final Image image)
@@ -469,7 +472,6 @@ public class Subscription extends SubscriptionFields implements AutoCloseable
         {
             if (image.correlationId() == correlationId)
             {
-                image.close();
                 removedImage = image;
                 break;
             }
@@ -480,38 +482,11 @@ public class Subscription extends SubscriptionFields implements AutoCloseable
         if (null != removedImage)
         {
             images = ArrayUtil.remove(oldArray, i);
+            removedImage.close();
             conductor.releaseLogBuffers(removedImage.logBuffers(), correlationId);
         }
 
         return removedImage;
-    }
-
-    private void closeImages()
-    {
-        final Image[] images = this.images;
-        this.images = EMPTY_ARRAY;
-
-        for (final Image image : images)
-        {
-            image.close();
-        }
-
-        for (final Image image : images)
-        {
-            conductor.releaseLogBuffers(image.logBuffers(), image.correlationId());
-
-            try
-            {
-                if (null != unavailableImageHandler)
-                {
-                    unavailableImageHandler.onUnavailableImage(image);
-                }
-            }
-            catch (final Throwable ex)
-            {
-                conductor.handleError(ex);
-            }
-        }
     }
 
     public String toString()

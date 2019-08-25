@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -17,6 +17,7 @@ package io.aeron.cluster.client;
 
 import io.aeron.*;
 import io.aeron.cluster.codecs.*;
+import io.aeron.exceptions.AeronException;
 import io.aeron.exceptions.ConcurrentConcludeException;
 import io.aeron.exceptions.ConfigurationException;
 import io.aeron.exceptions.TimeoutException;
@@ -1391,6 +1392,7 @@ public final class AeronCluster implements AutoCloseable
      */
     public static class AsyncConnect implements AutoCloseable
     {
+        private final Subscription egressSubscription;
         private final long deadlineNs;
         private long correlationId;
         private long clusterSessionId;
@@ -1411,6 +1413,7 @@ public final class AeronCluster implements AutoCloseable
             this.ctx = ctx;
 
             endpointByMemberIdMap = parseMemberEndpoints(ctx.clusterMemberEndpoints());
+            this.egressSubscription = egressSubscription;
             egressPoller = new EgressPoller(egressSubscription, FRAGMENT_LIMIT);
             nanoClock = ctx.aeron().context().nanoClock();
             this.deadlineNs = deadlineNs;
@@ -1424,6 +1427,7 @@ public final class AeronCluster implements AutoCloseable
             if (5 != step)
             {
                 CloseHelper.close(ingressPublication);
+                CloseHelper.close(egressSubscription);
                 endpointByMemberIdMap.values().forEach(MemberEndpoint::disconnect);
                 ctx.close();
             }
@@ -1500,7 +1504,7 @@ public final class AeronCluster implements AutoCloseable
 
             if (deadlineNs - nanoClock.nanoTime() < 0)
             {
-                throw new TimeoutException("connect timeout, step=" + step);
+                throw new TimeoutException("connect timeout, step=" + step, AeronException.Category.ERROR);
             }
         }
 
@@ -1653,7 +1657,7 @@ public final class AeronCluster implements AutoCloseable
                 ctx,
                 messageHeaderEncoder,
                 ingressPublication,
-                egressPoller.subscription(),
+                egressSubscription,
                 endpointByMemberIdMap,
                 clusterSessionId,
                 leadershipTermId,

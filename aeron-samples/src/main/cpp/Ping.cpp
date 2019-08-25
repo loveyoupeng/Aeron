@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -17,13 +17,8 @@
 #include <cstdint>
 #include <cstdio>
 #include <signal.h>
-#include <util/CommandOptionParser.h>
 #include <thread>
-#include <Aeron.h>
 #include <array>
-#include <concurrent/BusySpinIdleStrategy.h>
-#include "FragmentAssembler.h"
-#include "Configuration.h"
 
 #define __STDC_FORMAT_MACROS
 #include <inttypes.h>
@@ -32,6 +27,12 @@ extern "C"
 {
 #include <hdr_histogram.h>
 }
+
+#include "util/CommandOptionParser.h"
+#include "concurrent/BusySpinIdleStrategy.h"
+#include "FragmentAssembler.h"
+#include "Configuration.h"
+#include "Aeron.h"
 
 using namespace std::chrono;
 using namespace aeron::util;
@@ -62,10 +63,10 @@ struct Settings
     std::string pongChannel = samples::configuration::DEFAULT_PONG_CHANNEL;
     std::int32_t pingStreamId = samples::configuration::DEFAULT_PING_STREAM_ID;
     std::int32_t pongStreamId = samples::configuration::DEFAULT_PONG_STREAM_ID;
+    long numberOfWarmupMessages = samples::configuration::DEFAULT_NUMBER_OF_WARM_UP_MESSAGES;
     long numberOfMessages = samples::configuration::DEFAULT_NUMBER_OF_MESSAGES;
     int messageLength = samples::configuration::DEFAULT_MESSAGE_LENGTH;
     int fragmentCountLimit = samples::configuration::DEFAULT_FRAGMENT_COUNT_LIMIT;
-    long numberOfWarmupMessages = samples::configuration::DEFAULT_NUMBER_OF_MESSAGES;
 };
 
 Settings parseCmdLine(CommandOptionParser& cp, int argc, char** argv)
@@ -101,9 +102,10 @@ void sendPingAndReceivePong(
     std::unique_ptr<std::uint8_t[]> buffer(new std::uint8_t[settings.messageLength]);
     concurrent::AtomicBuffer srcBuffer(buffer.get(), static_cast<size_t>(settings.messageLength));
     BusySpinIdleStrategy idleStrategy;
-    Image& image = subscription.imageAtIndex(0);
+    std::shared_ptr<Image> imageSharedPtr = subscription.imageByIndex(0);
+    Image& image = *imageSharedPtr;
 
-    for (int i = 0; i < settings.numberOfMessages; i++)
+    for (long i = 0; i < settings.numberOfMessages; i++)
     {
         std::int64_t position;
 
@@ -116,6 +118,7 @@ void sendPingAndReceivePong(
         }
         while ((position = publication.offer(srcBuffer, 0, settings.messageLength)) < 0L);
 
+        idleStrategy.reset();
         do
         {
             while (image.poll(fragmentHandler, settings.fragmentCountLimit) <= 0)
@@ -189,6 +192,8 @@ int main(int argc, char **argv)
                 std::cout << "Unavailable image on correlationId=" << image.correlationId() << " sessionId=" << image.sessionId();
                 std::cout << " at position=" << image.position() << " from " << image.sourceIdentity() << std::endl;
             });
+
+        context.preTouchMappedMemory(true);
 
         Aeron aeron(context);
 

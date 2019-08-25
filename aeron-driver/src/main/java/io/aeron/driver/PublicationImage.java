@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -45,6 +45,7 @@ import static io.aeron.driver.PublicationImage.State.INIT;
 import static io.aeron.driver.status.SystemCounterDescriptor.*;
 import static io.aeron.logbuffer.LogBufferDescriptor.*;
 import static io.aeron.logbuffer.TermGapFiller.tryFillGap;
+import static org.agrona.BitUtil.SIZE_OF_LONG;
 import static org.agrona.UnsafeAccess.UNSAFE;
 
 class PublicationImagePadding1
@@ -329,6 +330,11 @@ public class PublicationImage
                 }
             }
         }
+
+        if (subscriberPositions.length == 0)
+        {
+            isTrackingRebuild = false;
+        }
     }
 
     /**
@@ -498,8 +504,8 @@ public class PublicationImage
             ((timeOfLastStatusMessageScheduleNs + statusMessageTimeoutNs) - nowNs < 0) ||
             (minSubscriberPosition > (nextSmPosition + threshold)))
         {
-            scheduleStatusMessage(nowNs, minSubscriberPosition, windowLength);
             cleanBufferTo(minSubscriberPosition - (termLengthMask + 1));
+            scheduleStatusMessage(nowNs, minSubscriberPosition, windowLength);
         }
     }
 
@@ -817,17 +823,18 @@ public class PublicationImage
         return isFlowControlOverRun;
     }
 
-    private void cleanBufferTo(final long newCleanPosition)
+    private void cleanBufferTo(final long position)
     {
         final long cleanPosition = this.cleanPosition;
-        final int bytesForCleaning = (int)(newCleanPosition - cleanPosition);
-        final UnsafeBuffer dirtyTerm = termBuffers[indexByPosition(cleanPosition, positionBitsToShift)];
-        final int termOffset = (int)cleanPosition & termLengthMask;
-        final int length = Math.min(bytesForCleaning, dirtyTerm.capacity() - termOffset);
-
-        if (length > 0)
+        if (position > cleanPosition)
         {
-            dirtyTerm.setMemory(termOffset, length, (byte)0);
+            final int bytesForCleaning = (int)(position - cleanPosition);
+            final UnsafeBuffer dirtyTerm = termBuffers[indexByPosition(cleanPosition, positionBitsToShift)];
+            final int termOffset = (int)cleanPosition & termLengthMask;
+            final int length = Math.min(bytesForCleaning, dirtyTerm.capacity() - termOffset);
+
+            dirtyTerm.setMemory(termOffset, length - SIZE_OF_LONG, (byte)0);
+            dirtyTerm.putLongOrdered(termOffset + (length - SIZE_OF_LONG), 0);
             this.cleanPosition = cleanPosition + length;
         }
     }

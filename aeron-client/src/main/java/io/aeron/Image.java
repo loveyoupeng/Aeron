@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -320,7 +320,7 @@ public class Image
         int fragmentsRead = 0;
         long initialPosition = subscriberPosition.get();
         int initialOffset = (int)initialPosition & termLengthMask;
-        int resultingOffset = initialOffset;
+        int offset = initialOffset;
         final UnsafeBuffer termBuffer = activeTermBuffer(initialPosition);
         final int capacity = termBuffer.capacity();
         final Header header = this.header;
@@ -328,17 +328,17 @@ public class Image
 
         try
         {
-            while (fragmentsRead < fragmentLimit && resultingOffset < capacity)
+            while (fragmentsRead < fragmentLimit && offset < capacity)
             {
-                final int length = frameLengthVolatile(termBuffer, resultingOffset);
+                final int length = frameLengthVolatile(termBuffer, offset);
                 if (length <= 0)
                 {
                     break;
                 }
 
-                final int frameOffset = resultingOffset;
+                final int frameOffset = offset;
                 final int alignedLength = BitUtil.align(length, FRAME_ALIGNMENT);
-                resultingOffset += alignedLength;
+                offset += alignedLength;
 
                 if (isPaddingFrame(termBuffer, frameOffset))
                 {
@@ -352,7 +352,7 @@ public class Image
 
                 if (action == ABORT)
                 {
-                    resultingOffset -= alignedLength;
+                    offset -= alignedLength;
                     break;
                 }
 
@@ -364,8 +364,8 @@ public class Image
                 }
                 else if (action == COMMIT)
                 {
-                    initialPosition += (resultingOffset - initialOffset);
-                    initialOffset = resultingOffset;
+                    initialPosition += (offset - initialOffset);
+                    initialOffset = offset;
                     subscriberPosition.setOrdered(initialPosition);
                 }
             }
@@ -376,7 +376,7 @@ public class Image
         }
         finally
         {
-            final long resultingPosition = initialPosition + (resultingOffset - initialOffset);
+            final long resultingPosition = initialPosition + (offset - initialOffset);
             if (resultingPosition > initialPosition)
             {
                 subscriberPosition.setOrdered(resultingPosition);
@@ -394,14 +394,14 @@ public class Image
      * Use a {@link ControlledFragmentAssembler} to assemble messages which span multiple fragments.
      *
      * @param handler       to which message fragments are delivered.
-     * @param maxPosition   to consume messages up to.
+     * @param limitPosition to consume messages up to.
      * @param fragmentLimit for the number of fragments to be consumed during one polling operation.
      * @return the number of fragments that have been consumed.
      * @see ControlledFragmentAssembler
      * @see ImageControlledFragmentAssembler
      */
     public int boundedControlledPoll(
-        final ControlledFragmentHandler handler, final long maxPosition, final int fragmentLimit)
+        final ControlledFragmentHandler handler, final long limitPosition, final int fragmentLimit)
     {
         if (isClosed)
         {
@@ -411,25 +411,25 @@ public class Image
         int fragmentsRead = 0;
         long initialPosition = subscriberPosition.get();
         int initialOffset = (int)initialPosition & termLengthMask;
-        int resultingOffset = initialOffset;
+        int offset = initialOffset;
         final UnsafeBuffer termBuffer = activeTermBuffer(initialPosition);
-        final int endOffset = (int)Math.min(termBuffer.capacity(), maxPosition - initialPosition + initialOffset);
+        final int limitOffset = (int)Math.min(termBuffer.capacity(), (limitPosition - initialPosition) + offset);
         final Header header = this.header;
         header.buffer(termBuffer);
 
         try
         {
-            while (fragmentsRead < fragmentLimit && resultingOffset < endOffset)
+            while (fragmentsRead < fragmentLimit && offset < limitOffset)
             {
-                final int length = frameLengthVolatile(termBuffer, resultingOffset);
+                final int length = frameLengthVolatile(termBuffer, offset);
                 if (length <= 0)
                 {
                     break;
                 }
 
-                final int frameOffset = resultingOffset;
+                final int frameOffset = offset;
                 final int alignedLength = BitUtil.align(length, FRAME_ALIGNMENT);
-                resultingOffset += alignedLength;
+                offset += alignedLength;
 
                 if (isPaddingFrame(termBuffer, frameOffset))
                 {
@@ -443,7 +443,7 @@ public class Image
 
                 if (action == ABORT)
                 {
-                    resultingOffset -= alignedLength;
+                    offset -= alignedLength;
                     break;
                 }
 
@@ -455,8 +455,8 @@ public class Image
                 }
                 else if (action == COMMIT)
                 {
-                    initialPosition += (resultingOffset - initialOffset);
-                    initialOffset = resultingOffset;
+                    initialPosition += (offset - initialOffset);
+                    initialOffset = offset;
                     subscriberPosition.setOrdered(initialPosition);
                 }
             }
@@ -467,7 +467,7 @@ public class Image
         }
         finally
         {
-            final long resultingPosition = initialPosition + (resultingOffset - initialOffset);
+            final long resultingPosition = initialPosition + (offset - initialOffset);
             if (resultingPosition > initialPosition)
             {
                 subscriberPosition.setOrdered(resultingPosition);
@@ -496,23 +496,27 @@ public class Image
     {
         if (isClosed)
         {
-            return 0;
+            return initialPosition;
         }
 
         validatePosition(initialPosition);
+        if (initialPosition >= limitPosition)
+        {
+            return initialPosition;
+        }
 
         int initialOffset = (int)initialPosition & termLengthMask;
         int offset = initialOffset;
         long position = initialPosition;
         final UnsafeBuffer termBuffer = activeTermBuffer(initialPosition);
-        final int capacity = termBuffer.capacity();
         final Header header = this.header;
+        final int limitOffset = (int)Math.min(termBuffer.capacity(), (limitPosition - initialPosition) + offset);
         header.buffer(termBuffer);
         long resultingPosition = initialPosition;
 
         try
         {
-            while (position < limitPosition && offset < capacity)
+            while (offset < limitOffset)
             {
                 final int length = frameLengthVolatile(termBuffer, offset);
                 if (length <= 0)
@@ -521,8 +525,7 @@ public class Image
                 }
 
                 final int frameOffset = offset;
-                final int alignedLength = BitUtil.align(length, FRAME_ALIGNMENT);
-                offset += alignedLength;
+                offset += BitUtil.align(length, FRAME_ALIGNMENT);
 
                 if (isPaddingFrame(termBuffer, frameOffset))
                 {
@@ -588,18 +591,18 @@ public class Image
         }
 
         final long position = subscriberPosition.get();
-        final int termOffset = (int)position & termLengthMask;
+        final int offset = (int)position & termLengthMask;
         final UnsafeBuffer termBuffer = activeTermBuffer(position);
-        final int limitOffset = Math.min(termOffset + blockLengthLimit, termBuffer.capacity());
-        final int resultingOffset = TermBlockScanner.scan(termBuffer, termOffset, limitOffset);
-        final int length = resultingOffset - termOffset;
+        final int limitOffset = Math.min(offset + blockLengthLimit, termBuffer.capacity());
+        final int resultingOffset = TermBlockScanner.scan(termBuffer, offset, limitOffset);
+        final int length = resultingOffset - offset;
 
-        if (resultingOffset > termOffset)
+        if (resultingOffset > offset)
         {
             try
             {
-                final int termId = termBuffer.getInt(termOffset + TERM_ID_FIELD_OFFSET, LITTLE_ENDIAN);
-                handler.onBlock(termBuffer, termOffset, length, sessionId, termId);
+                final int termId = termBuffer.getInt(offset + TERM_ID_FIELD_OFFSET, LITTLE_ENDIAN);
+                handler.onBlock(termBuffer, offset, length, sessionId, termId);
             }
             catch (final Throwable t)
             {
@@ -639,23 +642,22 @@ public class Image
         }
 
         final long position = subscriberPosition.get();
-        final int termOffset = (int)position & termLengthMask;
+        final int offset = (int)position & termLengthMask;
         final int activeIndex = indexByPosition(position, positionBitsToShift);
         final UnsafeBuffer termBuffer = termBuffers[activeIndex];
         final int capacity = termBuffer.capacity();
-        final int limitOffset = Math.min(termOffset + blockLengthLimit, capacity);
-        final int resultingOffset = TermBlockScanner.scan(termBuffer, termOffset, limitOffset);
-        final int length = resultingOffset - termOffset;
+        final int limitOffset = Math.min(offset + blockLengthLimit, capacity);
+        final int resultingOffset = TermBlockScanner.scan(termBuffer, offset, limitOffset);
+        final int length = resultingOffset - offset;
 
-        if (resultingOffset > termOffset)
+        if (resultingOffset > offset)
         {
             try
             {
-                final long fileOffset = ((long)capacity * activeIndex) + termOffset;
-                final int termId = termBuffer.getInt(termOffset + TERM_ID_FIELD_OFFSET, LITTLE_ENDIAN);
+                final long fileOffset = ((long)capacity * activeIndex) + offset;
+                final int termId = termBuffer.getInt(offset + TERM_ID_FIELD_OFFSET, LITTLE_ENDIAN);
 
-                handler.onBlock(
-                    logBuffers.fileChannel(), fileOffset, termBuffer, termOffset, length, sessionId, termId);
+                handler.onBlock(logBuffers.fileChannel(), fileOffset, termBuffer, offset, length, sessionId, termId);
             }
             catch (final Throwable t)
             {
@@ -675,19 +677,19 @@ public class Image
         return termBuffers[indexByPosition(position, positionBitsToShift)];
     }
 
-    private void validatePosition(final long newPosition)
+    private void validatePosition(final long position)
     {
         final long currentPosition = subscriberPosition.get();
         final long limitPosition = (currentPosition - (currentPosition & termLengthMask)) + termLengthMask + 1;
-        if (newPosition < currentPosition || newPosition > limitPosition)
+        if (position < currentPosition || position > limitPosition)
         {
             throw new IllegalArgumentException(
-                newPosition + " newPosition out of range " + currentPosition + "-" + limitPosition);
+                position + " position out of range: " + currentPosition + "-" + limitPosition);
         }
 
-        if (0 != (newPosition & (FRAME_ALIGNMENT - 1)))
+        if (0 != (position & (FRAME_ALIGNMENT - 1)))
         {
-            throw new IllegalArgumentException(newPosition + " newPosition not aligned to FRAME_ALIGNMENT");
+            throw new IllegalArgumentException(position + " position not aligned to FRAME_ALIGNMENT");
         }
     }
 
@@ -707,13 +709,15 @@ public class Image
     {
         return "Image{" +
             "correlationId=" + correlationId +
-            ", joinPosition=" + joinPosition +
             ", sessionId=" + sessionId +
-            ", initialTermId=" + initialTermId +
+            ", isClosed=" + isClosed +
             ", isEos=" + isEos +
+            ", initialTermId=" + initialTermId +
+            ", termLength=" + termBufferLength() +
+            ", joinPosition=" + joinPosition +
+            ", position=" + position() +
             ", sourceIdentity='" + sourceIdentity + '\'' +
             ", subscription=" + subscription +
-            ", position=" + position() +
             '}';
     }
 }

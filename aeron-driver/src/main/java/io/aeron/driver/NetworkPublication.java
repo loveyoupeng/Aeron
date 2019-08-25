@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -44,6 +44,7 @@ import static io.aeron.logbuffer.LogBufferDescriptor.*;
 import static io.aeron.logbuffer.TermScanner.*;
 import static io.aeron.protocol.DataHeaderFlyweight.BEGIN_AND_END_FLAGS;
 import static io.aeron.protocol.DataHeaderFlyweight.BEGIN_END_AND_EOS_FLAGS;
+import static org.agrona.BitUtil.SIZE_OF_LONG;
 
 class NetworkPublicationPadding1
 {
@@ -55,9 +56,9 @@ class NetworkPublicationConductorFields extends NetworkPublicationPadding1
 {
     protected static final ReadablePosition[] EMPTY_POSITIONS = new ReadablePosition[0];
 
-    protected long cleanPosition = 0;
-    protected long timeOfLastActivityNs = 0;
-    protected long lastSenderPosition = 0;
+    protected long cleanPosition;
+    protected long timeOfLastActivityNs;
+    protected long lastSenderPosition;
     protected int refCount = 0;
     protected ReadablePosition[] spyPositions = EMPTY_POSITIONS;
     protected final ArrayList<UntetheredSubscription> untetheredSubscriptions = new ArrayList<>();
@@ -91,7 +92,7 @@ public class NetworkPublication
     extends NetworkPublicationPadding3
     implements RetransmitSender, DriverManagedResource, Subscribable
 {
-    public enum State
+    enum State
     {
         ACTIVE, DRAINING, LINGER, CLOSING
     }
@@ -304,10 +305,9 @@ public class NetworkPublication
 
         if (0 == bytesSent)
         {
-            final boolean isEndOfStream = this.isEndOfStream;
             bytesSent = heartbeatMessageCheck(nowNs, activeTermId, termOffset, signalEos && isEndOfStream);
 
-            if (spiesSimulateConnection && (statusMessageDeadlineNs - nowNs < 0) && hasSpies)
+            if (spiesSimulateConnection && hasSpies && !hasReceivers)
             {
                 final long newSenderPosition = maxSpyPosition(senderPosition);
                 this.senderPosition.setOrdered(newSenderPosition);
@@ -349,8 +349,9 @@ public class NetworkPublication
     {
         final long senderPosition = this.senderPosition.get();
         final long resendPosition = computePosition(termId, termOffset, positionBitsToShift, initialTermId);
+        final long bottomResendWindow = senderPosition - (termBufferLength >> 1);
 
-        if (resendPosition < senderPosition && resendPosition >= (senderPosition - termBufferLength))
+        if (bottomResendWindow <= resendPosition && resendPosition < senderPosition)
         {
             final int activeIndex = indexByPosition(resendPosition, positionBitsToShift);
             final UnsafeBuffer termBuffer = termBuffers[activeIndex];
@@ -515,15 +516,18 @@ public class NetworkPublication
             }
 
             final long proposedPublisherLimit = minConsumerPosition + termWindowLength;
-            if (publisherLimit.proposeMaxOrdered(proposedPublisherLimit))
+            final long publisherLimit = this.publisherLimit.get();
+            if (proposedPublisherLimit > publisherLimit)
             {
-                cleanBuffer(proposedPublisherLimit);
+                cleanBufferTo(minConsumerPosition - termBufferLength);
+                this.publisherLimit.setOrdered(proposedPublisherLimit);
                 workCount = 1;
             }
         }
         else if (publisherLimit.get() > senderPosition)
         {
             publisherLimit.setOrdered(senderPosition);
+            workCount = 1;
         }
 
         return workCount;
@@ -640,21 +644,18 @@ public class NetworkPublication
         return bytesSent;
     }
 
-    private void cleanBuffer(final long publisherLimit)
+    private void cleanBufferTo(final long position)
     {
         final long cleanPosition = this.cleanPosition;
-        final long dirtyRange = publisherLimit - cleanPosition;
-        final int bufferCapacity = termBufferLength;
-        final int reservedRange = bufferCapacity * 2;
-
-        if (dirtyRange > reservedRange)
+        if (position > cleanPosition)
         {
             final UnsafeBuffer dirtyTerm = termBuffers[indexByPosition(cleanPosition, positionBitsToShift)];
+            final int bytesForCleaning = (int)(position - cleanPosition);
             final int termOffset = (int)cleanPosition & termLengthMask;
-            final int bytesForCleaning = (int)(dirtyRange - reservedRange);
-            final int length = Math.min(bytesForCleaning, bufferCapacity - termOffset);
+            final int length = Math.min(bytesForCleaning, termBufferLength - termOffset);
 
-            dirtyTerm.setMemory(termOffset, length, (byte)0);
+            dirtyTerm.setMemory(termOffset + SIZE_OF_LONG, length - SIZE_OF_LONG, (byte)0);
+            dirtyTerm.putLongOrdered(termOffset, 0);
             this.cleanPosition = cleanPosition + length;
         }
     }
@@ -865,11 +866,7 @@ public class NetworkPublication
             timeOfLastActivityNs = nanoClock.nanoTime();
 
             final long producerPosition = producerPosition();
-            if (publisherLimit.get() > producerPosition)
-            {
-                publisherLimit.setOrdered(producerPosition);
-            }
-
+            publisherLimit.setOrdered(producerPosition);
             endOfStreamPosition(metaDataBuffer, producerPosition);
 
             if (senderPosition.getVolatile() >= producerPosition)

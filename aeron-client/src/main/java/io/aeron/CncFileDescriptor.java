@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -79,7 +79,7 @@ public class CncFileDescriptor
     /**
      * Version of the CnC file using semantic versioning ({@link SemanticVersion}) stored in an integer.
      */
-    public static final int CNC_VERSION = SemanticVersion.compose(0, 0, 15);
+    public static final int CNC_VERSION = SemanticVersion.compose(0, 0, 16);
 
     public static final int CNC_VERSION_FIELD_OFFSET;
     public static final int TO_DRIVER_BUFFER_LENGTH_FIELD_OFFSET;

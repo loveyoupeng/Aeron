@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -79,6 +79,8 @@ typedef struct aeron_driver_agent_map_raw_log_op_header_stct
 aeron_driver_agent_map_raw_log_op_header_t;
 
 typedef int (*aeron_driver_context_init_t)(aeron_driver_context_t **);
+
+static const char *dissect_log_start(int64_t time_ms);
 
 void aeron_driver_agent_log_dissector(int32_t msg_type_id, const void *message, size_t length, void *clientd);
 

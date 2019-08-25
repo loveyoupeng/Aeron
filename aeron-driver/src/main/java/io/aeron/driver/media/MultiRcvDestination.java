@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -25,7 +25,7 @@ import java.nio.ByteBuffer;
 
 import static io.aeron.driver.media.UdpChannelTransport.sendError;
 
-public class MultiRcvDestination implements AutoCloseable
+class MultiRcvDestination implements AutoCloseable
 {
     private static final ReceiveDestinationUdpTransport[] EMPTY_TRANSPORTS = new ReceiveDestinationUdpTransport[0];
 
@@ -34,7 +34,7 @@ public class MultiRcvDestination implements AutoCloseable
     private ReceiveDestinationUdpTransport[] transports = EMPTY_TRANSPORTS;
     private int numDestinations = 0;
 
-    public MultiRcvDestination(final NanoClock nanoClock, final long timeoutNs)
+    MultiRcvDestination(final NanoClock nanoClock, final long timeoutNs)
     {
         this.nanoClock = nanoClock;
         this.destinationEndpointTimeoutNs = timeoutNs;

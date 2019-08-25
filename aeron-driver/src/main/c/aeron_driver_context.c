@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -232,6 +232,10 @@ aeron_threading_mode_t aeron_config_parse_threading_mode(const char *threading_m
         {
             result = AERON_THREADING_MODE_DEDICATED;
         }
+        else if (strncmp(threading_mode, "INVOKER", sizeof("INVOKER")) == 0)
+        {
+            result = AERON_THREADING_MODE_INVOKER;
+        }
         else
         {
             aeron_config_prop_warning(AERON_THREADING_MODE_ENV_VAR, threading_mode);
@@ -242,7 +246,7 @@ aeron_threading_mode_t aeron_config_parse_threading_mode(const char *threading_m
 }
 
 #define AERON_CONFIG_GETENV_OR_DEFAULT(e, d) ((NULL == getenv(e)) ? (d) : getenv(e))
-#define AERON_CONFIG_STRNDUP_GETENV_OR_NULL(e) ((NULL == getenv(e)) ? (NULL) : strndup(getenv(e), AERON_MAX_PATH))
+#define AERON_CONFIG_STRNDUP_GETENV_OR_NULL(e) ((NULL == getenv(e)) ? (NULL) : aeron_strndup(getenv(e), AERON_MAX_PATH))
 
 static void aeron_driver_conductor_to_driver_interceptor_null(
     int32_t msg_type_id, const void *message, size_t length, void *clientd)
@@ -256,7 +260,7 @@ static void aeron_driver_conductor_to_client_interceptor_null(
 
 #define AERON_DIR_WARN_IF_EXISTS_DEFAULT true
 #define AERON_THREADING_MODE_DEFAULT AERON_THREADING_MODE_DEDICATED
-#define AERON_DIR_DELETE_ON_START_DEFAULT true
+#define AERON_DIR_DELETE_ON_START_DEFAULT false
 #define AERON_TO_CONDUCTOR_BUFFER_LENGTH_DEFAULT (1024 * 1024 + AERON_RB_TRAILER_LENGTH)
 #define AERON_TO_CLIENTS_BUFFER_LENGTH_DEFAULT (1024 * 1024 + AERON_BROADCAST_BUFFER_TRAILER_LENGTH)
 #define AERON_COUNTERS_VALUES_BUFFER_LENGTH_DEFAULT (1024 * 1024)
@@ -728,11 +732,11 @@ int aeron_driver_context_init(aeron_driver_context_t **context)
     _context->nano_clock = aeron_nano_clock;
     _context->epoch_clock = aeron_epoch_clock;
 
-    _context->conductor_idle_strategy_name = strndup("backoff", AERON_MAX_PATH);
-    _context->shared_idle_strategy_name = strndup("backoff", AERON_MAX_PATH);
-    _context->shared_network_idle_strategy_name = strndup("backoff", AERON_MAX_PATH);
-    _context->sender_idle_strategy_name = strndup("backoff", AERON_MAX_PATH);
-    _context->receiver_idle_strategy_name = strndup("backoff", AERON_MAX_PATH);
+    _context->conductor_idle_strategy_name = aeron_strndup("backoff", AERON_MAX_PATH);
+    _context->shared_idle_strategy_name = aeron_strndup("backoff", AERON_MAX_PATH);
+    _context->shared_network_idle_strategy_name = aeron_strndup("backoff", AERON_MAX_PATH);
+    _context->sender_idle_strategy_name = aeron_strndup("backoff", AERON_MAX_PATH);
+    _context->receiver_idle_strategy_name = aeron_strndup("backoff", AERON_MAX_PATH);
 
     _context->conductor_idle_strategy_init_args =
         AERON_CONFIG_STRNDUP_GETENV_OR_NULL(AERON_CONDUCTOR_IDLE_STRATEGY_INIT_ARGS_ENV_VAR);
@@ -1493,7 +1497,7 @@ int aeron_driver_context_set_sender_idle_strategy(aeron_driver_context_t *contex
         return -1;
     }
 
-    context->sender_idle_strategy_name = strndup(value, AERON_MAX_PATH);
+    context->sender_idle_strategy_name = aeron_strndup(value, AERON_MAX_PATH);
     return 0;
 }
 
@@ -1519,7 +1523,7 @@ int aeron_driver_context_set_conductor_idle_strategy(aeron_driver_context_t *con
         return -1;
     }
 
-    context->conductor_idle_strategy_name = strndup(value, AERON_MAX_PATH);
+    context->conductor_idle_strategy_name = aeron_strndup(value, AERON_MAX_PATH);
     return 0;
 }
 
@@ -1545,7 +1549,7 @@ int aeron_driver_context_set_receiver_idle_strategy(aeron_driver_context_t *cont
         return -1;
     }
 
-    context->receiver_idle_strategy_name = strndup(value, AERON_MAX_PATH);
+    context->receiver_idle_strategy_name = aeron_strndup(value, AERON_MAX_PATH);
     return 0;
 }
 
@@ -1571,7 +1575,7 @@ int aeron_driver_context_set_sharednetwork_idle_strategy(aeron_driver_context_t 
         return -1;
     }
 
-    context->shared_network_idle_strategy_name = strndup(value, AERON_MAX_PATH);
+    context->shared_network_idle_strategy_name = aeron_strndup(value, AERON_MAX_PATH);
     return 0;
 }
 
@@ -1597,7 +1601,7 @@ int aeron_driver_context_set_shared_idle_strategy(aeron_driver_context_t *contex
         return -1;
     }
 
-    context->shared_idle_strategy_name = strndup(value, AERON_MAX_PATH);
+    context->shared_idle_strategy_name = aeron_strndup(value, AERON_MAX_PATH);
     return 0;
 }
 
@@ -1611,7 +1615,7 @@ int aeron_driver_context_set_sender_idle_strategy_init_args(aeron_driver_context
     AERON_DRIVER_CONTEXT_SET_CHECK_ARG_AND_RETURN(-1, context);
 
     aeron_free((void *)context->sender_idle_strategy_init_args);
-    context->sender_idle_strategy_init_args = NULL == value ? NULL : strndup(value, AERON_MAX_PATH);
+    context->sender_idle_strategy_init_args = NULL == value ? NULL : aeron_strndup(value, AERON_MAX_PATH);
 
     return 0;
 }
@@ -1626,7 +1630,7 @@ int aeron_driver_context_set_conductor_idle_strategy_init_args(aeron_driver_cont
     AERON_DRIVER_CONTEXT_SET_CHECK_ARG_AND_RETURN(-1, context);
 
     aeron_free((void *)context->conductor_idle_strategy_init_args);
-    context->conductor_idle_strategy_init_args = NULL == value ? NULL : strndup(value, AERON_MAX_PATH);
+    context->conductor_idle_strategy_init_args = NULL == value ? NULL : aeron_strndup(value, AERON_MAX_PATH);
 
     return 0;
 }
@@ -1641,7 +1645,7 @@ int aeron_driver_context_set_receiver_idle_strategy_init_args(aeron_driver_conte
     AERON_DRIVER_CONTEXT_SET_CHECK_ARG_AND_RETURN(-1, context);
 
     aeron_free((void *)context->receiver_idle_strategy_init_args);
-    context->receiver_idle_strategy_init_args = NULL == value ? NULL : strndup(value, AERON_MAX_PATH);
+    context->receiver_idle_strategy_init_args = NULL == value ? NULL : aeron_strndup(value, AERON_MAX_PATH);
 
     return 0;
 }
@@ -1656,7 +1660,7 @@ int aeron_driver_context_set_sharednetwork_idle_strategy_init_args(aeron_driver_
     AERON_DRIVER_CONTEXT_SET_CHECK_ARG_AND_RETURN(-1, context);
 
     aeron_free((void *)context->shared_network_idle_strategy_init_args);
-    context->shared_network_idle_strategy_init_args = NULL == value ? NULL : strndup(value, AERON_MAX_PATH);
+    context->shared_network_idle_strategy_init_args = NULL == value ? NULL : aeron_strndup(value, AERON_MAX_PATH);
 
     return 0;
 }
@@ -1671,7 +1675,7 @@ int aeron_driver_context_set_shared_idle_strategy_init_args(aeron_driver_context
     AERON_DRIVER_CONTEXT_SET_CHECK_ARG_AND_RETURN(-1, context);
 
     aeron_free((void *)context->shared_idle_strategy_init_args);
-    context->shared_idle_strategy_init_args = NULL == value ? NULL : strndup(value, AERON_MAX_PATH);
+    context->shared_idle_strategy_init_args = NULL == value ? NULL : aeron_strndup(value, AERON_MAX_PATH);
 
     return 0;
 }

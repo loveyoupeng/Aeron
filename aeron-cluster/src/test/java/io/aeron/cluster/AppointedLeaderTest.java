@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -22,16 +22,18 @@ import static org.hamcrest.core.Is.is;
 import static org.junit.Assert.assertThat;
 import static org.junit.Assert.assertTrue;
 
-public class AppointedLeaderClusterTest
+public class AppointedLeaderTest
 {
+    private static final int LEADER_ID = 1;
+
     @Test(timeout = 10_000L)
     public void shouldConnectAndSendKeepAlive() throws Exception
     {
-        final int appointedLeaderIndex = 1;
-
-        try (TestCluster cluster = TestCluster.startThreeNodeStaticCluster(appointedLeaderIndex))
+        try (TestCluster cluster = TestCluster.startThreeNodeStaticCluster(LEADER_ID))
         {
-            cluster.awaitLeader();
+            final TestNode leader = cluster.awaitLeader();
+            assertThat(leader.index(), is(LEADER_ID));
+            assertThat(leader.role(), is(Cluster.Role.LEADER));
 
             cluster.connectClient();
             assertTrue(cluster.client().sendKeepAlive());
@@ -41,16 +43,14 @@ public class AppointedLeaderClusterTest
     @Test(timeout = 10_000L)
     public void shouldEchoMessagesViaService() throws Exception
     {
-        final int appointedLeaderIndex = 1;
-
-        try (TestCluster cluster = TestCluster.startThreeNodeStaticCluster(appointedLeaderIndex))
+        try (TestCluster cluster = TestCluster.startThreeNodeStaticCluster(LEADER_ID))
         {
             final TestNode leader = cluster.awaitLeader();
-
-            assertThat(leader.index(), is(appointedLeaderIndex));
+            assertThat(leader.index(), is(LEADER_ID));
             assertThat(leader.role(), is(Cluster.Role.LEADER));
 
             cluster.connectClient();
+
             final int messageCount = 10;
             cluster.sendMessages(messageCount);
             cluster.awaitResponses(messageCount);

@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -17,13 +17,14 @@
 #include <cstdint>
 #include <cstdio>
 #include <signal.h>
-#include <util/CommandOptionParser.h>
 #include <thread>
-#include <Aeron.h>
 #include <array>
-#include <concurrent/BusySpinIdleStrategy.h>
+
+#include "util/CommandOptionParser.h"
+#include "concurrent/BusySpinIdleStrategy.h"
 #include "FragmentAssembler.h"
 #include "Configuration.h"
+#include "Aeron.h"
 
 using namespace aeron::util;
 using namespace aeron;
@@ -70,6 +71,7 @@ Settings parseCmdLine(CommandOptionParser& cp, int argc, char** argv)
     s.pingStreamId = cp.getOption(optPingStreamId).getParamAsInt(0, 1, INT32_MAX, s.pingStreamId);
     s.pongStreamId = cp.getOption(optPongStreamId).getParamAsInt(0, 1, INT32_MAX, s.pongStreamId);
     s.fragmentCountLimit = cp.getOption(optFrags).getParamAsInt(0, 1, INT32_MAX, s.fragmentCountLimit);
+
     return s;
 }
 
@@ -123,6 +125,8 @@ int main(int argc, char **argv)
                 std::cout << "Unavailable image on correlationId=" << image.correlationId() << " sessionId=" << image.sessionId();
                 std::cout << " at position=" << image.position() << " from " << image.sourceIdentity() << std::endl;
             });
+
+        context.preTouchMappedMemory(true);
 
         Aeron aeron(context);
 

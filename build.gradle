@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -22,8 +22,9 @@ buildscript {
 plugins {
     id 'java'
     id 'com.gradle.build-scan' version '2.3'
-    id "io.freefair.javadoc-links" version "3.6.4" apply false
-    id 'com.github.johnrengelman.shadow' version '5.0.0' apply false
+    id "io.freefair.javadoc-links" version "3.8.4" apply false
+    id 'com.github.johnrengelman.shadow' version '5.1.0' apply false
+    id 'biz.aQute.bnd.builder' version '4.2.0' apply false
 }
 
 defaultTasks 'clean', 'build', 'shadowJar', 'install'
@@ -40,11 +41,11 @@ def aeronGroup = 'io.aeron'
 def aeronVersion = file('version.txt').text.trim()
 def aeronJavaVersion = JavaVersion.VERSION_1_8
 
-def agronaVersion = '1.0.1'
-def sbeVersion = '1.12.7'
+def agronaVersion = '1.0.7'
+def sbeVersion = '1.13.2'
 def byteBuddyVersion = '1.9.10'
 def hdrHistogramVersion = '2.1.11'
-def mockitoVersion = '2.28.2'
+def mockitoVersion = '3.0.0'
 
 group = aeronGroup
 version = aeronVersion
@@ -79,7 +80,7 @@ def projectPom = {
     licenses {
         license {
             name = 'The Apache License, Version 2.0'
-            url = 'http://www.apache.org/licenses/LICENSE-2.0.txt'
+            url = 'https://www.apache.org/licenses/LICENSE-2.0.txt'
         }
     }
 
@@ -138,7 +139,7 @@ subprojects {
     jar.enabled = true
 
     dependencies {
-        checkstyle 'com.puppycrawl.tools:checkstyle:8.21'
+        checkstyle 'com.puppycrawl.tools:checkstyle:8.23'
 
         compile "org.agrona:agrona:${agronaVersion}"
 
@@ -147,9 +148,7 @@ subprojects {
         testCompile 'junit:junit:4.12'
     }
 
-    checkstyle {
-        toolVersion = '8.21'
-    }
+    checkstyle.toolVersion = '8.23'
 
     compileJava {
         sourceCompatibility = aeronJavaVersion
@@ -237,13 +236,23 @@ project(':aeron-client') {
         }
     }
 
+    apply plugin: 'biz.aQute.bnd.builder'
+
     jar {
-        manifest.attributes(
-            'Implementation-Title': 'Aeron',
-            'Implementation-Version': "${aeronVersion}",
-            'Implementation-Vendor': 'Real Logic Limited',
-            'Automatic-Module-Name': 'io.aeron.client'
-        )
+        bnd """
+            Automatic-Module-Name:  io.aeron.client
+            Bundle-Name:            io.aeron.client
+            Bundle-SymbolicName:    io.aeron.client
+            Implementation-Title:   Aeron
+            Implementation-Vendor:  Real Logic Limited
+            Implementation-Version: ${aeronVersion}
+
+            -exportcontents: io.aeron, io.aeron.*
+
+            # Suppress headers that reduce reproducibility.
+            -reproducible: true
+            -noextraheaders: true
+        """
     }
 
     task sourcesJar(type: Jar) {
@@ -292,13 +301,23 @@ project(':aeron-driver') {
         }
     }
 
+    apply plugin: 'biz.aQute.bnd.builder'
+
     jar {
-        manifest.attributes(
-            'Implementation-Title': 'Aeron',
-            'Implementation-Version': "${aeronVersion}",
-            'Implementation-Vendor': 'Real Logic Limited',
-            'Automatic-Module-Name': 'io.aeron.driver'
-        )
+        bnd """
+            Automatic-Module-Name:  io.aeron.driver
+            Bundle-Name:            io.aeron.driver
+            Bundle-SymbolicName:    io.aeron.driver
+            Implementation-Title:   Aeron
+            Implementation-Vendor:  Real Logic Limited
+            Implementation-Version: ${aeronVersion}
+
+            -exportcontents: io.aeron.driver, io.aeron.driver.*
+
+            # Suppress headers that reduce reproducibility.
+            -reproducible: true
+            -noextraheaders: true
+        """
     }
 
     task sourcesJar(type: Jar) {
@@ -373,17 +392,27 @@ project(':aeron-archive') {
         args = ['src/main/resources/aeron-archive-codecs.xml']
     }
 
+    apply plugin: 'biz.aQute.bnd.builder'
+
     jar {
         from("${buildDir}/classes/java/generated") {
             include '**/*.class'
         }
 
-        manifest.attributes(
-            'Implementation-Title': 'Aeron',
-            'Implementation-Version': "${aeronVersion}",
-            'Implementation-Vendor': 'Real Logic Limited',
-            'Automatic-Module-Name': 'io.aeron.archive'
-        )
+        bnd """
+            Automatic-Module-Name:  io.aeron.archive
+            Bundle-Name:            io.aeron.archive
+            Bundle-SymbolicName:    io.aeron.archive
+            Implementation-Title:   Aeron
+            Implementation-Vendor:  Real Logic Limited
+            Implementation-Version: ${aeronVersion}
+
+            -exportcontents: io.aeron.archive, io.aeron.archive.*
+
+            # Suppress headers that reduce reproducibility.
+            -reproducible: true
+            -noextraheaders: true
+        """
     }
 
     uploadArchives {
@@ -462,17 +491,27 @@ project(':aeron-cluster') {
                 'src/main/resources/aeron-cluster-mark-codecs.xml']
     }
 
+    apply plugin: 'biz.aQute.bnd.builder'
+
     jar {
         from("${buildDir}/classes/java/generated") {
             include '**/*.class'
         }
 
-        manifest.attributes(
-            'Implementation-Title': 'Aeron',
-            'Implementation-Version': "${aeronVersion}",
-            'Implementation-Vendor': 'Real Logic Limited',
-            'Automatic-Module-Name': 'io.aeron.cluster'
-        )
+        bnd """
+            Automatic-Module-Name:  io.aeron.cluster
+            Bundle-Name:            io.aeron.cluster
+            Bundle-SymbolicName:    io.aeron.cluster
+            Implementation-Title:   Aeron
+            Implementation-Vendor:  Real Logic Limited
+            Implementation-Version: ${aeronVersion}
+
+            -exportcontents: io.aeron.cluster, io.aeron.cluster.*
+
+            # Suppress headers that reduce reproducibility.
+            -reproducible: true
+            -noextraheaders: true
+        """
     }
 
     uploadArchives {
@@ -842,6 +881,6 @@ task uploadToMavenCentral {
 }
 
 wrapper {
-    gradleVersion = '5.4.1'
+    gradleVersion = '5.5.1'
     distributionType = 'ALL'
 }

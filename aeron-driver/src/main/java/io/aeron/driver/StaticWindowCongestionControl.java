@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -21,6 +21,10 @@ import org.agrona.concurrent.status.CountersManager;
 
 import java.net.InetSocketAddress;
 
+/**
+ * Congestion control algorithm which uses the min of {@link MediaDriver.Context#initialWindowLength()} or half a term
+ * length as a static window.
+ */
 public class StaticWindowCongestionControl implements CongestionControl
 {
     private final long ccOutcome;
@@ -36,7 +40,7 @@ public class StaticWindowCongestionControl implements CongestionControl
         final MediaDriver.Context context,
         final CountersManager countersManager)
     {
-        ccOutcome = CongestionControl.packOutcome(Math.min(termLength / 2, context.initialWindowLength()), false);
+        ccOutcome = CongestionControl.packOutcome(Math.min(termLength >> 1, context.initialWindowLength()), false);
     }
 
     public void close()

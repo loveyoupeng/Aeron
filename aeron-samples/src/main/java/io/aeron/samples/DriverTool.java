@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -30,8 +30,8 @@ import java.util.Date;
 import static io.aeron.CncFileDescriptor.*;
 
 /**
- * Tool for printing out Aeron Media Driver Information. A command-and-control (CnC) file is maintained by media driver
- * in shared memory. This application reads the CnC file and prints its status. Layout of the Cnc file is
+ * Tool for printing out Aeron Media Driver Information. A command-and-control (CnC) file is maintained by a
+ * media driver in shared memory. This application reads the CnC file and prints its status. Layout of the Cnc file is
  * described in {@link CncFileDescriptor}.
  */
 public class DriverTool

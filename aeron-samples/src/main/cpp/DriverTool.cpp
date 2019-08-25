@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -26,9 +26,9 @@
 #include <inttypes.h>
 #include <iomanip>
 
-#include <util/MemoryMappedFile.h>
-#include <util/CommandOptionParser.h>
-#include <Aeron.h>
+#include "util/MemoryMappedFile.h"
+#include "util/CommandOptionParser.h"
+#include "Aeron.h"
 
 using namespace aeron;
 using namespace aeron::util;
@@ -78,7 +78,7 @@ std::string formatDate(const char *format, std::int64_t millisecondsSinceEpoch)
     struct tm localTm;
 
 #ifdef _MSC_VER
-    _localtime_s(&localTm, &tm);
+    localtime_s(&localTm, &tm);
 #else
     ::localtime_r(&tm, &localTm);
 #endif
@@ -91,10 +91,10 @@ std::string formatDate(const char *format, std::int64_t millisecondsSinceEpoch)
 int main (int argc, char** argv)
 {
     CommandOptionParser cp;
-    cp.addOption(CommandOption(optHelp,            0, 0, "                Displays help information."));
-    cp.addOption(CommandOption(optPidOnly,         0, 0, "                Print PID only without anything else."));
-    cp.addOption(CommandOption(optTerminateDriver, 0, 0, "                Request driver to terminate."));
-    cp.addOption(CommandOption(optDirectory,       1, 1, "basePath        Base Path to shared memory. Default: " + Context::defaultAeronPath()));
+    cp.addOption(CommandOption(optHelp,            0, 0, "           Displays help information."));
+    cp.addOption(CommandOption(optPidOnly,         0, 0, "           Print PID only without anything else."));
+    cp.addOption(CommandOption(optTerminateDriver, 0, 0, "           Request driver to terminate."));
+    cp.addOption(CommandOption(optDirectory,       1, 1, "basePath   Base Path to shared memory. Default: " + Context::defaultAeronPath()));
 
     try
     {

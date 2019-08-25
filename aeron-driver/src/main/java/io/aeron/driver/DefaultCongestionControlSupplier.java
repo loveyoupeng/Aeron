@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -28,7 +28,7 @@ public class DefaultCongestionControlSupplier implements CongestionControlSuppli
         final int sessionId,
         final int termLength,
         final int senderMtuLength,
-        final NanoClock clock,
+        final NanoClock nanoClock,
         final MediaDriver.Context context,
         final CountersManager countersManager)
     {
@@ -39,7 +39,7 @@ public class DefaultCongestionControlSupplier implements CongestionControlSuppli
             sessionId,
             termLength,
             senderMtuLength,
-            clock,
+            nanoClock,
             context,
             countersManager);
     }

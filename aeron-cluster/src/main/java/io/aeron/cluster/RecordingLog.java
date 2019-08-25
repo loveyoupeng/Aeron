@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -22,6 +22,7 @@ import org.agrona.BitUtil;
 import org.agrona.CloseHelper;
 import org.agrona.LangUtil;
 import org.agrona.collections.Long2LongHashMap;
+import org.agrona.collections.MutableReference;
 import org.agrona.concurrent.UnsafeBuffer;
 
 import java.io.File;
@@ -259,7 +260,7 @@ public class RecordingLog implements AutoCloseable
         public final long appendedLogPosition;
         public final long committedLogPosition;
         public final ArrayList<Snapshot> snapshots;
-        public final ArrayList<Log> logs;
+        public final Log log;
 
         public RecoveryPlan(
             final long lastLeadershipTermId,
@@ -267,14 +268,14 @@ public class RecordingLog implements AutoCloseable
             final long appendedLogPosition,
             final long committedLogPosition,
             final ArrayList<Snapshot> snapshots,
-            final ArrayList<Log> logs)
+            final Log log)
         {
             this.lastLeadershipTermId = lastLeadershipTermId;
             this.lastTermBaseLogPosition = lastTermBaseLogPosition;
             this.appendedLogPosition = appendedLogPosition;
             this.committedLogPosition = committedLogPosition;
             this.snapshots = snapshots;
-            this.logs = logs;
+            this.log = log;
         }
 
         /**
@@ -285,9 +286,8 @@ public class RecordingLog implements AutoCloseable
         public boolean hasReplay()
         {
             boolean hasReplay = false;
-            if (logs.size() > 0)
+            if (null != log)
             {
-                final RecordingLog.Log log = logs.get(0);
                 hasReplay = log.stopPosition > log.startPosition;
             }
 
@@ -302,7 +302,7 @@ public class RecordingLog implements AutoCloseable
                 ", appendedLogPosition=" + appendedLogPosition +
                 ", committedLogPosition=" + committedLogPosition +
                 ", snapshots=" + snapshots +
-                ", logs=" + logs +
+                ", logs" + log +
                 '}';
         }
     }
@@ -557,6 +557,23 @@ public class RecordingLog implements AutoCloseable
     }
 
     /**
+     * Get the {@link Entry#timestamp} for a term.
+     *
+     * @param leadershipTermId to get {@link Entry#timestamp} for.
+     * @return the timestamp or {@link io.aeron.Aeron#NULL_VALUE} if not found.
+     */
+    public long getTermTimestamp(final long leadershipTermId)
+    {
+        final int index = (int)indexByLeadershipTermIdMap.get(leadershipTermId);
+        if (NULL_VALUE == index)
+        {
+            return NULL_VALUE;
+        }
+
+        return entries.get(index).timestamp;
+    }
+
+    /**
      * Create a recovery plan for the cluster that when the steps are replayed will bring the cluster back to the
      * latest stable state.
      *
@@ -567,8 +584,8 @@ public class RecordingLog implements AutoCloseable
     public RecoveryPlan createRecoveryPlan(final AeronArchive archive, final int serviceCount)
     {
         final ArrayList<Snapshot> snapshots = new ArrayList<>();
-        final ArrayList<Log> logs = new ArrayList<>();
-        planRecovery(snapshots, logs, entries, archive, serviceCount);
+        final MutableReference<Log> logRef = new MutableReference<>();
+        planRecovery(snapshots, logRef, entries, archive, serviceCount);
 
         long lastLeadershipTermId = NULL_VALUE;
         long lastTermBaseLogPosition = 0;
@@ -586,9 +603,9 @@ public class RecordingLog implements AutoCloseable
             committedLogPosition = snapshot.logPosition;
         }
 
-        if (!logs.isEmpty())
+        if (logRef.get() != null)
         {
-            final Log log = logs.get(0);
+            final Log log = logRef.get();
 
             lastLeadershipTermId = log.leadershipTermId;
             lastTermBaseLogPosition = log.termBaseLogPosition;
@@ -602,7 +619,7 @@ public class RecordingLog implements AutoCloseable
             appendedLogPosition,
             committedLogPosition,
             snapshots,
-            logs);
+            logRef.get());
     }
 
     /**
@@ -635,7 +652,7 @@ public class RecordingLog implements AutoCloseable
             appendedLogPosition,
             committedLogPosition,
             snapshots,
-            new ArrayList<>());
+            null);
     }
 
     /**
@@ -920,7 +937,7 @@ public class RecordingLog implements AutoCloseable
 
     private static void planRecovery(
         final ArrayList<Snapshot> snapshots,
-        final ArrayList<Log> logs,
+        final MutableReference<Log> logRef,
         final ArrayList<Entry> entries,
         final AeronArchive archive,
         final int serviceCount)
@@ -967,7 +984,7 @@ public class RecordingLog implements AutoCloseable
             final long startPosition = -1 == snapshotIndex ?
                 recordingExtent.startPosition : snapshots.get(0).logPosition;
 
-            logs.add(new Log(
+            logRef.set(new Log(
                 entry.recordingId,
                 entry.leadershipTermId,
                 entry.termBaseLogPosition,

@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -19,6 +19,7 @@ import io.aeron.*;
 import io.aeron.archive.codecs.ControlResponseCode;
 import io.aeron.archive.codecs.ControlResponseDecoder;
 import io.aeron.archive.codecs.SourceLocation;
+import io.aeron.exceptions.AeronException;
 import io.aeron.exceptions.ConcurrentConcludeException;
 import io.aeron.exceptions.TimeoutException;
 import org.agrona.CloseHelper;
@@ -662,6 +663,60 @@ public class AeronArchive implements AutoCloseable
     }
 
     /**
+     * Start a replay for a length in bytes of a recording from a position bounded by a position counter.
+     * If the position is {@link #NULL_POSITION} then the stream will be replayed from the start.
+     * <p>
+     * The lower 32-bits of the returned value contains the {@link Image#sessionId()} of the received replay. All
+     * 64-bits are required to uniquely identify the replay when calling {@link #stopReplay(long)}. The lower 32-bits
+     * can be obtained by casting the {@code long} value to an {@code int}.
+     *
+     * @param recordingId       to be replayed.
+     * @param position          from which the replay should begin or {@link #NULL_POSITION} if from the start.
+     * @param length            of the stream to be replayed. Use {@link Long#MAX_VALUE} to follow a live recording or
+     *                          {@link #NULL_LENGTH} to replay the whole stream of unknown length.
+     * @param limitCounterId    to use to bound replay.
+     * @param replayChannel     to which the replay should be sent.
+     * @param replayStreamId    to which the replay should be sent.
+     * @return the id of the replay session which will be the same as the {@link Image#sessionId()} of the received
+     * replay for correlation with the matching channel and stream id in the lower 32 bits.
+     */
+    public long startBoundedReplay(
+        final long recordingId,
+        final long position,
+        final long length,
+        final int limitCounterId,
+        final String replayChannel,
+        final int replayStreamId)
+    {
+        lock.lock();
+        try
+        {
+            ensureOpen();
+
+            final long correlationId = aeron.nextCorrelationId();
+
+            if (!archiveProxy.boundedReplay(
+                recordingId,
+                position,
+                length,
+                limitCounterId,
+                replayChannel,
+                replayStreamId,
+                correlationId,
+                controlSessionId))
+            {
+                throw new ArchiveException("failed to send bounded replay request");
+            }
+
+            return pollForResponse(correlationId);
+        }
+        finally
+        {
+            lock.unlock();
+        }
+    }
+
+    /**
      * Stop a replay session.
      *
      * @param replaySessionId to stop replay for.
@@ -678,6 +733,33 @@ public class AeronArchive implements AutoCloseable
             if (!archiveProxy.stopReplay(replaySessionId, correlationId, controlSessionId))
             {
                 throw new ArchiveException("failed to send stop replay request");
+            }
+
+            pollForResponse(correlationId);
+        }
+        finally
+        {
+            lock.unlock();
+        }
+    }
+
+    /**
+     * Stop all replay sessions for a given recording Id or all replays in general.
+     *
+     * @param recordingId to stop replay for or {@link Aeron#NULL_VALUE} for all replays.
+     */
+    public void stopAllReplays(final long recordingId)
+    {
+        lock.lock();
+        try
+        {
+            ensureOpen();
+
+            final long correlationId = aeron.nextCorrelationId();
+
+            if (!archiveProxy.stopAllReplays(recordingId, correlationId, controlSessionId))
+            {
+                throw new ArchiveException("failed to send stop all replays request");
             }
 
             pollForResponse(correlationId);
@@ -1079,7 +1161,8 @@ public class AeronArchive implements AutoCloseable
 
         if (deadlineNs - nanoClock.nanoTime() < 0)
         {
-            throw new TimeoutException(errorMessage + " - correlationId=" + correlationId);
+            throw new TimeoutException(
+                errorMessage + " - correlationId=" + correlationId, AeronException.Category.ERROR);
         }
     }
 
@@ -1261,7 +1344,7 @@ public class AeronArchive implements AutoCloseable
     public static class Configuration
     {
         public static final int MAJOR_VERSION = 0;
-        public static final int MINOR_VERSION = 1;
+        public static final int MINOR_VERSION = 2;
         public static final int PATCH_VERSION = 1;
         public static final int SEMANTIC_VERSION = SemanticVersion.compose(MAJOR_VERSION, MINOR_VERSION, PATCH_VERSION);
 
@@ -1592,7 +1675,10 @@ public class AeronArchive implements AutoCloseable
 
             if (null == aeron)
             {
-                aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(aeronDirectoryName));
+                aeron = Aeron.connect(
+                    new Aeron.Context()
+                        .aeronDirectoryName(aeronDirectoryName)
+                        .errorHandler(errorHandler));
                 ownsAeronClient = true;
             }
 
@@ -2148,7 +2234,9 @@ public class AeronArchive implements AutoCloseable
 
             if (deadlineNs - nanoClock.nanoTime() < 0)
             {
-                throw new TimeoutException("connect timeout for correlation id: " + correlationId + " step " + step);
+                throw new TimeoutException(
+                    "connect timeout for correlation id: " + correlationId + " step " + step,
+                    AeronException.Category.ERROR);
             }
         }
     }

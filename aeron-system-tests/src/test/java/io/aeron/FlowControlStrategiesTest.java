@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -35,9 +35,6 @@ import java.util.concurrent.TimeUnit;
 import static org.junit.Assert.fail;
 import static org.mockito.Mockito.*;
 
-/**
- * Tests requiring multiple embedded drivers for FlowControl strategies
- */
 public class FlowControlStrategiesTest
 {
     private static final String MULTICAST_URI = "aeron:udp?endpoint=224.20.30.39:54326|interface=localhost";
@@ -125,7 +122,7 @@ public class FlowControlStrategiesTest
         }
     }
 
-    @Test(timeout = 10_000)
+    @Test(timeout = 20_000)
     public void shouldTimeoutImageWhenBehindForTooLongWithMaxMulticastFlowControlStrategy()
     {
         final int numMessagesToSend = NUM_MESSAGES_PER_TERM * 3;
@@ -196,7 +193,7 @@ public class FlowControlStrategiesTest
             any(Header.class));
     }
 
-    @Test(timeout = 10_000)
+    @Test(timeout = 20_000)
     public void shouldSlowDownWhenBehindWithMinMulticastFlowControlStrategy()
     {
         final int numMessagesToSend = NUM_MESSAGES_PER_TERM * 3;
@@ -256,7 +253,7 @@ public class FlowControlStrategiesTest
             any(Header.class));
     }
 
-    @Test(timeout = 10_000)
+    @Test(timeout = 20_000)
     public void shouldRemoveDeadReceiverWithMinMulticastFlowControlStrategy()
     {
         final int numMessagesToSend = NUM_MESSAGES_PER_TERM * 3;
@@ -313,7 +310,7 @@ public class FlowControlStrategiesTest
             any(Header.class));
     }
 
-    @Test(timeout = 15_000)
+    @Test(timeout = 20_000)
     public void shouldSlowToPreferredWithMulticastFlowControlStrategy()
     {
         final int numMessagesToSend = NUM_MESSAGES_PER_TERM * 3;
@@ -383,7 +380,7 @@ public class FlowControlStrategiesTest
             any(Header.class));
     }
 
-    @Test(timeout = 10_000)
+    @Test(timeout = 20_000)
     public void shouldRemoveDeadPreferredReceiverWithPreferredMulticastFlowControlStrategy()
     {
         final int numMessagesToSend = NUM_MESSAGES_PER_TERM * 3;

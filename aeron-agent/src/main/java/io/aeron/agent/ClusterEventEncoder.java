@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -48,20 +48,20 @@ final class ClusterEventEncoder
     static int newLeadershipTerm(
         final MutableDirectBuffer encodedBuffer,
         final long logLeadershipTermId,
-        final long logPosition,
         final long leadershipTermId,
-        final long maxLogPosition,
+        final long logPosition,
+        final long timestamp,
         final int leaderMemberId,
         final int logSessionId)
     {
         int offset = 0;
         encodedBuffer.putLong(0, logLeadershipTermId);
         offset += BitUtil.SIZE_OF_LONG;
-        encodedBuffer.putLong(offset, logPosition);
-        offset += BitUtil.SIZE_OF_LONG;
         encodedBuffer.putLong(offset, leadershipTermId);
         offset += BitUtil.SIZE_OF_LONG;
-        encodedBuffer.putLong(offset, maxLogPosition);
+        encodedBuffer.putLong(offset, logPosition);
+        offset += BitUtil.SIZE_OF_LONG;
+        encodedBuffer.putLong(offset, timestamp);
         offset += BitUtil.SIZE_OF_LONG;
         encodedBuffer.putInt(offset, leaderMemberId);
         offset += BitUtil.SIZE_OF_INT;

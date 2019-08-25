@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -257,12 +257,45 @@ class ControlSession implements Session
         }
     }
 
+    void onBoundedStartReplay(
+        final long correlationId,
+        final long recordingId,
+        final long position,
+        final long length,
+        final int limitCounterId,
+        final int replayStreamId,
+        final String replayChannel)
+    {
+        updateState();
+        if (State.ACTIVE == state)
+        {
+            conductor.boundedStartReplay(
+                correlationId,
+                this,
+                recordingId,
+                position,
+                length,
+                limitCounterId,
+                replayStreamId,
+                replayChannel);
+        }
+    }
+
     void onStopReplay(final long correlationId, final long replaySessionId)
     {
         updateState();
         if (State.ACTIVE == state)
         {
             conductor.stopReplay(correlationId, this, replaySessionId);
+        }
+    }
+
+    void onStopAllReplays(final long correlationId, final long recordingId)
+    {
+        updateState();
+        if (State.ACTIVE == state)
+        {
+            conductor.stopAllReplays(correlationId, this, recordingId);
         }
     }
 

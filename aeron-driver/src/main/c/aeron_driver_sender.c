@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -117,6 +117,7 @@ int aeron_driver_sender_do_work(void *clientd)
             sender->sender_proxy.command_queue, aeron_driver_sender_on_command, sender, 10);
 
     int64_t now_ns = sender->context->nano_clock();
+    int64_t bytes_received = 0;
     int bytes_sent = aeron_driver_sender_do_send(sender, now_ns);
     int poll_result;
 
@@ -142,6 +143,7 @@ int aeron_driver_sender_do_work(void *clientd)
             &sender->poller,
             mmsghdr,
             AERON_DRIVER_SENDER_NUM_RECV_BUFFERS,
+            &bytes_received,
             aeron_send_channel_endpoint_dispatch,
             sender);
 

@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -23,10 +23,7 @@ import io.aeron.cluster.codecs.mark.ClusterComponentType;
 import io.aeron.cluster.codecs.mark.MarkFileHeaderEncoder;
 import io.aeron.exceptions.ConcurrentConcludeException;
 import io.aeron.exceptions.ConfigurationException;
-import org.agrona.CloseHelper;
-import org.agrona.ErrorHandler;
-import org.agrona.IoUtil;
-import org.agrona.LangUtil;
+import org.agrona.*;
 import org.agrona.concurrent.*;
 import org.agrona.concurrent.errors.DistinctErrorLog;
 import org.agrona.concurrent.errors.LoggingErrorHandler;
@@ -34,6 +31,7 @@ import org.agrona.concurrent.status.AtomicCounter;
 import org.agrona.concurrent.status.StatusIndicator;
 
 import java.io.File;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
 import java.util.function.Supplier;
@@ -440,6 +438,7 @@ public final class ClusteredServiceContainer implements AutoCloseable
             Context.class, "isConcluded");
         private volatile int isConcluded;
 
+        private int appVersion = SemanticVersion.compose(0, 0, 1);
         private int serviceId = Configuration.serviceId();
         private String serviceName = Configuration.serviceName();
         private String replayChannel = Configuration.replayChannel();
@@ -452,6 +451,7 @@ public final class ClusteredServiceContainer implements AutoCloseable
         private int errorBufferLength = Configuration.errorBufferLength();
         private boolean isRespondingService = Configuration.isRespondingService();
 
+        private CountDownLatch abortLatch;
         private ThreadFactory threadFactory;
         private Supplier<IdleStrategy> idleStrategySupplier;
         private EpochClock epochClock;
@@ -550,6 +550,7 @@ public final class ClusteredServiceContainer implements AutoCloseable
                     new Aeron.Context()
                         .aeronDirectoryName(aeronDirectoryName)
                         .errorHandler(errorHandler)
+                        .awaitingIdleStrategy(new YieldingIdleStrategy())
                         .epochClock(epochClock));
 
                 ownsAeronClient = true;
@@ -611,7 +612,36 @@ public final class ClusteredServiceContainer implements AutoCloseable
                 }
             }
 
+            abortLatch = new CountDownLatch(aeron.conductorAgentInvoker() == null ? 1 : 0);
             concludeMarkFile();
+        }
+
+        /**
+         * User assigned application version which appended to the log as the appVersion in new leadership events.
+         * <p>
+         * This can be validated using {@link org.agrona.SemanticVersion} to ensure only application nodes of the same
+         * major version communicate with each other.
+         *
+         * @param appVersion for user application.
+         * @return this for a fluent API.
+         */
+        public Context appVersion(final int appVersion)
+        {
+            this.appVersion = appVersion;
+            return this;
+        }
+
+        /**
+         * User assigned application version which appended to the log as the appVersion in new leadership events.
+         * <p>
+         * This can be validated using {@link org.agrona.SemanticVersion} to ensure only application nodes of the same
+         * major version communicate with each other.
+         *
+         * @return appVersion for user application.
+         */
+        public int appVersion()
+        {
+            return appVersion;
         }
 
         /**
@@ -877,9 +907,9 @@ public final class ClusteredServiceContainer implements AutoCloseable
         }
 
         /**
-         * Provides an {@link IdleStrategy} supplier for the thread responsible for publication/subscription backoff.
+         * Provides an {@link IdleStrategy} supplier for the idle strategy for the agent duty cycle.
          *
-         * @param idleStrategySupplier supplier of thread idle strategy for publication/subscription backoff.
+         * @param idleStrategySupplier supplier for the idle strategy for the agent duty cycle.
          * @return this for a fluent API.
          */
         public Context idleStrategySupplier(final Supplier<IdleStrategy> idleStrategySupplier)
@@ -1276,12 +1306,17 @@ public final class ClusteredServiceContainer implements AutoCloseable
          */
         public void close()
         {
+            CloseHelper.close(markFile);
+
             if (ownsAeronClient)
             {
                 CloseHelper.close(aeron);
             }
+        }
 
-            CloseHelper.close(markFile);
+        CountDownLatch abortLatch()
+        {
+            return abortLatch;
         }
 
         private void concludeMarkFile()

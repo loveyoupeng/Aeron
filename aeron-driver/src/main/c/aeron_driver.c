@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -116,7 +116,7 @@ void aeron_log_func_none(const char *str)
 int64_t aeron_nano_clock()
 {
     struct timespec ts;
-#if defined(__CYGWIN__)
+#if defined(__CYGWIN__) || defined(__linux__)
     if (clock_gettime(CLOCK_MONOTONIC, &ts) < 0)
     {
         return -1;
@@ -145,7 +145,11 @@ int64_t aeron_epoch_clock()
         return -1;
     }
 #else
+#if defined(CLOCK_REALTIME_COARSE)
+    if (clock_gettime(CLOCK_REALTIME_COARSE, &ts) < 0)
+#else
     if (clock_gettime(CLOCK_REALTIME, &ts) < 0)
+#endif
     {
         return -1;
     }
@@ -567,6 +571,10 @@ void aeron_driver_context_print_configuration(aeron_driver_context_t *context)
     char buffer[1024];
 
     fprintf(fpout, "aeron_driver_context_t {");
+    fprintf(fpout, "\n    cnc_version=%d.%d.%d",
+        (int)aeron_semantic_version_major(AERON_CNC_VERSION),
+        (int)aeron_semantic_version_minor(AERON_CNC_VERSION),
+        (int)aeron_semantic_version_patch(AERON_CNC_VERSION));
     fprintf(fpout, "\n    aeron_dir=%s", context->aeron_dir);
     fprintf(fpout, "\n    driver_timeout_ms=%" PRIu64, context->driver_timeout_ms);
     fprintf(fpout, "\n    print_configuration_on_start=%d", context->print_configuration_on_start);
@@ -844,6 +852,7 @@ int aeron_driver_init(aeron_driver_t **driver, aeron_driver_context_t *context)
 
     switch (_driver->context->threading_mode)
     {
+        case AERON_THREADING_MODE_INVOKER:
         case AERON_THREADING_MODE_SHARED:
             if (aeron_agent_init(
                 &_driver->runners[AERON_AGENT_RUNNER_SHARED],
@@ -960,6 +969,13 @@ int aeron_driver_start(aeron_driver_t *driver, bool manual_main_loop)
 
     if (!manual_main_loop)
     {
+        if (AERON_THREADING_MODE_INVOKER == driver->context->threading_mode)
+        {
+            errno = EINVAL;
+            aeron_set_err(EINVAL, "aeron_driver_start: %s", "INVOKER threading mode requires manual_main_loop");
+            return -1;
+        }
+
         if (aeron_agent_start(&driver->runners[0]) < 0)
         {
             return -1;

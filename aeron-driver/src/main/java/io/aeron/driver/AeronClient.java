@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -30,6 +30,7 @@ public class AeronClient implements DriverManagedResource
     private final AtomicCounter heartbeatStatus;
     private long timeOfLastKeepaliveMs;
     private boolean reachedEndOfLife = false;
+    private boolean closedByCommand = false;
 
     public AeronClient(
         final long clientId,
@@ -76,13 +77,23 @@ public class AeronClient implements DriverManagedResource
         if (timeMs > (timeOfLastKeepaliveMs + clientLivenessTimeoutMs))
         {
             reachedEndOfLife = true;
-            clientTimeouts.incrementOrdered();
-            conductor.clientTimeout(clientId);
+
+            if (!closedByCommand)
+            {
+                clientTimeouts.incrementOrdered();
+                conductor.clientTimeout(clientId);
+            }
         }
     }
 
     public boolean hasReachedEndOfLife()
     {
         return reachedEndOfLife;
+    }
+
+    void onClosedByCommand()
+    {
+        closedByCommand = true;
+        timeOfLastKeepaliveMs = 0;
     }
 }

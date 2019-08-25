@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -31,6 +31,7 @@ import java.util.ArrayList;
 
 import static io.aeron.driver.status.SystemCounterDescriptor.UNBLOCKED_PUBLICATIONS;
 import static io.aeron.logbuffer.LogBufferDescriptor.*;
+import static org.agrona.BitUtil.SIZE_OF_LONG;
 
 /**
  * Encapsulation of a stream used directly between publishers and subscribers for IPC over shared memory.
@@ -289,11 +290,7 @@ public final class IpcPublication implements DriverManagedResource, Subscribable
         {
             state = State.INACTIVE;
             final long producerPosition = producerPosition();
-            if (publisherLimit.get() > producerPosition)
-            {
-                publisherLimit.setOrdered(producerPosition);
-            }
-
+            publisherLimit.setOrdered(producerPosition);
             LogBufferDescriptor.endOfStreamPosition(metaDataBuffer, producerPosition);
         }
     }
@@ -321,10 +318,10 @@ public final class IpcPublication implements DriverManagedResource, Subscribable
             final long proposedLimit = minSubscriberPosition + termWindowLength;
             if (proposedLimit > tripLimit)
             {
+                cleanBufferTo(minSubscriberPosition);
                 publisherLimit.setOrdered(proposedLimit);
                 tripLimit = proposedLimit + tripGain;
 
-                cleanBuffer(minSubscriberPosition);
                 workCount = 1;
             }
         }
@@ -466,18 +463,19 @@ public final class IpcPublication implements DriverManagedResource, Subscribable
         return producerPosition > consumerPosition;
     }
 
-    private void cleanBuffer(final long minConsumerPosition)
+    private void cleanBufferTo(final long position)
     {
         final long cleanPosition = this.cleanPosition;
-        final UnsafeBuffer dirtyTerm = termBuffers[indexByPosition(cleanPosition, positionBitsToShift)];
-        final int bytesForCleaning = (int)(minConsumerPosition - cleanPosition);
-        final int bufferCapacity = termBufferLength;
-        final int termOffset = (int)cleanPosition & (bufferCapacity - 1);
-        final int length = Math.min(bytesForCleaning, bufferCapacity - termOffset);
-
-        if (length > 0)
+        if (position > cleanPosition)
         {
-            dirtyTerm.setMemory(termOffset, length, (byte)0);
+            final UnsafeBuffer dirtyTerm = termBuffers[indexByPosition(cleanPosition, positionBitsToShift)];
+            final int bytesForCleaning = (int)(position - cleanPosition);
+            final int bufferCapacity = termBufferLength;
+            final int termOffset = (int)cleanPosition & (bufferCapacity - 1);
+            final int length = Math.min(bytesForCleaning, bufferCapacity - termOffset);
+
+            dirtyTerm.setMemory(termOffset + SIZE_OF_LONG, length - SIZE_OF_LONG, (byte)0);
+            dirtyTerm.putLongOrdered(termOffset, 0);
             this.cleanPosition = cleanPosition + length;
         }
     }

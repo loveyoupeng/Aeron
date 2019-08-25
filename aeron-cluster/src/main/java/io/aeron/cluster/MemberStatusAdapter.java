@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -26,7 +26,7 @@ import org.agrona.DirectBuffer;
 
 class MemberStatusAdapter implements FragmentHandler, AutoCloseable
 {
-    private static final int FRAGMENT_POLL_LIMIT = 10;
+    public static final int FRAGMENT_POLL_LIMIT = 10;
 
     private final MessageHeaderDecoder messageHeaderDecoder = new MessageHeaderDecoder();
     private final CanvassPositionDecoder canvassPositionDecoder = new CanvassPositionDecoder();
@@ -45,6 +45,7 @@ class MemberStatusAdapter implements FragmentHandler, AutoCloseable
     private final JoinClusterDecoder joinClusterDecoder = new JoinClusterDecoder();
     private final TerminationPositionDecoder terminationPositionDecoder = new TerminationPositionDecoder();
     private final TerminationAckDecoder terminationAckDecoder = new TerminationAckDecoder();
+    private final BackupQueryDecoder backupQueryDecoder = new BackupQueryDecoder();
 
     private final FragmentAssembler fragmentAssembler = new FragmentAssembler(this);
     private final Subscription subscription;
@@ -137,9 +138,9 @@ class MemberStatusAdapter implements FragmentHandler, AutoCloseable
 
                 memberStatusListener.onNewLeadershipTerm(
                     newLeadershipTermDecoder.logLeadershipTermId(),
-                    newLeadershipTermDecoder.logPosition(),
                     newLeadershipTermDecoder.leadershipTermId(),
-                    newLeadershipTermDecoder.maxLogPosition(),
+                    newLeadershipTermDecoder.logPosition(),
+                    newLeadershipTermDecoder.timestamp(),
                     newLeadershipTermDecoder.leaderMemberId(),
                     newLeadershipTermDecoder.logSessionId());
                 break;
@@ -273,6 +274,25 @@ class MemberStatusAdapter implements FragmentHandler, AutoCloseable
 
                 memberStatusListener.onTerminationAck(
                     terminationAckDecoder.logPosition(), terminationAckDecoder.memberId());
+                break;
+
+            case BackupQueryDecoder.TEMPLATE_ID:
+                backupQueryDecoder.wrap(
+                    buffer,
+                    offset + MessageHeaderDecoder.ENCODED_LENGTH,
+                    messageHeaderDecoder.blockLength(),
+                    messageHeaderDecoder.version());
+
+                final String responseChannel = backupQueryDecoder.responseChannel();
+                final byte[] credentials = new byte[backupQueryDecoder.encodedCredentialsLength()];
+                backupQueryDecoder.getEncodedCredentials(credentials, 0, credentials.length);
+
+                memberStatusListener.onBackupQuery(
+                    backupQueryDecoder.correlationId(),
+                    backupQueryDecoder.responseStreamId(),
+                    backupQueryDecoder.version(),
+                    responseChannel,
+                    credentials);
                 break;
         }
     }

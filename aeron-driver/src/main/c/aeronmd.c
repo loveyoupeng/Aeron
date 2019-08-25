@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -24,7 +24,11 @@
 #include <time.h>
 #include <stdbool.h>
 #include <stdio.h>
+
+#ifndef _MSC_VER
 #include <unistd.h>
+#endif
+
 #include "aeronmd.h"
 #include "concurrent/aeron_atomic.h"
 #include "aeron_driver_context.h"
@@ -91,7 +95,6 @@ int main(int argc, char **argv)
                 exit(status);
         }
     }
-#endif
 
     for (int i = optind; i < argc; i++)
     {
@@ -101,6 +104,7 @@ int main(int argc, char **argv)
             exit(status);
         }
     }
+#endif
 
     signal(SIGINT, sigint_handler);
 
@@ -109,7 +113,6 @@ int main(int argc, char **argv)
         fprintf(stderr, "ERROR: context init (%d) %s\n", aeron_errcode(), aeron_errmsg());
         goto cleanup;
     }
-
 
     if (aeron_driver_context_set_driver_termination_hook(context, termination_hook, NULL) < 0)
     {

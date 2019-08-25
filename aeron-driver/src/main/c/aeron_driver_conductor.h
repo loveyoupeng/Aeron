@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -52,11 +52,12 @@ aeron_counter_link_t;
 typedef struct aeron_client_stct
 {
     bool reached_end_of_life;
+    bool closed_by_command;
     int64_t client_id;
     int64_t client_liveness_timeout_ms;
     int64_t time_of_last_keepalive_ms;
 
-    aeron_counter_t heartbeat_status;
+    aeron_counter_t heartbeat_timestamp;
 
     struct publication_link_stct
     {

@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -15,15 +15,18 @@
  */
 package io.aeron.driver.status;
 
-import io.aeron.status.HeartbeatStatus;
+import io.aeron.status.HeartbeatTimestamp;
 import org.agrona.MutableDirectBuffer;
 import org.agrona.concurrent.status.AtomicCounter;
 import org.agrona.concurrent.status.CountersManager;
 
-public class ClientHeartbeatStatus
+/**
+ * Counter for tracking the timestamp of a last heartbeat from an Aeron client.
+ */
+public class ClientHeartbeatTimestamp
 {
     /**
-     * Type id of an Aeron client heartbeat status indicator.
+     * Type id of an Aeron client heartbeat.
      */
     public static final int CLIENT_HEARTBEAT_TYPE_ID = 11;
 
@@ -37,6 +40,6 @@ public class ClientHeartbeatStatus
         final CountersManager countersManager,
         final long registrationId)
     {
-        return HeartbeatStatus.allocate(tempBuffer, NAME, CLIENT_HEARTBEAT_TYPE_ID, countersManager, registrationId);
+        return HeartbeatTimestamp.allocate(tempBuffer, NAME, CLIENT_HEARTBEAT_TYPE_ID, countersManager, registrationId);
     }
 }

@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -17,17 +17,18 @@
 #include <cstdint>
 #include <cstdio>
 #include <signal.h>
-#include <util/CommandOptionParser.h>
 #include <thread>
-#include <Aeron.h>
 #include <array>
-#include <concurrent/BusySpinIdleStrategy.h>
-#include "Configuration.h"
-#include "RateReporter.h"
-#include "FragmentAssembler.h"
 
 #define __STDC_FORMAT_MACROS
 #include <inttypes.h>
+
+#include "util/CommandOptionParser.h"
+#include "concurrent/BusySpinIdleStrategy.h"
+#include "Configuration.h"
+#include "RateReporter.h"
+#include "FragmentAssembler.h"
+#include "Aeron.h"
 
 using namespace aeron::util;
 using namespace aeron;
@@ -91,7 +92,7 @@ void printRate(double messagesPerSec, double bytesPerSec, long totalFragments, l
     if (printingActive)
     {
         std::printf(
-            "%.02g msgs/sec, %.02g bytes/sec, totals %ld messages %ld MB payloads\n",
+            "%.04g msgs/sec, %.04g bytes/sec, totals %ld messages %ld MB payloads\n",
             messagesPerSec, bytesPerSec, totalFragments, totalBytes / (1024 * 1024));
     }
 }
@@ -222,6 +223,7 @@ int main(int argc, char **argv)
 
             for (long i = 0; i < settings.numberOfMessages && isRunning(); i++)
             {
+                offerIdleStrategy.reset();
                 while (publicationPtr->tryClaim(settings.messageLength, bufferClaim) < 0L)
                 {
                     backPressureCount++;

@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -62,6 +62,7 @@ class ClientConductor implements Agent, DriverEventsListener
     private final Lock clientLock;
     private final EpochClock epochClock;
     private final NanoClock nanoClock;
+    private final IdleStrategy awaitingIdleStrategy;
     private final DriverEventsAdapter driverEventsAdapter;
     private final LogBuffersFactory logBuffersFactory;
     private final Long2ObjectHashMap<LogBuffers> logBuffersByIdMap = new Long2ObjectHashMap<>();
@@ -69,8 +70,9 @@ class ClientConductor implements Agent, DriverEventsListener
     private final ArrayList<ManagedResource> lingeringResources = new ArrayList<>();
     private final AvailableImageHandler defaultAvailableImageHandler;
     private final UnavailableImageHandler defaultUnavailableImageHandler;
-    private final AvailableCounterHandler availableCounterHandler;
-    private final UnavailableCounterHandler unavailableCounterHandler;
+    private final ArrayList<AvailableCounterHandler> availableCounterHandlers = new ArrayList<>();
+    private final ArrayList<UnavailableCounterHandler> unavailableCounterHandlers = new ArrayList<>();
+    private final ArrayList<Runnable> closeHandlers = new ArrayList<>();
     private final DriverProxy driverProxy;
     private final AgentInvoker driverAgentInvoker;
     private final UnsafeBuffer counterValuesBuffer;
@@ -84,6 +86,7 @@ class ClientConductor implements Agent, DriverEventsListener
         clientLock = ctx.clientLock();
         epochClock = ctx.epochClock();
         nanoClock = ctx.nanoClock();
+        awaitingIdleStrategy = ctx.awaitingIdleStrategy();
         driverProxy = ctx.driverProxy();
         logBuffersFactory = ctx.logBuffersFactory();
         keepAliveIntervalNs = ctx.keepAliveIntervalNs();
@@ -93,12 +96,25 @@ class ClientConductor implements Agent, DriverEventsListener
         interServiceTimeoutNs = ctx.interServiceTimeoutNs();
         defaultAvailableImageHandler = ctx.availableImageHandler();
         defaultUnavailableImageHandler = ctx.unavailableImageHandler();
-        availableCounterHandler = ctx.availableCounterHandler();
-        unavailableCounterHandler = ctx.unavailableCounterHandler();
         driverEventsAdapter = new DriverEventsAdapter(ctx.toClientBuffer(), ctx.clientId(), this);
         driverAgentInvoker = ctx.driverAgentInvoker();
         counterValuesBuffer = ctx.countersValuesBuffer();
         countersReader = new CountersReader(ctx.countersMetaDataBuffer(), ctx.countersValuesBuffer(), US_ASCII);
+
+        if (null != ctx.availableCounterHandler())
+        {
+            availableCounterHandlers.add(ctx.availableCounterHandler());
+        }
+
+        if (null != ctx.unavailableCounterHandler())
+        {
+            unavailableCounterHandlers.add(ctx.unavailableCounterHandler());
+        }
+
+        if (null != ctx.closeHandler())
+        {
+            closeHandlers.add(ctx.closeHandler());
+        }
 
         final long nowNs = nanoClock.nanoTime();
         timeOfLastKeepAliveNs = nowNs;
@@ -113,13 +129,29 @@ class ClientConductor implements Agent, DriverEventsListener
             if (!isClosed)
             {
                 isClosed = true;
+                if (isTerminating)
+                {
+                    aeron.internalClose();
+                }
+
                 forceCloseResources();
+
+                for (int i = closeHandlers.size() - 1; i >= 0; i--)
+                {
+                    try
+                    {
+                        closeHandlers.get(i).run();
+                    }
+                    catch (final Exception ex)
+                    {
+                        handleError(ex);
+                    }
+                }
 
                 try
                 {
                     if (isTerminating)
                     {
-                        aeron.internalClose();
                         Thread.sleep(IDLE_SLEEP_MS);
                     }
 
@@ -352,12 +384,13 @@ class ClientConductor implements Agent, DriverEventsListener
 
     public void onAvailableCounter(final long registrationId, final int counterId)
     {
-        if (null != availableCounterHandler)
+        for (int i = 0, size = availableCounterHandlers.size(); i < size; i++)
         {
+            final AvailableCounterHandler handler = availableCounterHandlers.get(i);
             isInCallback = true;
             try
             {
-                availableCounterHandler.onAvailableCounter(countersReader, registrationId, counterId);
+                handler.onAvailableCounter(countersReader, registrationId, counterId);
             }
             catch (final Exception ex)
             {
@@ -372,22 +405,7 @@ class ClientConductor implements Agent, DriverEventsListener
 
     public void onUnavailableCounter(final long registrationId, final int counterId)
     {
-        if (null != unavailableCounterHandler)
-        {
-            isInCallback = true;
-            try
-            {
-                unavailableCounterHandler.onUnavailableCounter(countersReader, registrationId, counterId);
-            }
-            catch (final Exception ex)
-            {
-                handleError(ex);
-            }
-            finally
-            {
-                isInCallback = false;
-            }
-        }
+        callUnavailableCounterHandlers(registrationId, counterId);
     }
 
     public void onClientTimeout()
@@ -660,22 +678,108 @@ class ClientConductor implements Agent, DriverEventsListener
         }
     }
 
+    void addAvailableCounterHandler(final AvailableCounterHandler handler)
+    {
+        clientLock.lock();
+        try
+        {
+            ensureActive();
+            ensureNotReentrant();
+            availableCounterHandlers.add(handler);
+        }
+        finally
+        {
+            clientLock.unlock();
+        }
+    }
+
+    boolean removeAvailableCounterHandler(final AvailableCounterHandler handler)
+    {
+        clientLock.lock();
+        try
+        {
+            ensureActive();
+            ensureNotReentrant();
+            return availableCounterHandlers.remove(handler);
+        }
+        finally
+        {
+            clientLock.unlock();
+        }
+    }
+
+    void addUnavailableCounterHandler(final UnavailableCounterHandler handler)
+    {
+        clientLock.lock();
+        try
+        {
+            ensureActive();
+            ensureNotReentrant();
+            unavailableCounterHandlers.add(handler);
+        }
+        finally
+        {
+            clientLock.unlock();
+        }
+    }
+
+    boolean removeUnavailableCounterHandler(final UnavailableCounterHandler handler)
+    {
+        clientLock.lock();
+        try
+        {
+            ensureActive();
+            ensureNotReentrant();
+            return unavailableCounterHandlers.remove(handler);
+        }
+        finally
+        {
+            clientLock.unlock();
+        }
+    }
+
+    void addCloseHandler(final Runnable handler)
+    {
+        clientLock.lock();
+        try
+        {
+            ensureActive();
+            ensureNotReentrant();
+            closeHandlers.add(handler);
+        }
+        finally
+        {
+            clientLock.unlock();
+        }
+    }
+
+    boolean removeCloserHandler(final Runnable handler)
+    {
+        clientLock.lock();
+        try
+        {
+            ensureActive();
+            ensureNotReentrant();
+            return closeHandlers.remove(handler);
+        }
+        finally
+        {
+            clientLock.unlock();
+        }
+    }
+
     void releaseCounter(final Counter counter)
     {
         clientLock.lock();
         try
         {
-            if (!counter.isClosed())
-            {
-                ensureActive();
-                ensureNotReentrant();
+            ensureActive();
+            ensureNotReentrant();
 
-                counter.internalClose();
-                final long registrationId = counter.registrationId();
-                if (null != resourceByRegIdMap.remove(registrationId))
-                {
-                    awaitResponse(driverProxy.removeCounter(registrationId));
-                }
+            final long registrationId = counter.registrationId();
+            if (null != resourceByRegIdMap.remove(registrationId))
+            {
+                awaitResponse(driverProxy.removeCounter(registrationId));
             }
         }
         finally
@@ -714,6 +818,35 @@ class ClientConductor implements Agent, DriverEventsListener
         }
     }
 
+    void closeImages(final Image[] images, final UnavailableImageHandler unavailableImageHandler)
+    {
+        for (final Image image : images)
+        {
+            image.close();
+            releaseLogBuffers(image.logBuffers(), image.correlationId());
+        }
+
+        if (null != unavailableImageHandler)
+        {
+            for (final Image image : images)
+            {
+                isInCallback = true;
+                try
+                {
+                    unavailableImageHandler.onUnavailableImage(image);
+                }
+                catch (final Throwable ex)
+                {
+                    handleError(ex);
+                }
+                finally
+                {
+                    isInCallback = false;
+                }
+            }
+        }
+    }
+
     private void ensureActive()
     {
         if (isClosed)
@@ -741,6 +874,12 @@ class ClientConductor implements Agent, DriverEventsListener
         if (null == logBuffers)
         {
             logBuffers = logBuffersFactory.map(logFileName);
+
+            if (ctx.preTouchMappedMemory())
+            {
+                logBuffers.preTouch();
+            }
+
             logBuffersByIdMap.put(registrationId, logBuffers);
         }
 
@@ -786,19 +925,12 @@ class ClientConductor implements Agent, DriverEventsListener
         driverException = null;
         final long deadlineNs = nanoClock.nanoTime() + driverTimeoutNs;
 
+        awaitingIdleStrategy.reset();
         do
         {
             if (null == driverAgentInvoker)
             {
-                try
-                {
-                    Thread.sleep(1);
-                }
-                catch (final InterruptedException ex)
-                {
-                    isTerminating = true;
-                    LangUtil.rethrowUnchecked(ex);
-                }
+                awaitingIdleStrategy.idle();
             }
             else
             {
@@ -852,7 +984,10 @@ class ClientConductor implements Agent, DriverEventsListener
             isTerminating = true;
             forceCloseResources();
 
-            throw new ConductorServiceTimeoutException("service interval exceeded (ns): " + interServiceTimeoutNs);
+            final long serviceIntervalNs = nowNs - timeOfLastServiceNs;
+
+            throw new ConductorServiceTimeoutException(
+                "service interval exceeded (ns): timeout=" + interServiceTimeoutNs + ", actual=" + serviceIntervalNs);
         }
     }
 
@@ -860,12 +995,18 @@ class ClientConductor implements Agent, DriverEventsListener
     {
         if ((timeOfLastKeepAliveNs + keepAliveIntervalNs) - nowNs < 0)
         {
-            if (epochClock.time() > (driverProxy.timeOfLastDriverKeepaliveMs() + driverTimeoutMs))
+            final long lastKeepAliveMs = driverProxy.timeOfLastDriverKeepaliveMs();
+
+            if (epochClock.time() > (lastKeepAliveMs + driverTimeoutMs))
             {
                 isTerminating = true;
                 forceCloseResources();
 
-                throw new DriverTimeoutException("MediaDriver keepalive older than (ms): " + driverTimeoutMs);
+                final long keepAliveAgeMs = epochClock.time() - lastKeepAliveMs;
+
+                throw new DriverTimeoutException(
+                    "MediaDriver keepalive age exceeded (ms): timeout= " +
+                     driverTimeoutMs + ", actual=" + keepAliveAgeMs);
             }
 
             driverProxy.sendClientKeepalive();
@@ -915,9 +1056,31 @@ class ClientConductor implements Agent, DriverEventsListener
             {
                 final Counter counter = (Counter)resource;
                 counter.internalClose();
+                callUnavailableCounterHandlers(counter.registrationId(), counter.id());
             }
         }
 
         resourceByRegIdMap.clear();
+    }
+
+    private void callUnavailableCounterHandlers(final long registrationId, final int counterId)
+    {
+        for (int i = 0, size = unavailableCounterHandlers.size(); i < size; i++)
+        {
+            final UnavailableCounterHandler handler = unavailableCounterHandlers.get(i);
+            isInCallback = true;
+            try
+            {
+                handler.onUnavailableCounter(countersReader, registrationId, counterId);
+            }
+            catch (final Exception ex)
+            {
+                handleError(ex);
+            }
+            finally
+            {
+                isInCallback = false;
+            }
+        }
     }
 }
