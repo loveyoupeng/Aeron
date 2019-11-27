@@ -132,6 +132,11 @@ public class RecordingDescriptorPoller implements ControlledFragmentHandler
 
     public Action onFragment(final DirectBuffer buffer, final int offset, final int length, final Header header)
     {
+        if (isDispatchComplete)
+        {
+            return Action.ABORT;
+        }
+
         messageHeaderDecoder.wrap(buffer, offset);
 
         final int schemaId = messageHeaderDecoder.schemaId();

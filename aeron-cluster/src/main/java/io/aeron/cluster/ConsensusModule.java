@@ -18,6 +18,7 @@ package io.aeron.cluster;
 import io.aeron.Aeron;
 import io.aeron.CommonContext;
 import io.aeron.Counter;
+import io.aeron.archive.Archive;
 import io.aeron.archive.client.AeronArchive;
 import io.aeron.cluster.client.AeronCluster;
 import io.aeron.cluster.client.ClusterClock;
@@ -43,7 +44,6 @@ import java.util.function.Supplier;
 import static io.aeron.cluster.ConsensusModule.Configuration.*;
 import static io.aeron.cluster.service.ClusteredServiceContainer.Configuration.SNAPSHOT_CHANNEL_PROP_NAME;
 import static io.aeron.cluster.service.ClusteredServiceContainer.Configuration.SNAPSHOT_STREAM_ID_PROP_NAME;
-import static io.aeron.driver.status.SystemCounterDescriptor.SYSTEM_COUNTER_TYPE_ID;
 import static java.util.concurrent.atomic.AtomicIntegerFieldUpdater.newUpdater;
 import static org.agrona.SystemUtil.*;
 import static org.agrona.concurrent.status.CountersReader.METADATA_LENGTH;
@@ -248,6 +248,16 @@ public class ConsensusModule implements AutoCloseable
     public static class Configuration
     {
         /**
+         * Property name for the limit for fragments to be consumed on each poll of ingress.
+         */
+        public static final String CLUSTER_INGRESS_FRAGMENT_LIMIT_PROP_NAME = "aeron.cluster.ingress.fragment.limit";
+
+        /**
+         * Default for the limit for fragments to be consumed on each poll of ingress.
+         */
+        public static final int CLUSTER_INGRESS_FRAGMENT_LIMIT_DEFAULT = 50;
+
+        /**
          * Type of snapshot for this component.
          */
         public static final long SNAPSHOT_TYPE_ID = 1;
@@ -329,7 +339,7 @@ public class ConsensusModule implements AutoCloseable
         /**
          * Channel for the clustered log.
          */
-        public static final String LOG_CHANNEL_DEFAULT = "aeron:udp?endpoint=localhost:9030";
+        public static final String LOG_CHANNEL_DEFAULT = "aeron:udp?endpoint=localhost:9030|group=true";
 
         /**
          * Property name for the comma separated list of member endpoints.
@@ -359,7 +369,7 @@ public class ConsensusModule implements AutoCloseable
         /**
          * Channel to be used for archiving snapshots.
          */
-        public static final String SNAPSHOT_CHANNEL_DEFAULT = CommonContext.IPC_CHANNEL;
+        public static final String SNAPSHOT_CHANNEL_DEFAULT = CommonContext.IPC_CHANNEL + "?alias=snapshot";
 
         /**
          * Stream id for the archived snapshots within a channel.
@@ -417,6 +427,21 @@ public class ConsensusModule implements AutoCloseable
          * Counter type id for the consensus module state.
          */
         public static final int CONSENSUS_MODULE_STATE_TYPE_ID = 200;
+
+        /**
+         * Counter type id for the consensus module error count.
+         */
+        public static final int CONSENSUS_MODULE_ERROR_COUNT_TYPE_ID = 212;
+
+        /**
+         * Counter type id for the number of cluster clients which have been timed out.
+         */
+        public static final int CLUSTER_CLIENT_TIMEOUT_COUNT_TYPE_ID = 213;
+
+        /**
+         * Counter type id for the number of invalid requests which the cluster has received.
+         */
+        public static final int CLUSTER_INVALID_REQUEST_COUNT_TYPE_ID = 214;
 
         /**
          * Counter type id for the cluster node role.
@@ -594,6 +619,33 @@ public class ConsensusModule implements AutoCloseable
          * traded off against memory usage. Defaults to 128 per wheel.
          */
         public static final int TICKS_PER_WHEEL_DEFAULT = 128;
+
+        /**
+         * The level at which files should be sync'ed to disk.
+         * <ul>
+         * <li>0 - normal writes.</li>
+         * <li>1 - sync file data.</li>
+         * <li>2 - sync file data + metadata.</li>
+         * </ul>
+         */
+        public static final String FILE_SYNC_LEVEL_PROP_NAME = "aeron.cluster.file.sync.level";
+
+        /**
+         * Default file sync level of normal writes.
+         */
+        public static final int FILE_SYNC_LEVEL_DEFAULT = 0;
+
+        /**
+         * The value {@link #CLUSTER_INGRESS_FRAGMENT_LIMIT_DEFAULT} or system property
+         * {@link #CLUSTER_INGRESS_FRAGMENT_LIMIT_PROP_NAME} if set.
+         *
+         * @return {@link #CLUSTER_INGRESS_FRAGMENT_LIMIT_DEFAULT} or system property
+         * {@link #CLUSTER_INGRESS_FRAGMENT_LIMIT_PROP_NAME} if set.
+         */
+        public static int ingressFragmentLimit()
+        {
+            return Integer.getInteger(CLUSTER_INGRESS_FRAGMENT_LIMIT_PROP_NAME, CLUSTER_INGRESS_FRAGMENT_LIMIT_DEFAULT);
+        }
 
         /**
          * The value {@link #CLUSTER_MEMBER_ID_DEFAULT} or system property
@@ -908,6 +960,21 @@ public class ConsensusModule implements AutoCloseable
         {
             return Integer.getInteger(TICKS_PER_WHEEL_PROP_NAME, TICKS_PER_WHEEL_DEFAULT);
         }
+
+        /**
+         * The level at which files should be sync'ed to disk.
+         * <ul>
+         * <li>0 - normal writes.</li>
+         * <li>1 - sync file data.</li>
+         * <li>2 - sync file data + metadata.</li>
+         * </ul>
+         *
+         * @return level at which files should be sync'ed to disk.
+         */
+        public static int fileSyncLevel()
+        {
+            return Integer.getInteger(FILE_SYNC_LEVEL_PROP_NAME, FILE_SYNC_LEVEL_DEFAULT);
+        }
     }
 
     /**
@@ -935,6 +1002,7 @@ public class ConsensusModule implements AutoCloseable
         private RecordingLog recordingLog;
         private ClusterMarkFile markFile;
         private MutableDirectBuffer tempBuffer;
+        private int fileSyncLevel = Archive.Configuration.fileSyncLevel();
 
         private int appVersion = SemanticVersion.compose(0, 0, 1);
         private int clusterMemberId = Configuration.clusterMemberId();
@@ -944,6 +1012,7 @@ public class ConsensusModule implements AutoCloseable
         private boolean clusterMembersIgnoreSnapshot = Configuration.clusterMembersIgnoreSnapshot();
         private String ingressChannel = AeronCluster.Configuration.ingressChannel();
         private int ingressStreamId = AeronCluster.Configuration.ingressStreamId();
+        private int ingressFragmentLimit = Configuration.ingressFragmentLimit();
         private String logChannel = Configuration.logChannel();
         private int logStreamId = Configuration.logStreamId();
         private String memberEndpoints = Configuration.memberEndpoints();
@@ -1049,7 +1118,7 @@ public class ConsensusModule implements AutoCloseable
 
             if (null == epochClock)
             {
-                epochClock = new SystemEpochClock();
+                epochClock = SystemEpochClock.INSTANCE;
             }
 
             if (null == markFile)
@@ -1087,12 +1156,12 @@ public class ConsensusModule implements AutoCloseable
                         .errorHandler(errorHandler)
                         .epochClock(epochClock)
                         .useConductorAgentInvoker(true)
-                        .awaitingIdleStrategy(new YieldingIdleStrategy())
-                        .clientLock(new NoOpLock()));
+                        .awaitingIdleStrategy(YieldingIdleStrategy.INSTANCE)
+                        .clientLock(NoOpLock.INSTANCE));
 
                 if (null == errorCounter)
                 {
-                    errorCounter = aeron.addCounter(SYSTEM_COUNTER_TYPE_ID, "Cluster errors");
+                    errorCounter = aeron.addCounter(CONSENSUS_MODULE_ERROR_COUNT_TYPE_ID, "Cluster errors");
                 }
             }
 
@@ -1137,12 +1206,14 @@ public class ConsensusModule implements AutoCloseable
 
             if (null == invalidRequestCounter)
             {
-                invalidRequestCounter = aeron.addCounter(SYSTEM_COUNTER_TYPE_ID, "Invalid cluster request count");
+                invalidRequestCounter = aeron.addCounter(
+                    CLUSTER_INVALID_REQUEST_COUNT_TYPE_ID, "Invalid cluster request count");
             }
 
             if (null == timedOutClientCounter)
             {
-                timedOutClientCounter = aeron.addCounter(SYSTEM_COUNTER_TYPE_ID, "Timed out cluster client count");
+                timedOutClientCounter = aeron.addCounter(
+                    CLUSTER_CLIENT_TIMEOUT_COUNT_TYPE_ID, "Timed out cluster client count");
             }
 
             if (null == clusterNodeRole)
@@ -1172,7 +1243,7 @@ public class ConsensusModule implements AutoCloseable
                 .aeron(aeron)
                 .errorHandler(countedErrorHandler)
                 .ownsAeronClient(false)
-                .lock(new NoOpLock());
+                .lock(NoOpLock.INSTANCE);
 
             if (null == shutdownSignalBarrier)
             {
@@ -1347,6 +1418,40 @@ public class ConsensusModule implements AutoCloseable
         public int appVersion()
         {
             return appVersion;
+        }
+
+        /**
+         * Get level at which files should be sync'ed to disk.
+         * <ul>
+         * <li>0 - normal writes.</li>
+         * <li>1 - sync file data.</li>
+         * <li>2 - sync file data + metadata.</li>
+         * </ul>
+         *
+         * @return the level to be applied for file write.
+         * @see Configuration#FILE_SYNC_LEVEL_PROP_NAME
+         */
+        int fileSyncLevel()
+        {
+            return fileSyncLevel;
+        }
+
+        /**
+         * Set level at which files should be sync'ed to disk.
+         * <ul>
+         * <li>0 - normal writes.</li>
+         * <li>1 - sync file data.</li>
+         * <li>2 - sync file data + metadata.</li>
+         * </ul>
+         *
+         * @param syncLevel to be applied for file writes.
+         * @return this for a fluent API.
+         * @see Configuration#FILE_SYNC_LEVEL_PROP_NAME
+         */
+        public Context fileSyncLevel(final int syncLevel)
+        {
+            this.fileSyncLevel = syncLevel;
+            return this;
         }
 
         /**
@@ -1533,6 +1638,30 @@ public class ConsensusModule implements AutoCloseable
         public int ingressStreamId()
         {
             return ingressStreamId;
+        }
+
+        /**
+         * Set limit for fragments to be consumed on each poll of ingress.
+         *
+         * @param ingressFragmentLimit for the ingress channel.
+         * @return this for a fluent API
+         * @see Configuration#CLUSTER_INGRESS_FRAGMENT_LIMIT_PROP_NAME
+         */
+        public Context ingressFragmentLimit(final int ingressFragmentLimit)
+        {
+            this.ingressFragmentLimit = ingressFragmentLimit;
+            return this;
+        }
+
+        /**
+         * The limit for fragments to be consumed on each poll of ingress.
+         *
+         * @return the limit for fragments to be consumed on each poll of ingress.
+         * @see Configuration#CLUSTER_INGRESS_FRAGMENT_LIMIT_PROP_NAME
+         */
+        public int ingressFragmentLimit()
+        {
+            return ingressFragmentLimit;
         }
 
         /**
@@ -2635,6 +2764,7 @@ public class ConsensusModule implements AutoCloseable
          *
          * @param errorBufferLength in bytes to use.
          * @return this for a fluent API.
+         * @see Configuration#ERROR_BUFFER_LENGTH_PROP_NAME
          */
         public Context errorBufferLength(final int errorBufferLength)
         {
@@ -2646,6 +2776,7 @@ public class ConsensusModule implements AutoCloseable
          * The error buffer length in bytes.
          *
          * @return error buffer length in bytes.
+         * @see Configuration#ERROR_BUFFER_LENGTH_PROP_NAME
          */
         public int errorBufferLength()
         {
@@ -2716,6 +2847,10 @@ public class ConsensusModule implements AutoCloseable
         {
             CloseHelper.close(recordingLog);
             CloseHelper.close(markFile);
+            if (errorHandler instanceof AutoCloseable)
+            {
+                CloseHelper.close((AutoCloseable)errorHandler);
+            }
 
             if (ownsAeronClient)
             {

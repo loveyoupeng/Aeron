@@ -13,29 +13,27 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.aeron.driver.exceptions;
 
-import io.aeron.ErrorCode;
-import io.aeron.exceptions.AeronException;
+#include <gtest/gtest.h>
 
-public class ControlProtocolException extends AeronException
+extern "C"
 {
-    private final ErrorCode code;
+#include "util/aeron_bitutil.h"
+}
 
-    public ControlProtocolException(final ErrorCode code, final String msg)
+class BitutilTest : public testing::Test
+{
+public:
+    BitutilTest()
     {
-        super(msg);
-        this.code = code;
     }
+};
 
-    public ControlProtocolException(final ErrorCode code, final Exception rootCause)
+TEST_F(BitutilTest, shouldCountTrailingZeros64Bit)
+{
+    for (uint64_t i = 0; i < 64; i++)
     {
-        super(rootCause);
-        this.code = code;
-    }
-
-    public ErrorCode errorCode()
-    {
-        return code;
+        uint64_t value = UINT64_C(1) << i;
+        EXPECT_EQ(aeron_number_of_trailing_zeroes_u64(value), static_cast<int>(i));
     }
 }

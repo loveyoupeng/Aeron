@@ -15,16 +15,17 @@
  */
 package io.aeron.driver;
 
+import io.aeron.ErrorCode;
 import io.aeron.command.*;
-import io.aeron.driver.exceptions.ControlProtocolException;
+import io.aeron.exceptions.ControlProtocolException;
 import org.agrona.ErrorHandler;
 import org.agrona.MutableDirectBuffer;
 import org.agrona.concurrent.MessageHandler;
 import org.agrona.concurrent.ringbuffer.RingBuffer;
 import org.agrona.concurrent.status.AtomicCounter;
 
+import static io.aeron.ChannelUri.SPY_QUALIFIER;
 import static io.aeron.CommonContext.IPC_CHANNEL;
-import static io.aeron.CommonContext.SPY_PREFIX;
 import static io.aeron.ErrorCode.GENERIC_ERROR;
 import static io.aeron.command.ControlProtocolEvents.*;
 
@@ -82,6 +83,8 @@ class ClientCommandAdapter implements MessageHandler
                 {
                     publicationMsgFlyweight.wrap(buffer, index);
 
+                    publicationMsgFlyweight.validateLength(msgTypeId, length);
+
                     correlationId = publicationMsgFlyweight.correlationId();
                     addPublication(correlationId, false);
                     break;
@@ -90,6 +93,8 @@ class ClientCommandAdapter implements MessageHandler
                 case REMOVE_PUBLICATION:
                 {
                     removeMsgFlyweight.wrap(buffer, index);
+
+                    removeMsgFlyweight.validateLength(msgTypeId, length);
 
                     correlationId = removeMsgFlyweight.correlationId();
                     conductor.onRemovePublication(removeMsgFlyweight.registrationId(), correlationId);
@@ -100,6 +105,8 @@ class ClientCommandAdapter implements MessageHandler
                 {
                     publicationMsgFlyweight.wrap(buffer, index);
 
+                    publicationMsgFlyweight.validateLength(msgTypeId, length);
+
                     correlationId = publicationMsgFlyweight.correlationId();
                     addPublication(correlationId, true);
                     break;
@@ -108,6 +115,8 @@ class ClientCommandAdapter implements MessageHandler
                 case ADD_SUBSCRIPTION:
                 {
                     subscriptionMsgFlyweight.wrap(buffer, index);
+
+                    subscriptionMsgFlyweight.validateLength(msgTypeId, length);
 
                     correlationId = subscriptionMsgFlyweight.correlationId();
                     final int streamId = subscriptionMsgFlyweight.streamId();
@@ -118,7 +127,7 @@ class ClientCommandAdapter implements MessageHandler
                     {
                         conductor.onAddIpcSubscription(channel, streamId, correlationId, clientId);
                     }
-                    else if (channel.startsWith(SPY_PREFIX))
+                    else if (channel.startsWith(SPY_QUALIFIER))
                     {
                         conductor.onAddSpySubscription(channel, streamId, correlationId, clientId);
                     }
@@ -133,6 +142,8 @@ class ClientCommandAdapter implements MessageHandler
                 {
                     removeMsgFlyweight.wrap(buffer, index);
 
+                    removeMsgFlyweight.validateLength(msgTypeId, length);
+
                     correlationId = removeMsgFlyweight.correlationId();
                     conductor.onRemoveSubscription(removeMsgFlyweight.registrationId(), correlationId);
                     break;
@@ -142,11 +153,13 @@ class ClientCommandAdapter implements MessageHandler
                 {
                     destinationMsgFlyweight.wrap(buffer, index);
 
+                    destinationMsgFlyweight.validateLength(msgTypeId, length);
+
                     correlationId = destinationMsgFlyweight.correlationId();
                     final long channelRegistrationId = destinationMsgFlyweight.registrationCorrelationId();
                     final String channel = destinationMsgFlyweight.channel();
 
-                    conductor.onAddDestination(channelRegistrationId, channel, correlationId);
+                    conductor.onAddSendDestination(channelRegistrationId, channel, correlationId);
                     break;
                 }
 
@@ -154,17 +167,21 @@ class ClientCommandAdapter implements MessageHandler
                 {
                     destinationMsgFlyweight.wrap(buffer, index);
 
+                    destinationMsgFlyweight.validateLength(msgTypeId, length);
+
                     correlationId = destinationMsgFlyweight.correlationId();
                     final long channelRegistrationId = destinationMsgFlyweight.registrationCorrelationId();
                     final String channel = destinationMsgFlyweight.channel();
 
-                    conductor.onRemoveDestination(channelRegistrationId, channel, correlationId);
+                    conductor.onRemoveSendDestination(channelRegistrationId, channel, correlationId);
                     break;
                 }
 
                 case CLIENT_KEEPALIVE:
                 {
                     correlatedMsgFlyweight.wrap(buffer, index);
+
+                    correlatedMsgFlyweight.validateLength(msgTypeId, length);
 
                     conductor.onClientKeepalive(correlatedMsgFlyweight.clientId());
                     break;
@@ -173,6 +190,8 @@ class ClientCommandAdapter implements MessageHandler
                 case ADD_COUNTER:
                 {
                     counterMsgFlyweight.wrap(buffer, index);
+
+                    counterMsgFlyweight.validateLength(msgTypeId, length);
 
                     correlationId = counterMsgFlyweight.correlationId();
                     conductor.onAddCounter(
@@ -192,6 +211,8 @@ class ClientCommandAdapter implements MessageHandler
                 {
                     removeMsgFlyweight.wrap(buffer, index);
 
+                    removeMsgFlyweight.validateLength(msgTypeId, length);
+
                     correlationId = removeMsgFlyweight.correlationId();
                     conductor.onRemoveCounter(removeMsgFlyweight.registrationId(), correlationId);
                     break;
@@ -201,6 +222,8 @@ class ClientCommandAdapter implements MessageHandler
                 {
                     correlatedMsgFlyweight.wrap(buffer, index);
 
+                    correlatedMsgFlyweight.validateLength(msgTypeId, length);
+
                     conductor.onClientClose(correlatedMsgFlyweight.clientId());
                     break;
                 }
@@ -208,6 +231,8 @@ class ClientCommandAdapter implements MessageHandler
                 case ADD_RCV_DESTINATION:
                 {
                     destinationMsgFlyweight.wrap(buffer, index);
+
+                    destinationMsgFlyweight.validateLength(msgTypeId, length);
 
                     correlationId = destinationMsgFlyweight.correlationId();
                     final long channelRegistrationId = destinationMsgFlyweight.registrationCorrelationId();
@@ -221,6 +246,8 @@ class ClientCommandAdapter implements MessageHandler
                 {
                     destinationMsgFlyweight.wrap(buffer, index);
 
+                    destinationMsgFlyweight.validateLength(msgTypeId, length);
+
                     correlationId = destinationMsgFlyweight.correlationId();
                     final long channelRegistrationId = destinationMsgFlyweight.registrationCorrelationId();
                     final String channel = destinationMsgFlyweight.channel();
@@ -233,11 +260,23 @@ class ClientCommandAdapter implements MessageHandler
                 {
                     terminateDriverFlyweight.wrap(buffer, index);
 
+                    terminateDriverFlyweight.validateLength(msgTypeId, length);
+
                     conductor.onTerminateDriver(
                         buffer,
                         terminateDriverFlyweight.tokenBufferOffset(),
                         terminateDriverFlyweight.tokenBufferLength());
                     break;
+                }
+
+                default:
+                {
+                    final ControlProtocolException ex = new ControlProtocolException(
+                        ErrorCode.UNKNOWN_COMMAND_TYPE_ID,
+                        "command type id " + msgTypeId + " unknown. correlationId=" + correlationId);
+
+                    clientProxy.onError(correlationId, ex.errorCode(), ex.getMessage());
+                    recordError(ex);
                 }
             }
         }
@@ -272,7 +311,11 @@ class ClientCommandAdapter implements MessageHandler
 
     private void recordError(final Exception ex)
     {
-        errors.increment();
+        if (!errors.isClosed())
+        {
+            errors.increment();
+        }
+
         errorHandler.onError(ex);
     }
 }

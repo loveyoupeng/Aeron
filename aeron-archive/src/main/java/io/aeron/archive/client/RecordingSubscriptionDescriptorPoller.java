@@ -25,6 +25,10 @@ import org.agrona.ErrorHandler;
 
 /**
  * Encapsulate the polling, decoding, dispatching of recording descriptors from an archive.
+ *
+ * @see RecordingSubscriptionDescriptorConsumer
+ * @see ArchiveProxy#listRecordingSubscriptions(int, int, String, int, boolean, long, long)
+ * @see AeronArchive#listRecordingSubscriptions(int, int, String, int, boolean, RecordingSubscriptionDescriptorConsumer)
  */
 public class RecordingSubscriptionDescriptorPoller implements ControlledFragmentHandler
 {
@@ -75,7 +79,7 @@ public class RecordingSubscriptionDescriptorPoller implements ControlledFragment
     }
 
     /**
-     * Poll for recording subscriptions.
+     * Poll for recording recording subscriptions and delegate to the {@link RecordingSubscriptionDescriptorConsumer}.
      *
      * @return the number of fragments read during the operation. Zero if no events are available.
      */
@@ -134,6 +138,11 @@ public class RecordingSubscriptionDescriptorPoller implements ControlledFragment
 
     public Action onFragment(final DirectBuffer buffer, final int offset, final int length, final Header header)
     {
+        if (isDispatchComplete)
+        {
+            return Action.ABORT;
+        }
+
         messageHeaderDecoder.wrap(buffer, offset);
 
         final int schemaId = messageHeaderDecoder.schemaId();

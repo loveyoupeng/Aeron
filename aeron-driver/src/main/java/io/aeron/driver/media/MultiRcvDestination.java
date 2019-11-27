@@ -25,7 +25,7 @@ import java.nio.ByteBuffer;
 
 import static io.aeron.driver.media.UdpChannelTransport.sendError;
 
-class MultiRcvDestination implements AutoCloseable
+final class MultiRcvDestination
 {
     private static final ReceiveDestinationUdpTransport[] EMPTY_TRANSPORTS = new ReceiveDestinationUdpTransport[0];
 
@@ -40,15 +40,19 @@ class MultiRcvDestination implements AutoCloseable
         this.destinationEndpointTimeoutNs = timeoutNs;
     }
 
-    public void close()
+    void close(final DataTransportPoller poller)
     {
         for (final ReceiveDestinationUdpTransport transport : transports)
         {
             CloseHelper.close(transport);
+            if (null != poller)
+            {
+                poller.selectNowWithoutProcessing();
+            }
         }
     }
 
-    public int addDestination(final ReceiveDestinationUdpTransport transport)
+    int addDestination(final ReceiveDestinationUdpTransport transport)
     {
         int index = transports.length;
 
@@ -68,23 +72,23 @@ class MultiRcvDestination implements AutoCloseable
         return index;
     }
 
-    public void removeDestination(final int transportIndex)
+    void removeDestination(final int transportIndex)
     {
         transports[transportIndex] = null;
         numDestinations--;
     }
 
-    public boolean hasDestination(final int transportIndex)
+    boolean hasDestination(final int transportIndex)
     {
         return numDestinations > transportIndex && null != transports[transportIndex];
     }
 
-    public ReceiveDestinationUdpTransport transport(final int transportIndex)
+    ReceiveDestinationUdpTransport transport(final int transportIndex)
     {
         return transports[transportIndex];
     }
 
-    public int transport(final UdpChannel udpChannel)
+    int transport(final UdpChannel udpChannel)
     {
         final ReceiveDestinationUdpTransport[] transports = this.transports;
         int index = ArrayUtil.UNKNOWN_INDEX;
@@ -103,10 +107,10 @@ class MultiRcvDestination implements AutoCloseable
         return index;
     }
 
-    public int sendToAll(
+    int sendToAll(
         final ImageConnection[] imageConnections,
         final ByteBuffer buffer,
-        final int position,
+        final int bufferPosition,
         final int bytesToSend)
     {
         final ReceiveDestinationUdpTransport[] transports = this.transports;
@@ -120,9 +124,9 @@ class MultiRcvDestination implements AutoCloseable
             if (null != connection)
             {
                 final UdpChannelTransport transport = transports[i];
-                if (null != transport && ((connection.timeOfLastFrameNs + destinationEndpointTimeoutNs) - nowNs > 0))
+                if (null != transport && ((connection.timeOfLastActivityNs + destinationEndpointTimeoutNs) - nowNs > 0))
                 {
-                    buffer.position(position);
+                    buffer.position(bufferPosition);
                     minBytesSent = Math.min(minBytesSent, sendTo(transport, buffer, connection.controlAddress));
                 }
             }
@@ -131,7 +135,7 @@ class MultiRcvDestination implements AutoCloseable
         return minBytesSent;
     }
 
-    public static int sendTo(
+    static int sendTo(
         final UdpChannelTransport transport, final ByteBuffer buffer, final InetSocketAddress remoteAddress)
     {
         final int remaining = buffer.remaining();

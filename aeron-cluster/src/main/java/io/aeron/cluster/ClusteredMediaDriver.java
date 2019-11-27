@@ -19,6 +19,7 @@ import io.aeron.driver.MediaDriver;
 import io.aeron.archive.Archive;
 import io.aeron.driver.status.SystemCounterDescriptor;
 import org.agrona.CloseHelper;
+import org.agrona.concurrent.status.AtomicCounter;
 
 import static org.agrona.SystemUtil.loadPropertiesFiles;
 
@@ -79,17 +80,33 @@ public class ClusteredMediaDriver implements AutoCloseable
         final Archive.Context archiveCtx,
         final ConsensusModule.Context consensusModuleCtx)
     {
-        final MediaDriver driver = MediaDriver.launch(driverCtx
-            .spiesSimulateConnection(true));
+        MediaDriver driver = null;
+        Archive archive = null;
+        ConsensusModule consensusModule = null;
 
-        final Archive archive = Archive.launch(archiveCtx
-            .mediaDriverAgentInvoker(driver.sharedAgentInvoker())
-            .errorHandler(driverCtx.errorHandler())
-            .errorCounter(driverCtx.systemCounters().get(SystemCounterDescriptor.ERRORS)));
+        try
+        {
+            driver = MediaDriver.launch(driverCtx
+                .spiesSimulateConnection(true));
 
-        final ConsensusModule consensusModule = ConsensusModule.launch(consensusModuleCtx);
+            final int errorCounterId = SystemCounterDescriptor.ERRORS.id();
+            final AtomicCounter errorCounter = null == archiveCtx.errorCounter() ?
+                new AtomicCounter(driverCtx.countersValuesBuffer(), errorCounterId) : archiveCtx.errorCounter();
 
-        return new ClusteredMediaDriver(driver, archive, consensusModule);
+            archive = Archive.launch(archiveCtx
+                .mediaDriverAgentInvoker(driver.sharedAgentInvoker())
+                .errorHandler(driverCtx.errorHandler())
+                .errorCounter(errorCounter));
+
+            consensusModule = ConsensusModule.launch(consensusModuleCtx);
+
+            return new ClusteredMediaDriver(driver, archive, consensusModule);
+        }
+        catch (final Exception ex)
+        {
+            CloseHelper.quietCloseAll(consensusModule, archive, driver);
+            throw ex;
+        }
     }
 
     /**

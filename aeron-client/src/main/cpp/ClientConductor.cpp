@@ -16,6 +16,8 @@
 
 #include "ClientConductor.h"
 
+#include <cassert>
+
 namespace aeron {
 
 template<typename T, typename... U>
@@ -29,14 +31,6 @@ static size_t getAddress(const std::function<T(U...)>& f)
 
 ClientConductor::~ClientConductor()
 {
-    std::vector<std::shared_ptr<Subscription>> subscriptions;
-
-    for (auto& kv : m_subscriptionByRegistrationId)
-    {
-        subscriptions.push_back(kv.second.m_subscriptionCache);
-        kv.second.m_subscriptionCache.reset();
-    }
-
     std::for_each(m_lingeringImageLists.begin(), m_lingeringImageLists.end(),
         [](ImageListLingerDefn &entry)
         {
@@ -45,6 +39,29 @@ ClientConductor::~ClientConductor()
         });
 
     m_driverProxy.clientClose();
+}
+
+void ClientConductor::onStart()
+{
+}
+
+int ClientConductor::doWork()
+{
+    int workCount = 0;
+
+    workCount += m_driverListenerAdapter.receiveMessages();
+    workCount += onHeartbeatCheckTimeouts();
+
+    return workCount;
+}
+
+void ClientConductor::onClose()
+{
+    if (!m_isClosed)
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_adminLock);
+        closeAllResources(m_epochClock());
+    }
 }
 
 std::int64_t ClientConductor::addPublication(const std::string &channel, std::int32_t streamId)
@@ -110,7 +127,14 @@ std::shared_ptr<Publication> ClientConductor::findPublication(std::int64_t regis
             }
 
             case RegistrationStatus::ERRORED_MEDIA_DRIVER:
-                throw RegistrationException(state.m_errorCode, state.m_errorMessage, SOURCEINFO);
+            {
+                const std::int32_t errorCode = state.m_errorCode;
+                const std::string errorMessage = state.m_errorMessage;
+
+                m_publicationByRegistrationId.erase(it);
+
+                throw RegistrationException(errorCode, errorMessage, SOURCEINFO);
+            }
         }
     }
 
@@ -181,7 +205,6 @@ std::shared_ptr<ExclusivePublication> ClientConductor::findExclusivePublication(
                     *this,
                     state.m_channel,
                     state.m_registrationId,
-                    state.m_originalRegistrationId,
                     state.m_streamId,
                     state.m_sessionId,
                     publicationLimit,
@@ -193,7 +216,14 @@ std::shared_ptr<ExclusivePublication> ClientConductor::findExclusivePublication(
             }
 
             case RegistrationStatus::ERRORED_MEDIA_DRIVER:
-                throw RegistrationException(state.m_errorCode, state.m_errorMessage, SOURCEINFO);
+            {
+                const std::int32_t errorCode = state.m_errorCode;
+                const std::string errorMessage = state.m_errorMessage;
+
+                m_exclusivePublicationByRegistrationId.erase(it);
+
+                throw RegistrationException(errorCode, errorMessage, SOURCEINFO);
+            }
         }
     }
 
@@ -264,7 +294,12 @@ std::shared_ptr<Subscription> ClientConductor::findSubscription(std::int64_t reg
     }
     else if (!sub && RegistrationStatus::ERRORED_MEDIA_DRIVER == state.m_status)
     {
-        throw RegistrationException(state.m_errorCode, state.m_errorMessage, SOURCEINFO);
+        const std::int32_t errorCode = state.m_errorCode;
+        const std::string errorMessage = state.m_errorMessage;
+
+        m_subscriptionByRegistrationId.erase(it);
+
+        throw RegistrationException(errorCode, errorMessage, SOURCEINFO);
     }
 
     return sub;
@@ -354,7 +389,12 @@ std::shared_ptr<Counter> ClientConductor::findCounter(std::int64_t registrationI
     }
     else if (!counter && RegistrationStatus::ERRORED_MEDIA_DRIVER == state.m_status)
     {
-        throw RegistrationException(state.m_errorCode, state.m_errorMessage, SOURCEINFO);
+        const std::int32_t errorCode = state.m_errorCode;
+        const std::string errorMessage = state.m_errorMessage;
+
+        m_counterByRegistrationId.erase(it);
+
+        throw RegistrationException(errorCode, errorMessage, SOURCEINFO);
     }
 
     return counter;
@@ -374,44 +414,119 @@ void ClientConductor::releaseCounter(std::int64_t registrationId)
     }
 }
 
-void ClientConductor::addDestination(std::int64_t publicationRegistrationId, const std::string &endpointChannel)
+std::int64_t ClientConductor::addDestination(
+    std::int64_t publicationRegistrationId, const std::string &endpointChannel)
 {
     std::lock_guard<std::recursive_mutex> lock(m_adminLock);
     verifyDriverIsActive();
     ensureNotReentrant();
     ensureOpen();
 
-    m_driverProxy.addDestination(publicationRegistrationId, endpointChannel);
+    std::int64_t correlationId = m_driverProxy.addDestination(publicationRegistrationId, endpointChannel);
+
+    m_destinationStateByCorrelationId.insert(std::pair<std::int64_t, DestinationStateDefn>(
+        correlationId,
+        DestinationStateDefn(correlationId, publicationRegistrationId, m_epochClock())));
+
+    return correlationId;
 }
 
-void ClientConductor::removeDestination(std::int64_t publicationRegistrationId, const std::string &endpointChannel)
+std::int64_t ClientConductor::removeDestination(
+    std::int64_t publicationRegistrationId, const std::string &endpointChannel)
 {
     std::lock_guard<std::recursive_mutex> lock(m_adminLock);
     verifyDriverIsActive();
     ensureNotReentrant();
     ensureOpen();
 
-    m_driverProxy.removeDestination(publicationRegistrationId, endpointChannel);
+    std::int64_t correlationId = m_driverProxy.removeDestination(publicationRegistrationId, endpointChannel);
+
+    m_destinationStateByCorrelationId.insert(std::pair<std::int64_t, DestinationStateDefn>(
+        correlationId,
+        DestinationStateDefn(correlationId, publicationRegistrationId, m_epochClock())));
+
+    return correlationId;
 }
 
-void ClientConductor::addRcvDestination(std::int64_t subscriptionRegistrationId, const std::string &endpointChannel)
+std::int64_t ClientConductor::addRcvDestination(
+    std::int64_t subscriptionRegistrationId, const std::string &endpointChannel)
 {
     std::lock_guard<std::recursive_mutex> lock(m_adminLock);
     verifyDriverIsActive();
     ensureNotReentrant();
     ensureOpen();
 
-    m_driverProxy.addRcvDestination(subscriptionRegistrationId, endpointChannel);
+    std::int64_t correlationId = m_driverProxy.addRcvDestination(subscriptionRegistrationId, endpointChannel);
+
+    m_destinationStateByCorrelationId.insert(std::pair<std::int64_t, DestinationStateDefn>(
+        correlationId,
+        DestinationStateDefn(correlationId, subscriptionRegistrationId, m_epochClock())));
+
+    return correlationId;
 }
 
-void ClientConductor::removeRcvDestination(std::int64_t subscriptionRegistrationId, const std::string &endpointChannel)
+std::int64_t ClientConductor::removeRcvDestination(
+    std::int64_t subscriptionRegistrationId, const std::string &endpointChannel)
 {
     std::lock_guard<std::recursive_mutex> lock(m_adminLock);
     verifyDriverIsActive();
     ensureNotReentrant();
     ensureOpen();
 
-    m_driverProxy.removeRcvDestination(subscriptionRegistrationId, endpointChannel);
+    std::int64_t correlationId = m_driverProxy.removeRcvDestination(subscriptionRegistrationId, endpointChannel);
+
+    m_destinationStateByCorrelationId.insert(std::pair<std::int64_t, DestinationStateDefn>(
+        correlationId,
+        DestinationStateDefn(correlationId, subscriptionRegistrationId, m_epochClock())));
+
+    return correlationId;
+}
+
+bool ClientConductor::findDestinationResponse(std::int64_t correlationId)
+{
+    std::lock_guard<std::recursive_mutex> lock(m_adminLock);
+    ensureNotReentrant();
+    ensureOpen();
+
+    auto it = m_destinationStateByCorrelationId.find(correlationId);
+    if (it == m_destinationStateByCorrelationId.end())
+    {
+        throw IllegalArgumentException("correlationId unknown", SOURCEINFO);
+    }
+
+    DestinationStateDefn &state = it->second;
+    bool result = false;
+
+    switch (state.m_status)
+    {
+        case RegistrationStatus::AWAITING_MEDIA_DRIVER:
+            if (m_epochClock() > (state.m_timeOfRegistrationMs + m_driverTimeoutMs))
+            {
+                m_destinationStateByCorrelationId.erase(it);
+                throw DriverTimeoutException(
+                    "no response from driver in " + std::to_string(m_driverTimeoutMs) + " ms", SOURCEINFO);
+            }
+            break;
+
+        case RegistrationStatus::REGISTERED_MEDIA_DRIVER:
+        {
+            m_destinationStateByCorrelationId.erase(it);
+            result = true;
+            break;
+        }
+
+        case RegistrationStatus::ERRORED_MEDIA_DRIVER:
+        {
+            const std::int32_t errorCode = state.m_errorCode;
+            const std::string errorMessage = state.m_errorMessage;
+
+            m_destinationStateByCorrelationId.erase(it);
+
+            throw RegistrationException(errorCode, errorMessage, SOURCEINFO);
+        }
+    }
+
+    return result;
 }
 
 void ClientConductor::addAvailableCounterHandler(const on_available_counter_t& handler)
@@ -509,7 +624,7 @@ void ClientConductor::onNewPublication(
         state.m_sessionId = sessionId;
         state.m_publicationLimitCounterId = publicationLimitCounterId;
         state.m_channelStatusId = channelStatusIndicatorId;
-        state.m_buffers = getLogBuffers(originalRegistrationId, logFileName);
+        state.m_buffers = getLogBuffers(originalRegistrationId, logFileName, state.m_channel);
         state.m_originalRegistrationId = originalRegistrationId;
 
         CallbackGuard callbackGuard(m_isInCallback);
@@ -526,6 +641,8 @@ void ClientConductor::onNewExclusivePublication(
     std::int32_t channelStatusIndicatorId,
     const std::string &logFileName)
 {
+    assert(registrationId == originalRegistrationId);
+
     std::lock_guard<std::recursive_mutex> lock(m_adminLock);
 
     auto it = m_exclusivePublicationByRegistrationId.find(registrationId);
@@ -537,8 +654,7 @@ void ClientConductor::onNewExclusivePublication(
         state.m_sessionId = sessionId;
         state.m_publicationLimitCounterId = publicationLimitCounterId;
         state.m_channelStatusId = channelStatusIndicatorId;
-        state.m_buffers = getLogBuffers(originalRegistrationId, logFileName);
-        state.m_originalRegistrationId = originalRegistrationId;
+        state.m_buffers = getLogBuffers(originalRegistrationId, logFileName, state.m_channel);
 
         CallbackGuard callbackGuard(m_isInCallback);
         m_onNewExclusivePublicationHandler(state.m_channel, streamId, sessionId, registrationId);
@@ -599,6 +715,91 @@ void ClientConductor::onUnavailableCounter(std::int64_t registrationId, std::int
 
 void ClientConductor::onOperationSuccess(std::int64_t correlationId)
 {
+    std::lock_guard<std::recursive_mutex> lock(m_adminLock);
+
+    auto it = m_destinationStateByCorrelationId.find(correlationId);
+    if (it != m_destinationStateByCorrelationId.end() && it->second.m_status == RegistrationStatus::AWAITING_MEDIA_DRIVER)
+    {
+        DestinationStateDefn &state = it->second;
+
+        state.m_status = RegistrationStatus::REGISTERED_MEDIA_DRIVER;
+    }
+}
+
+void ClientConductor::onChannelEndpointErrorResponse(
+        std::int64_t offendingCommandCorrelationId, const std::string &errorMessage)
+{
+    std::lock_guard<std::recursive_mutex> lock(m_adminLock);
+
+    for (auto it = m_subscriptionByRegistrationId.begin(); it != m_subscriptionByRegistrationId.end();)
+    {
+        std::shared_ptr<Subscription> subscription = it->second.m_subscription.lock();
+
+        if (subscription && subscription->channelStatusId() == offendingCommandCorrelationId)
+        {
+            ChannelEndpointException exception(offendingCommandCorrelationId, errorMessage, SOURCEINFO);
+            m_errorHandler(exception);
+
+            std::pair<Image::array_t, std::size_t> imageArrayPair = subscription->closeAndRemoveImages();
+
+            auto imageArray = imageArrayPair.first;
+            lingerAllResources(m_epochClock(), imageArray);
+
+            const std::size_t length = imageArrayPair.second;
+            for (std::size_t i = 0; i < length; i++)
+            {
+                auto image = *(imageArray[i]);
+                image.close();
+
+                CallbackGuard callbackGuard(m_isInCallback);
+                it->second.m_onUnavailableImageHandler(image);
+            }
+
+            it = m_subscriptionByRegistrationId.erase(it);
+        }
+        else
+        {
+            ++it;
+        }
+    }
+
+    for (auto it = m_publicationByRegistrationId.begin(); it != m_publicationByRegistrationId.end();)
+    {
+        std::shared_ptr<Publication> publication = it->second.m_publication.lock();
+
+        if (publication && publication->channelStatusId() == offendingCommandCorrelationId)
+        {
+            ChannelEndpointException exception(offendingCommandCorrelationId, errorMessage, SOURCEINFO);
+            m_errorHandler(exception);
+
+            publication->close();
+
+            it = m_publicationByRegistrationId.erase(it);
+        }
+        else
+        {
+            ++it;
+        }
+    }
+
+    for (auto it = m_exclusivePublicationByRegistrationId.begin(); it != m_exclusivePublicationByRegistrationId.end();)
+    {
+        std::shared_ptr<ExclusivePublication> publication = it->second.m_publication.lock();
+
+        if (publication && publication->channelStatusId() == offendingCommandCorrelationId)
+        {
+            ChannelEndpointException exception(offendingCommandCorrelationId, errorMessage, SOURCEINFO);
+            m_errorHandler(exception);
+
+            publication->close();
+
+            it = m_exclusivePublicationByRegistrationId.erase(it);
+        }
+        else
+        {
+            ++it;
+        }
+    }
 }
 
 void ClientConductor::onErrorResponse(
@@ -641,6 +842,15 @@ void ClientConductor::onErrorResponse(
         counterIt->second.m_errorMessage = errorMessage;
         return;
     }
+
+    auto destinationIt = m_destinationStateByCorrelationId.find(offendingCommandCorrelationId);
+    if (destinationIt != m_destinationStateByCorrelationId.end())
+    {
+        destinationIt->second.m_status = RegistrationStatus::ERRORED_MEDIA_DRIVER;
+        destinationIt->second.m_errorCode = errorCode;
+        destinationIt->second.m_errorMessage = errorMessage;
+        return;
+    }
 }
 
 void ClientConductor::onAvailableImage(
@@ -669,7 +879,7 @@ void ClientConductor::onAvailableImage(
                 subscriptionRegistrationId,
                 sourceIdentity,
                 subscriberPosition,
-                getLogBuffers(correlationId, logFilename),
+                getLogBuffers(correlationId, logFilename, entry.m_channel),
                 m_errorHandler);
 
             CallbackGuard callbackGuard(m_isInCallback);
@@ -698,9 +908,9 @@ void ClientConductor::onUnavailableImage(std::int64_t correlationId, std::int64_
 
         if (nullptr != subscription)
         {
-            std::pair<Image::array_t, int> result = subscription->removeImage(correlationId);
+            std::pair<Image::array_t, std::size_t> result = subscription->removeImage(correlationId);
             Image::array_t oldImageArray = result.first;
-            const int index = result.second;
+            const std::size_t index = result.second;
 
             if (nullptr != oldImageArray)
             {
@@ -752,6 +962,8 @@ void ClientConductor::closeAllResources(long long nowMs)
     }
     m_exclusivePublicationByRegistrationId.clear();
 
+    std::vector<std::shared_ptr<Subscription>> subscriptionsToHoldUntilCleared;
+
     for (auto& kv : m_subscriptionByRegistrationId)
     {
         std::shared_ptr<Subscription> sub = kv.second.m_subscription.lock();
@@ -772,9 +984,17 @@ void ClientConductor::closeAllResources(long long nowMs)
                 CallbackGuard callbackGuard(m_isInCallback);
                 kv.second.m_onUnavailableImageHandler(image);
             }
+
+            if (kv.second.m_subscriptionCache)
+            {
+                subscriptionsToHoldUntilCleared.push_back(kv.second.m_subscriptionCache);
+                kv.second.m_subscriptionCache.reset();
+            }
         }
     }
     m_subscriptionByRegistrationId.clear();
+
+    std::vector<std::shared_ptr<Counter>> countersToHoldUntilCleared;
 
     for (auto& kv : m_counterByRegistrationId)
     {
@@ -790,6 +1010,12 @@ void ClientConductor::closeAllResources(long long nowMs)
             {
                 CallbackGuard callbackGuard(m_isInCallback);
                 handler(m_countersReader, registrationId, counterId);
+            }
+
+            if (kv.second.m_counterCache)
+            {
+                countersToHoldUntilCleared.push_back(kv.second.m_counterCache);
+                kv.second.m_counterCache.reset();
             }
         }
     }
@@ -812,11 +1038,11 @@ void ClientConductor::onCheckManagedResources(long long nowMs)
 
         if (entry.m_logBuffers.use_count() == 1)
         {
-            if (LLONG_MAX == entry.m_timeOfLastStatusChangeMs)
+            if (LLONG_MAX == entry.m_timeOfLastStateChangeMs)
             {
-                entry.m_timeOfLastStatusChangeMs = nowMs;
+                entry.m_timeOfLastStateChangeMs = nowMs;
             }
-            else if ((nowMs - m_resourceLingerTimeoutMs) > entry.m_timeOfLastStatusChangeMs)
+            else if ((nowMs - m_resourceLingerTimeoutMs) > entry.m_timeOfLastStateChangeMs)
             {
                 it = m_logBuffersByRegistrationId.erase(it);
                 continue;
@@ -829,7 +1055,7 @@ void ClientConductor::onCheckManagedResources(long long nowMs)
     auto arrayIt = std::remove_if(m_lingeringImageLists.begin(), m_lingeringImageLists.end(),
         [nowMs, this](ImageListLingerDefn &entry)
         {
-            if ((nowMs - m_resourceLingerTimeoutMs) > entry.m_timeOfLastStatusChangeMs)
+            if ((nowMs - m_resourceLingerTimeoutMs) > entry.m_timeOfLastStateChangeMs)
             {
                 delete [] entry.m_imageArray;
                 entry.m_imageArray = nullptr;

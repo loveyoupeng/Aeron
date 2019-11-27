@@ -19,7 +19,7 @@
 #include "ArchiveProxy.h"
 #include "concurrent/YieldingIdleStrategy.h"
 #include "aeron_archive_client/BoundedReplayRequest.h"
-#include "aeron_archive_client/ConnectRequest.h"
+#include "aeron_archive_client/AuthConnectRequest.h"
 #include "aeron_archive_client/CloseSessionRequest.h"
 #include "aeron_archive_client/StartRecordingRequest.h"
 #include "aeron_archive_client/ExtendRecordingRequest.h"
@@ -32,10 +32,20 @@
 #include "aeron_archive_client/ListRecordingsForUriRequest.h"
 #include "aeron_archive_client/ListRecordingRequest.h"
 #include "aeron_archive_client/RecordingPositionRequest.h"
+#include "aeron_archive_client/StartPositionRequest.h"
 #include "aeron_archive_client/StopPositionRequest.h"
 #include "aeron_archive_client/FindLastMatchingRecordingRequest.h"
 #include "aeron_archive_client/TruncateRecordingRequest.h"
 #include "aeron_archive_client/ListRecordingSubscriptionsRequest.h"
+#include "aeron_archive_client/ReplicateRequest.h"
+#include "aeron_archive_client/StopReplicationRequest.h"
+#include "aeron_archive_client/DetachSegmentsRequest.h"
+#include "aeron_archive_client/DeleteDetachedSegmentsRequest.h"
+#include "aeron_archive_client/PurgeSegmentsRequest.h"
+#include "aeron_archive_client/AttachSegmentsRequest.h"
+#include "aeron_archive_client/MigrateSegmentsRequest.h"
+#include "aeron_archive_client/KeepAliveRequest.h"
+#include "aeron_archive_client/ChallengeResponse.h"
 
 using namespace aeron;
 using namespace aeron::concurrent;
@@ -57,15 +67,17 @@ util::index_t ArchiveProxy::connectRequest(
     AtomicBuffer& buffer,
     const std::string& responseChannel,
     std::int32_t responseStreamId,
+    std::pair<const char *, std::uint32_t> encodedCredentials,
     std::int64_t correlationId)
 {
-    ConnectRequest request;
+    AuthConnectRequest request;
 
     wrapAndApplyHeader(request, buffer)
         .correlationId(correlationId)
         .responseStreamId(responseStreamId)
         .version(Configuration::ARCHIVE_SEMANTIC_VERSION)
-        .putResponseChannel(responseChannel);
+        .putResponseChannel(responseChannel)
+        .putEncodedCredentials(encodedCredentials.first, encodedCredentials.second);
 
     return messageAndHeaderLength(request);
 }
@@ -295,6 +307,22 @@ util::index_t ArchiveProxy::listRecording(
     return messageAndHeaderLength(request);
 }
 
+util::index_t ArchiveProxy::getStartPosition(
+    AtomicBuffer& buffer,
+    std::int64_t recordingId,
+    std::int64_t correlationId,
+    std::int64_t controlSessionId)
+{
+    StartPositionRequest request;
+
+    wrapAndApplyHeader(request, buffer)
+        .controlSessionId(controlSessionId)
+        .correlationId(correlationId)
+        .recordingId(recordingId);
+
+    return messageAndHeaderLength(request);
+}
+
 util::index_t ArchiveProxy::getRecordingPosition(
     AtomicBuffer& buffer,
     std::int64_t recordingId,
@@ -389,4 +417,160 @@ util::index_t ArchiveProxy::listRecordingSubscriptions(
         .putChannel(channelFragment);
 
     return messageAndHeaderLength(request);
+}
+
+util::index_t ArchiveProxy::replicate(
+    AtomicBuffer& buffer,
+    std::int64_t srcRecordingId,
+    std::int64_t dstRecordingId,
+    std::int32_t srcControlStreamId,
+    const std::string& srcControlChannel,
+    const std::string& liveDestination,
+    std::int64_t correlationId,
+    std::int64_t controlSessionId)
+{
+    ReplicateRequest request;
+
+    wrapAndApplyHeader(request, buffer)
+        .controlSessionId(controlSessionId)
+        .correlationId(correlationId)
+        .srcRecordingId(srcRecordingId)
+        .dstRecordingId(dstRecordingId)
+        .srcControlStreamId(srcControlStreamId)
+        .putSrcControlChannel(srcControlChannel)
+        .putLiveDestination(liveDestination);
+
+    return messageAndHeaderLength(request);
+}
+
+util::index_t ArchiveProxy::stopReplication(
+    AtomicBuffer& buffer,
+    std::int64_t replicationId,
+    std::int64_t correlationId,
+    std::int64_t controlSessionId)
+{
+    StopReplicationRequest request;
+
+    wrapAndApplyHeader(request, buffer)
+        .controlSessionId(controlSessionId)
+        .correlationId(correlationId)
+        .replicationId(replicationId);
+
+    return messageAndHeaderLength(request);
+}
+
+util::index_t ArchiveProxy::detachSegments(
+    AtomicBuffer& buffer,
+    std::int64_t recordingId,
+    std::int64_t newStartPosition,
+    std::int64_t correlationId,
+    std::int64_t controlSessionId)
+{
+    DetachSegmentsRequest request;
+
+    wrapAndApplyHeader(request, buffer)
+        .controlSessionId(controlSessionId)
+        .correlationId(correlationId)
+        .recordingId(recordingId)
+        .newStartPosition(newStartPosition);
+
+    return messageAndHeaderLength(request);
+}
+
+util::index_t ArchiveProxy::deleteDetachedSegments(
+    AtomicBuffer& buffer,
+    std::int64_t recordingId,
+    std::int64_t correlationId,
+    std::int64_t controlSessionId)
+{
+    DeleteDetachedSegmentsRequest request;
+
+    wrapAndApplyHeader(request, buffer)
+        .controlSessionId(controlSessionId)
+        .correlationId(correlationId)
+        .recordingId(recordingId);
+
+    return messageAndHeaderLength(request);
+}
+
+util::index_t ArchiveProxy::purgeSegments(
+    AtomicBuffer& buffer,
+    std::int64_t recordingId,
+    std::int64_t newStartPosition,
+    std::int64_t correlationId,
+    std::int64_t controlSessionId)
+{
+    PurgeSegmentsRequest request;
+
+    wrapAndApplyHeader(request, buffer)
+        .controlSessionId(controlSessionId)
+        .correlationId(correlationId)
+        .recordingId(recordingId)
+        .newStartPosition(newStartPosition);
+
+    return messageAndHeaderLength(request);
+}
+
+util::index_t ArchiveProxy::attachSegments(
+    AtomicBuffer& buffer,
+    std::int64_t recordingId,
+    std::int64_t correlationId,
+    std::int64_t controlSessionId)
+{
+    AttachSegmentsRequest request;
+
+    wrapAndApplyHeader(request, buffer)
+        .controlSessionId(controlSessionId)
+        .correlationId(correlationId)
+        .recordingId(recordingId);
+
+    return messageAndHeaderLength(request);
+}
+
+util::index_t ArchiveProxy::migrateSegments(
+    AtomicBuffer& buffer,
+    std::int64_t srcRecordingId,
+    std::int64_t dstRecordingId,
+    std::int64_t correlationId,
+    std::int64_t controlSessionId)
+{
+    MigrateSegmentsRequest request;
+
+    wrapAndApplyHeader(request, buffer)
+        .controlSessionId(controlSessionId)
+        .correlationId(correlationId)
+        .srcRecordingId(srcRecordingId)
+        .dstRecordingId(dstRecordingId);
+
+    return messageAndHeaderLength(request);
+}
+
+util::index_t ArchiveProxy::keepAlive(
+    AtomicBuffer& buffer,
+    std::int64_t correlationId,
+    std::int64_t controlSessionId)
+{
+    KeepAliveRequest request;
+
+    wrapAndApplyHeader(request, buffer)
+        .controlSessionId(controlSessionId)
+        .correlationId(correlationId);
+
+    return messageAndHeaderLength(request);
+}
+
+util::index_t ArchiveProxy::challengeResponse(
+    AtomicBuffer& buffer,
+    std::pair<const char *, std::uint32_t> encodedCredentials,
+    std::int64_t correlationId,
+    std::int64_t controlSessionId)
+{
+    ChallengeResponse response;
+
+    wrapAndApplyHeader(response, buffer)
+        .controlSessionId(controlSessionId)
+        .correlationId(correlationId)
+        .putEncodedCredentials(encodedCredentials.first, encodedCredentials.second);
+
+    return messageAndHeaderLength(response);
 }

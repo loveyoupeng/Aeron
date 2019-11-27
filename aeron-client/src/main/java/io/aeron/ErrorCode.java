@@ -33,7 +33,7 @@ public enum ErrorCode
     INVALID_CHANNEL(1),
 
     /**
-     * Attempted to reference a subscription, but it was not found
+     * Attempted to reference a subscription, but it was not found.
      */
     UNKNOWN_SUBSCRIPTION(2),
 
@@ -51,6 +51,21 @@ public enum ErrorCode
      * Attempted to reference a counter, but it was not found.
      */
     UNKNOWN_COUNTER(5),
+
+    /**
+     * Attempted to send a command unknown by the driver.
+     */
+    UNKNOWN_COMMAND_TYPE_ID(6),
+
+    /**
+     * Attempted to send a command that is malformed. Typically, too short.
+     */
+    MALFORMED_COMMAND(7),
+
+    /**
+     * Attempted to send a command known by the driver, but not currently supported.
+     */
+    NOT_SUPPORTED(8),
 
     // *** Insert new codes above here.
 

@@ -55,7 +55,6 @@ typedef struct aeron_client_stct
     bool closed_by_command;
     int64_t client_id;
     int64_t client_liveness_timeout_ms;
-    int64_t time_of_last_keepalive_ms;
 
     aeron_counter_t heartbeat_timestamp;
 
@@ -90,6 +89,8 @@ typedef struct aeron_subscription_link_stct
     bool is_tether;
     bool is_sparse;
     bool is_reliable;
+    bool is_rejoin;
+    aeron_inferable_boolean_t group;
     int32_t stream_id;
     int32_t channel_length;
     int64_t registration_id;
@@ -271,9 +272,13 @@ typedef struct aeron_driver_conductor_stct
     aeron_clock_func_t epoch_clock;
 
     int32_t next_session_id;
+    int32_t publication_reserved_session_id_low;
+    int32_t publication_reserved_session_id_high;
     int64_t time_of_last_timeout_check_ns;
     int64_t time_of_last_to_driver_position_change_ns;
     int64_t last_consumer_command_position;
+
+    uint8_t padding[AERON_CACHE_LINE_LENGTH];
 }
 aeron_driver_conductor_t;
 
@@ -473,25 +478,6 @@ inline bool aeron_driver_conductor_has_network_subscription_interest(
         aeron_subscription_link_t *link = &conductor->network_subscriptions.array[i];
 
         if (endpoint == link->endpoint && stream_id == link->stream_id)
-        {
-            return true;
-        }
-    }
-
-    return false;
-}
-
-inline bool aeron_driver_conductor_has_clashing_subscription(
-    aeron_driver_conductor_t *conductor,
-    const aeron_receive_channel_endpoint_t *endpoint,
-    int32_t stream_id,
-    bool is_reliable)
-{
-    for (size_t i = 0, length = conductor->network_subscriptions.length; i < length; i++)
-    {
-        aeron_subscription_link_t *link = &conductor->network_subscriptions.array[i];
-
-        if (endpoint == link->endpoint && stream_id == link->stream_id && link->is_reliable != is_reliable)
         {
             return true;
         }

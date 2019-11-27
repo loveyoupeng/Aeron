@@ -23,6 +23,7 @@ import io.aeron.cluster.codecs.CloseReason;
 import io.aeron.logbuffer.BufferClaim;
 import io.aeron.logbuffer.Header;
 import org.agrona.DirectBuffer;
+import org.agrona.concurrent.IdleStrategy;
 
 import java.util.Collection;
 import java.util.concurrent.TimeUnit;
@@ -30,7 +31,7 @@ import java.util.concurrent.TimeUnit;
 /**
  * Interface for a {@link ClusteredService} to interact with cluster hosting it.
  */
-public interface Cluster
+public interface Cluster extends IdleStrategy
 {
     enum Role
     {
@@ -116,6 +117,13 @@ public interface Cluster
     Role role();
 
     /**
+     * Position the log has reached in bytes as of the current message.
+     *
+     * @return position the log has reached in bytes as of the current message.
+     */
+    long logPosition();
+
+    /**
      * Get the {@link Aeron} client used by the cluster.
      *
      * @return the {@link Aeron} client used by the cluster.
@@ -166,13 +174,6 @@ public interface Cluster
      * @return the unit of time applied to timestamps and {@link #time()}.
      */
     TimeUnit timeUnit();
-
-    /**
-     * Position the log has reached in bytes as of the current message.
-     *
-     * @return position the log has reached in bytes as of the current message.
-     */
-    long logPosition();
 
     /**
      * Schedule a timer for a given deadline and provide a correlation id to identify the timer when it expires or
@@ -254,7 +255,7 @@ public interface Cluster
      *              final MutableDirectBuffer buffer = bufferClaim.buffer();
      *              final int offset = bufferClaim.offset();
      *              // ensure that data is written at the correct offset
-     *              buffer.putBytes(offset + ClientSession.SESSION_HEADER_LENGTH, srcBuffer, 0, length);
+     *              buffer.putBytes(offset + AeronCluster.SESSION_HEADER_LENGTH, srcBuffer, 0, length);
      *         }
      *         finally
      *         {
@@ -272,6 +273,11 @@ public interface Cluster
      * @see BufferClaim#abort()
      */
     long tryClaim(int length, BufferClaim bufferClaim);
+
+    /**
+     * Reset idle strategy.
+     */
+    void reset();
 
     /**
      * Should be called by the service when it experiences back-pressure on egress, closing sessions, making

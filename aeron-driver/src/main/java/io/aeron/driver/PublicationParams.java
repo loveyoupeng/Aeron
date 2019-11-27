@@ -34,11 +34,15 @@ final class PublicationParams
     int termId = 0;
     int termOffset = 0;
     int sessionId = 0;
-    boolean isReplay = false;
+    boolean hasPosition = false;
     boolean hasSessionId = false;
     boolean isSessionIdTagged = false;
     boolean isSparse;
     boolean signalEos = true;
+
+    PublicationParams()
+    {
+    }
 
     static PublicationParams getPublicationParams(
         final MediaDriver.Context context,
@@ -109,7 +113,7 @@ final class PublicationParams
 
                 }
 
-                params.isReplay = true;
+                params.hasPosition = true;
             }
         }
 
@@ -190,22 +194,22 @@ final class PublicationParams
     }
 
     static void confirmMatch(
-        final ChannelUri uri, final PublicationParams params, final RawLog rawLog, final int existingSessionId)
+        final ChannelUri channelUri, final PublicationParams params, final RawLog rawLog, final int existingSessionId)
     {
         final int mtuLength = LogBufferDescriptor.mtuLength(rawLog.metaData());
-        if (uri.containsKey(MTU_LENGTH_PARAM_NAME) && mtuLength != params.mtuLength)
+        if (channelUri.containsKey(MTU_LENGTH_PARAM_NAME) && mtuLength != params.mtuLength)
         {
             throw new IllegalStateException("existing publication has different MTU length: existing=" +
                 mtuLength + " requested=" + params.mtuLength);
         }
 
-        if (uri.containsKey(TERM_LENGTH_PARAM_NAME) && rawLog.termLength() != params.termLength)
+        if (channelUri.containsKey(TERM_LENGTH_PARAM_NAME) && rawLog.termLength() != params.termLength)
         {
             throw new IllegalStateException("existing publication has different term length: existing=" +
                 rawLog.termLength() + " requested=" + params.termLength);
         }
 
-        if (uri.containsKey(SESSION_ID_PARAM_NAME) && params.sessionId != existingSessionId)
+        if (channelUri.containsKey(SESSION_ID_PARAM_NAME) && params.sessionId != existingSessionId)
         {
             throw new IllegalStateException("existing publication has different session id: existing=" +
                 existingSessionId + " requested=" + params.sessionId);
@@ -282,5 +286,24 @@ final class PublicationParams
         {
             throw new IllegalArgumentException(entityTag + " entityTag already in use");
         }
+    }
+
+    public String toString()
+    {
+        return "PublicationParams{" +
+            "lingerTimeoutNs=" + lingerTimeoutNs +
+            ", entityTag=" + entityTag +
+            ", termLength=" + termLength +
+            ", mtuLength=" + mtuLength +
+            ", initialTermId=" + initialTermId +
+            ", termId=" + termId +
+            ", termOffset=" + termOffset +
+            ", sessionId=" + sessionId +
+            ", hasPosition=" + hasPosition +
+            ", hasSessionId=" + hasSessionId +
+            ", isSessionIdTagged=" + isSessionIdTagged +
+            ", isSparse=" + isSparse +
+            ", signalEos=" + signalEos +
+            '}';
     }
 }

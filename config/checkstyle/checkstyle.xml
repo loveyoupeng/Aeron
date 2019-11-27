@@ -17,6 +17,11 @@
         <property name="eachLine" value="true"/>
     </module>
 
+    <module name="LineLength">
+        <property name="max" value="120"/>
+        <property name="ignorePattern" value="^[ \t]*\*.*@.*$"/>
+    </module>
+
     <module name="TreeWalker">
         <property name="tabWidth" value="4"/>
         <property name="severity" value="error"/>
@@ -53,16 +58,13 @@
 
         <module name="StaticVariableName"/>
 
-        <module name="TypeName"/>
+        <module name="TypeName">
+            <property name="format" value="^[A-Z][a-zA-Z0-9_]*$"/>
+        </module>
 
         <module name="RedundantImport"/>
 
         <module name="UnusedImports"/>
-
-        <module name="LineLength">
-            <property name="max" value="120"/>
-            <property name="ignorePattern" value="^[ \t]*\*.*@.*$"/>
-        </module>
 
         <module name="MethodLength">
             <property name="tokens" value="METHOD_DEF"/>
@@ -172,7 +174,6 @@
         </module>
 
         <module name="JavadocMethod">
-            <property name="allowMissingJavadoc" value="true"/>
             <property name="allowUndeclaredRTE" value="true"/>
         </module>
     </module>

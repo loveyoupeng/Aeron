@@ -22,12 +22,13 @@ import io.aeron.archive.client.AeronArchive;
 import io.aeron.archive.client.ArchiveException;
 import io.aeron.logbuffer.BufferClaim;
 import io.aeron.logbuffer.FrameDescriptor;
+import io.aeron.logbuffer.LogBufferDescriptor;
 import io.aeron.protocol.DataHeaderFlyweight;
 import io.aeron.protocol.HeaderFlyweight;
 import org.agrona.BitUtil;
 import org.agrona.CloseHelper;
 import org.agrona.LangUtil;
-import org.agrona.concurrent.EpochClock;
+import org.agrona.concurrent.CachedEpochClock;
 import org.agrona.concurrent.UnsafeBuffer;
 
 import java.io.File;
@@ -39,7 +40,6 @@ import java.nio.file.attribute.FileAttribute;
 import java.util.EnumSet;
 
 import static io.aeron.archive.Archive.Configuration.MAX_BLOCK_LENGTH;
-import static io.aeron.archive.Archive.segmentFileIndex;
 import static io.aeron.archive.Archive.segmentFileName;
 import static io.aeron.archive.client.AeronArchive.NULL_POSITION;
 import static io.aeron.logbuffer.FrameDescriptor.FRAME_ALIGNMENT;
@@ -80,9 +80,9 @@ class ReplaySession implements Session, AutoCloseable
     private long replayPosition;
     private long stopPosition;
     private long replayLimit;
-    private int termOffset;
+    private volatile long segmentFileBasePosition;
     private int termBaseSegmentOffset;
-    private int segmentFileIndex;
+    private int termOffset;
     private final int streamId;
     private final int termLength;
     private final int segmentLength;
@@ -90,7 +90,7 @@ class ReplaySession implements Session, AutoCloseable
     private final BufferClaim bufferClaim = new BufferClaim();
     private final ExclusivePublication publication;
     private final ControlSession controlSession;
-    private final EpochClock epochClock;
+    private final CachedEpochClock epochClock;
     private final File archiveDir;
     private final Catalog catalog;
     private final Counter limitPosition;
@@ -113,7 +113,7 @@ class ReplaySession implements Session, AutoCloseable
         final Catalog catalog,
         final File archiveDir,
         final File initialSegmentFile,
-        final EpochClock epochClock,
+        final CachedEpochClock epochClock,
         final ExclusivePublication publication,
         final RecordingSummary recordingSummary,
         final Counter replayLimitPosition)
@@ -159,7 +159,8 @@ class ReplaySession implements Session, AutoCloseable
             }
         }
 
-        segmentFileIndex = segmentFileIndex(startPosition, fromPosition, segmentLength);
+        segmentFileBasePosition = AeronArchive.segmentFileBasePosition(
+            startPosition, fromPosition, termLength, segmentLength);
         replayPosition = fromPosition;
         replayLimit = fromPosition + replayLength;
 
@@ -184,7 +185,7 @@ class ReplaySession implements Session, AutoCloseable
 
         if (isAborted)
         {
-            state = State.INACTIVE;
+            state(State.INACTIVE);
         }
 
         try
@@ -208,7 +209,7 @@ class ReplaySession implements Session, AutoCloseable
         if (State.INACTIVE == state)
         {
             closeRecordingSegment();
-            state = State.DONE;
+            state(State.DONE);
         }
 
         return workCount;
@@ -234,6 +235,11 @@ class ReplaySession implements Session, AutoCloseable
         return state;
     }
 
+    long segmentFileBasePosition()
+    {
+        return segmentFileBasePosition;
+    }
+
     Counter limitPosition()
     {
         return limitPosition;
@@ -251,10 +257,10 @@ class ReplaySession implements Session, AutoCloseable
     {
         if (null == fileChannel)
         {
-            final int positionBitsToShift = publication.positionBitsToShift();
             final long startTermBasePosition = startPosition - (startPosition & (termLength - 1));
-            final int segmentOffset = (int)(replayPosition - startTermBasePosition) & (segmentLength - 1);
-            final int termId = ((int)(replayPosition >> positionBitsToShift) + publication.initialTermId());
+            final int segmentOffset = (int)((replayPosition - startTermBasePosition) & (segmentLength - 1));
+            final int termId = LogBufferDescriptor.computeTermIdFromPosition(
+                replayPosition, publication.positionBitsToShift(), publication.initialTermId());
 
             openRecordingSegment();
 
@@ -281,7 +287,7 @@ class ReplaySession implements Session, AutoCloseable
             return 0;
         }
 
-        state = State.REPLAY;
+        state(State.REPLAY);
 
         return 1;
     }
@@ -292,11 +298,11 @@ class ReplaySession implements Session, AutoCloseable
 
         if (!publication.isConnected())
         {
-            state = State.INACTIVE;
+            state(State.INACTIVE);
             return fragments;
         }
 
-        if (limitPosition != null && replayPosition >= stopPosition && noNewData(replayPosition, stopPosition))
+        if (null != limitPosition && replayPosition >= stopPosition && noNewData(replayPosition, stopPosition))
         {
             return fragments;
         }
@@ -312,17 +318,15 @@ class ReplaySession implements Session, AutoCloseable
         while (frameOffset < bytesRead)
         {
             final int frameLength = FrameDescriptor.frameLength(replayBuffer, frameOffset);
+            if (frameLength <= 0)
+            {
+                throw new IllegalStateException("unexpected end of recording reached at position " + replayPosition);
+            }
+
             final int frameType = FrameDescriptor.frameType(replayBuffer, frameOffset);
             final int alignedLength = BitUtil.align(frameLength, FRAME_ALIGNMENT);
-            final int dataOffset = frameOffset + DataHeaderFlyweight.HEADER_LENGTH;
             final int dataLength = frameLength - DataHeaderFlyweight.HEADER_LENGTH;
-
             long result = 0;
-
-            if (0 >= frameLength)
-            {
-                throw new IllegalStateException("unexpected end of recording reached");
-            }
 
             if (frameType == HeaderFlyweight.HDR_TYPE_DATA)
             {
@@ -337,7 +341,7 @@ class ReplaySession implements Session, AutoCloseable
                     bufferClaim
                         .flags(FrameDescriptor.frameFlags(replayBuffer, frameOffset))
                         .reservedValue(replayBuffer.getLong(frameOffset + RESERVED_VALUE_OFFSET, LITTLE_ENDIAN))
-                        .putBytes(replayBuffer, dataOffset, dataLength)
+                        .putBytes(replayBuffer, frameOffset + DataHeaderFlyweight.HEADER_LENGTH, dataLength)
                         .commit();
                 }
             }
@@ -355,13 +359,13 @@ class ReplaySession implements Session, AutoCloseable
 
                 if (replayPosition >= replayLimit)
                 {
-                    state = State.INACTIVE;
+                    state(State.INACTIVE);
                     break;
                 }
             }
             else
             {
-                if (result == Publication.CLOSED || result == Publication.NOT_CONNECTED)
+                if (Publication.CLOSED == result || Publication.NOT_CONNECTED == result)
                 {
                     onError("stream closed before replay is complete");
                 }
@@ -396,31 +400,32 @@ class ReplaySession implements Session, AutoCloseable
 
     private void onError(final String errorMessage)
     {
-        state = State.INACTIVE;
+        state(State.INACTIVE);
         this.errorMessage = errorMessage;
     }
 
     private boolean noNewData(final long replayPosition, final long oldStopPosition)
     {
+        final Counter limitPosition = this.limitPosition;
         final long currentLimitPosition = limitPosition.get();
         final boolean isCounterClosed = limitPosition.isClosed();
         final long newStopPosition = isCounterClosed ? catalog.stopPosition(recordingId) : currentLimitPosition;
 
         if (isCounterClosed)
         {
-            if (newStopPosition < replayLimit)
-            {
-                replayLimit = newStopPosition;
-            }
-            else if (NULL_POSITION == newStopPosition)
+            if (NULL_POSITION == newStopPosition)
             {
                 replayLimit = oldStopPosition;
+            }
+            else if (newStopPosition < replayLimit)
+            {
+                replayLimit = newStopPosition;
             }
         }
 
         if (replayPosition >= replayLimit)
         {
-            state = State.INACTIVE;
+            state(State.INACTIVE);
         }
         else if (newStopPosition > oldStopPosition)
         {
@@ -439,7 +444,7 @@ class ReplaySession implements Session, AutoCloseable
         if (termBaseSegmentOffset == segmentLength)
         {
             closeRecordingSegment();
-            segmentFileIndex++;
+            segmentFileBasePosition += segmentLength;
             openRecordingSegment();
             termBaseSegmentOffset = 0;
         }
@@ -456,7 +461,7 @@ class ReplaySession implements Session, AutoCloseable
     {
         if (null == segmentFile)
         {
-            final String segmentFileName = segmentFileName(recordingId, segmentFileIndex);
+            final String segmentFileName = segmentFileName(recordingId, segmentFileBasePosition);
             segmentFile = new File(archiveDir, segmentFileName);
 
             if (!segmentFile.exists())
@@ -486,6 +491,12 @@ class ReplaySession implements Session, AutoCloseable
         }
 
         return isInvalidHeader(buffer, streamId, termId, termOffset);
+    }
+
+    private void state(final State newState)
+    {
+        //System.out.println(epochClock.time() + ": " + state + " -> " + newState);
+        state = newState;
     }
 
     static boolean isInvalidHeader(

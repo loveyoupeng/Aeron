@@ -17,12 +17,14 @@ package io.aeron;
 
 import io.aeron.exceptions.*;
 import io.aeron.status.ChannelEndpointStatus;
+import io.aeron.status.HeartbeatTimestamp;
 import org.agrona.DirectBuffer;
-import org.agrona.LangUtil;
 import org.agrona.ManagedResource;
 import org.agrona.collections.ArrayListUtil;
 import org.agrona.collections.Long2ObjectHashMap;
+import org.agrona.collections.LongHashSet;
 import org.agrona.concurrent.*;
+import org.agrona.concurrent.status.AtomicCounter;
 import org.agrona.concurrent.status.CountersManager;
 import org.agrona.concurrent.status.CountersReader;
 import org.agrona.concurrent.status.UnsafeBufferPosition;
@@ -32,6 +34,7 @@ import java.util.concurrent.locks.Lock;
 
 import static io.aeron.Aeron.Configuration.IDLE_SLEEP_MS;
 import static io.aeron.Aeron.Configuration.IDLE_SLEEP_NS;
+import static io.aeron.status.HeartbeatTimestamp.CLIENT_HEARTBEAT_TYPE_ID;
 import static java.nio.charset.StandardCharsets.US_ASCII;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.NANOSECONDS;
@@ -44,7 +47,7 @@ class ClientConductor implements Agent, DriverEventsListener
 {
     private static final long NO_CORRELATION_ID = Aeron.NULL_VALUE;
 
-    private final long closeLingerDurationMs;
+    private final long resourceLingerDurationNs;
     private final long keepAliveIntervalNs;
     private final long driverTimeoutMs;
     private final long driverTimeoutNs;
@@ -68,6 +71,7 @@ class ClientConductor implements Agent, DriverEventsListener
     private final Long2ObjectHashMap<LogBuffers> logBuffersByIdMap = new Long2ObjectHashMap<>();
     private final Long2ObjectHashMap<Object> resourceByRegIdMap = new Long2ObjectHashMap<>();
     private final ArrayList<ManagedResource> lingeringResources = new ArrayList<>();
+    private final LongHashSet asyncCommandIdSet = new LongHashSet();
     private final AvailableImageHandler defaultAvailableImageHandler;
     private final UnavailableImageHandler defaultUnavailableImageHandler;
     private final ArrayList<AvailableCounterHandler> availableCounterHandlers = new ArrayList<>();
@@ -77,6 +81,7 @@ class ClientConductor implements Agent, DriverEventsListener
     private final AgentInvoker driverAgentInvoker;
     private final UnsafeBuffer counterValuesBuffer;
     private final CountersReader countersReader;
+    private AtomicCounter heartbeatTimestamp;
 
     ClientConductor(final Aeron.Context ctx, final Aeron aeron)
     {
@@ -90,13 +95,13 @@ class ClientConductor implements Agent, DriverEventsListener
         driverProxy = ctx.driverProxy();
         logBuffersFactory = ctx.logBuffersFactory();
         keepAliveIntervalNs = ctx.keepAliveIntervalNs();
+        resourceLingerDurationNs = ctx.resourceLingerDurationNs();
         driverTimeoutMs = ctx.driverTimeoutMs();
         driverTimeoutNs = MILLISECONDS.toNanos(driverTimeoutMs);
-        closeLingerDurationMs = NANOSECONDS.toMillis(ctx.closeLingerDurationNs());
         interServiceTimeoutNs = ctx.interServiceTimeoutNs();
         defaultAvailableImageHandler = ctx.availableImageHandler();
         defaultUnavailableImageHandler = ctx.unavailableImageHandler();
-        driverEventsAdapter = new DriverEventsAdapter(ctx.toClientBuffer(), ctx.clientId(), this);
+        driverEventsAdapter = new DriverEventsAdapter(ctx.toClientBuffer(), ctx.clientId(), this, asyncCommandIdSet);
         driverAgentInvoker = ctx.driverAgentInvoker();
         counterValuesBuffer = ctx.countersValuesBuffer();
         countersReader = new CountersReader(ctx.countersMetaDataBuffer(), ctx.countersValuesBuffer(), US_ASCII);
@@ -155,7 +160,7 @@ class ClientConductor implements Agent, DriverEventsListener
                         Thread.sleep(IDLE_SLEEP_MS);
                     }
 
-                    Thread.sleep(closeLingerDurationMs);
+                    Thread.sleep(NANOSECONDS.toMillis(ctx.closeLingerDurationNs()));
                 }
                 catch (final InterruptedException ignore)
                 {
@@ -218,7 +223,21 @@ class ClientConductor implements Agent, DriverEventsListener
 
     public void onError(final long correlationId, final int codeValue, final ErrorCode errorCode, final String message)
     {
-        driverException = new RegistrationException(codeValue, errorCode, message);
+        driverException = new RegistrationException(correlationId, codeValue, errorCode, message);
+
+        final Object resource = resourceByRegIdMap.get(correlationId);
+        if (resource instanceof Subscription)
+        {
+            final Subscription subscription = (Subscription)resource;
+            subscription.internalClose();
+            resourceByRegIdMap.remove(correlationId);
+        }
+    }
+
+    public void onAsyncError(
+        final long correlationId, final int codeValue, final ErrorCode errorCode, final String message)
+    {
+        handleError(new RegistrationException(correlationId, codeValue, errorCode, message));
     }
 
     public void onChannelEndpointError(final int statusIndicatorId, final String message)
@@ -269,7 +288,7 @@ class ClientConductor implements Agent, DriverEventsListener
             sessionId,
             new UnsafeBufferPosition(counterValuesBuffer, publicationLimitId),
             statusIndicatorId,
-            logBuffers(registrationId, logFileName),
+            logBuffers(registrationId, logFileName, stashedChannel),
             registrationId,
             correlationId);
 
@@ -292,7 +311,7 @@ class ClientConductor implements Agent, DriverEventsListener
             sessionId,
             new UnsafeBufferPosition(counterValuesBuffer, publicationLimitId),
             statusIndicatorId,
-            logBuffers(registrationId, logFileName),
+            logBuffers(registrationId, logFileName, stashedChannel),
             registrationId,
             correlationId);
 
@@ -320,7 +339,7 @@ class ClientConductor implements Agent, DriverEventsListener
                 subscription,
                 sessionId,
                 new UnsafeBufferPosition(counterValuesBuffer, subscriberPositionId),
-                logBuffers(correlationId, logFileName),
+                logBuffers(correlationId, logFileName, subscription.channel()),
                 ctx.errorHandler(),
                 sourceIdentity,
                 correlationId);
@@ -425,7 +444,10 @@ class ClientConductor implements Agent, DriverEventsListener
 
     void handleError(final Throwable ex)
     {
-        ctx.errorHandler().onError(ex);
+        if (!isClosed)
+        {
+            ctx.errorHandler().onError(ex);
+        }
     }
 
     ConcurrentPublication addPublication(final String channel, final int streamId)
@@ -473,9 +495,8 @@ class ClientConductor implements Agent, DriverEventsListener
         clientLock.lock();
         try
         {
-            if (!publication.isClosed())
+            if (!publication.isClosed() && !isClosed)
             {
-                ensureActive();
                 ensureNotReentrant();
 
                 publication.internalClose();
@@ -519,7 +540,6 @@ class ClientConductor implements Agent, DriverEventsListener
                 unavailableImageHandler);
 
             resourceByRegIdMap.put(correlationId, subscription);
-
             awaitResponse(correlationId);
 
             return subscription;
@@ -535,9 +555,8 @@ class ClientConductor implements Agent, DriverEventsListener
         clientLock.lock();
         try
         {
-            if (!subscription.isClosed())
+            if (!subscription.isClosed() && !isClosed)
             {
-                ensureActive();
                 ensureNotReentrant();
 
                 subscription.internalClose();
@@ -609,6 +628,98 @@ class ClientConductor implements Agent, DriverEventsListener
             ensureNotReentrant();
 
             awaitResponse(driverProxy.removeRcvDestination(registrationId, endpointChannel));
+        }
+        finally
+        {
+            clientLock.unlock();
+        }
+    }
+
+    long asyncAddDestination(final long registrationId, final String endpointChannel)
+    {
+        clientLock.lock();
+        try
+        {
+            ensureActive();
+            ensureNotReentrant();
+
+            final long correlationId = driverProxy.addDestination(registrationId, endpointChannel);
+            asyncCommandIdSet.add(correlationId);
+            return correlationId;
+        }
+        finally
+        {
+            clientLock.unlock();
+        }
+    }
+
+    long asyncRemoveDestination(final long registrationId, final String endpointChannel)
+    {
+        clientLock.lock();
+        try
+        {
+            ensureActive();
+            ensureNotReentrant();
+
+            final long correlationId = driverProxy.removeDestination(registrationId, endpointChannel);
+            asyncCommandIdSet.add(correlationId);
+            return correlationId;
+        }
+        finally
+        {
+            clientLock.unlock();
+        }
+    }
+
+    long asyncAddRcvDestination(final long registrationId, final String endpointChannel)
+    {
+        clientLock.lock();
+        try
+        {
+            ensureActive();
+            ensureNotReentrant();
+
+            final long correlationId = driverProxy.addRcvDestination(registrationId, endpointChannel);
+            asyncCommandIdSet.add(correlationId);
+            return correlationId;
+        }
+        finally
+        {
+            clientLock.unlock();
+        }
+    }
+
+    long asyncRemoveRcvDestination(final long registrationId, final String endpointChannel)
+    {
+        clientLock.lock();
+        try
+        {
+            ensureActive();
+            ensureNotReentrant();
+
+            final long correlationId = driverProxy.removeRcvDestination(registrationId, endpointChannel);
+            asyncCommandIdSet.add(correlationId);
+            return correlationId;
+        }
+        finally
+        {
+            clientLock.unlock();
+        }
+    }
+
+    boolean isCommandActive(final long correlationId)
+    {
+        clientLock.lock();
+        try
+        {
+            if (isClosed)
+            {
+                return false;
+            }
+
+            ensureActive();
+
+            return asyncCommandIdSet.contains(correlationId);
         }
         finally
         {
@@ -698,8 +809,13 @@ class ClientConductor implements Agent, DriverEventsListener
         clientLock.lock();
         try
         {
-            ensureActive();
+            if (isClosed)
+            {
+                return false;
+            }
+
             ensureNotReentrant();
+
             return availableCounterHandlers.remove(handler);
         }
         finally
@@ -728,8 +844,13 @@ class ClientConductor implements Agent, DriverEventsListener
         clientLock.lock();
         try
         {
-            ensureActive();
+            if (isClosed)
+            {
+                return false;
+            }
+
             ensureNotReentrant();
+
             return unavailableCounterHandlers.remove(handler);
         }
         finally
@@ -758,8 +879,13 @@ class ClientConductor implements Agent, DriverEventsListener
         clientLock.lock();
         try
         {
-            ensureActive();
+            if (isClosed)
+            {
+                return false;
+            }
+
             ensureNotReentrant();
+
             return closeHandlers.remove(handler);
         }
         finally
@@ -773,7 +899,11 @@ class ClientConductor implements Agent, DriverEventsListener
         clientLock.lock();
         try
         {
-            ensureActive();
+            if (isClosed)
+            {
+                return;
+            }
+
             ensureNotReentrant();
 
             final long registrationId = counter.registrationId();
@@ -868,14 +998,14 @@ class ClientConductor implements Agent, DriverEventsListener
         }
     }
 
-    private LogBuffers logBuffers(final long registrationId, final String logFileName)
+    private LogBuffers logBuffers(final long registrationId, final String logFileName, final String channel)
     {
         LogBuffers logBuffers = logBuffersByIdMap.get(registrationId);
         if (null == logBuffers)
         {
             logBuffers = logBuffersFactory.map(logFileName);
 
-            if (ctx.preTouchMappedMemory())
+            if (ctx.preTouchMappedMemory() && !channel.contains("sparse=true"))
             {
                 logBuffers.preTouch();
             }
@@ -922,7 +1052,6 @@ class ClientConductor implements Agent, DriverEventsListener
 
     private void awaitResponse(final long correlationId)
     {
-        driverException = null;
         final long deadlineNs = nanoClock.nanoTime() + driverTimeoutNs;
 
         awaitingIdleStrategy.reset();
@@ -941,18 +1070,20 @@ class ClientConductor implements Agent, DriverEventsListener
 
             if (driverEventsAdapter.receivedCorrelationId() == correlationId)
             {
-                if (null != driverException)
+                final RegistrationException ex = driverException;
+                if (null != ex)
                 {
-                    throw driverException;
+                    driverException = null;
+                    throw ex;
                 }
 
                 return;
             }
 
-            if (Thread.interrupted())
+            if (Thread.currentThread().isInterrupted())
             {
                 isTerminating = true;
-                LangUtil.rethrowUnchecked(new InterruptedException());
+                throw new AgentTerminationException("thread interrupted");
             }
         }
         while (deadlineNs - nanoClock.nanoTime() > 0);
@@ -996,21 +1127,47 @@ class ClientConductor implements Agent, DriverEventsListener
         if ((timeOfLastKeepAliveNs + keepAliveIntervalNs) - nowNs < 0)
         {
             final long lastKeepAliveMs = driverProxy.timeOfLastDriverKeepaliveMs();
+            final long nowMs = epochClock.time();
 
-            if (epochClock.time() > (lastKeepAliveMs + driverTimeoutMs))
+            if (nowMs > (lastKeepAliveMs + driverTimeoutMs))
             {
                 isTerminating = true;
                 forceCloseResources();
 
-                final long keepAliveAgeMs = epochClock.time() - lastKeepAliveMs;
+                final long keepAliveAgeMs = nowMs - lastKeepAliveMs;
 
                 throw new DriverTimeoutException(
                     "MediaDriver keepalive age exceeded (ms): timeout= " +
                      driverTimeoutMs + ", actual=" + keepAliveAgeMs);
             }
 
-            driverProxy.sendClientKeepalive();
-            timeOfLastKeepAliveNs = nowNs;
+            final long clientId = driverProxy.clientId();
+            if (null == heartbeatTimestamp)
+            {
+                final int counterId = HeartbeatTimestamp.findCounterIdByRegistrationId(
+                    countersReader, CLIENT_HEARTBEAT_TYPE_ID, clientId);
+
+                if (counterId != CountersReader.NULL_COUNTER_ID)
+                {
+                    heartbeatTimestamp = new AtomicCounter(counterValuesBuffer, counterId);
+                    heartbeatTimestamp.setOrdered(nowMs);
+                    timeOfLastKeepAliveNs = nowNs;
+                }
+            }
+            else
+            {
+                final int counterId = heartbeatTimestamp.id();
+                if (!HeartbeatTimestamp.isActive(countersReader, counterId, CLIENT_HEARTBEAT_TYPE_ID, clientId))
+                {
+                    isTerminating = true;
+                    forceCloseResources();
+
+                    throw new AeronException("unexpected close of heartbeat timestamp counter: " + counterId);
+                }
+
+                heartbeatTimestamp.setOrdered(nowMs);
+                timeOfLastKeepAliveNs = nowNs;
+            }
 
             return 1;
         }
@@ -1026,7 +1183,7 @@ class ClientConductor implements Agent, DriverEventsListener
         for (int lastIndex = lingeringResources.size() - 1, i = lastIndex; i >= 0; i--)
         {
             final ManagedResource resource = lingeringResources.get(i);
-            if ((resource.timeOfLastStateChange() + ctx.resourceLingerDurationNs()) - nowNs < 0)
+            if ((resource.timeOfLastStateChange() + resourceLingerDurationNs) - nowNs < 0)
             {
                 ArrayListUtil.fastUnorderedRemove(lingeringResources, i, lastIndex--);
                 resource.delete();

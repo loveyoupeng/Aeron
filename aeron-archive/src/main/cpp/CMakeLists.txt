@@ -34,16 +34,24 @@ set(GENERATED_CODECS
     ${ARCHIVE_CODEC_TARGET_DIR}/aeron_archive_client/RecordingPositionRequest.h
     ${ARCHIVE_CODEC_TARGET_DIR}/aeron_archive_client/TruncateRecordingRequest.h
     ${ARCHIVE_CODEC_TARGET_DIR}/aeron_archive_client/StopRecordingSubscriptionRequest.h
+    ${ARCHIVE_CODEC_TARGET_DIR}/aeron_archive_client/StartPositionRequest.h
     ${ARCHIVE_CODEC_TARGET_DIR}/aeron_archive_client/StopPositionRequest.h
     ${ARCHIVE_CODEC_TARGET_DIR}/aeron_archive_client/FindLastMatchingRecordingRequest.h
     ${ARCHIVE_CODEC_TARGET_DIR}/aeron_archive_client/ListRecordingSubscriptionsRequest.h
+    ${ARCHIVE_CODEC_TARGET_DIR}/aeron_archive_client/DetachSegmentsRequest.h
+    ${ARCHIVE_CODEC_TARGET_DIR}/aeron_archive_client/DeleteDetachedSegmentsRequest.h
+    ${ARCHIVE_CODEC_TARGET_DIR}/aeron_archive_client/PurgeSegmentsRequest.h
+    ${ARCHIVE_CODEC_TARGET_DIR}/aeron_archive_client/AttachSegmentsRequest.h
+    ${ARCHIVE_CODEC_TARGET_DIR}/aeron_archive_client/MigrateSegmentsRequest.h
+    ${ARCHIVE_CODEC_TARGET_DIR}/aeron_archive_client/KeepAliveRequest.h
     ${ARCHIVE_CODEC_TARGET_DIR}/aeron_archive_client/CatalogHeader.h
     ${ARCHIVE_CODEC_TARGET_DIR}/aeron_archive_client/RecordingDescriptorHeader.h
     ${ARCHIVE_CODEC_TARGET_DIR}/aeron_archive_client/RecordingDescriptor.h
     ${ARCHIVE_CODEC_TARGET_DIR}/aeron_archive_client/RecordingSubscriptionDescriptor.h
     ${ARCHIVE_CODEC_TARGET_DIR}/aeron_archive_client/RecordingStarted.h
     ${ARCHIVE_CODEC_TARGET_DIR}/aeron_archive_client/RecordingProgress.h
-    ${ARCHIVE_CODEC_TARGET_DIR}/aeron_archive_client/RecordingStopped.h)
+    ${ARCHIVE_CODEC_TARGET_DIR}/aeron_archive_client/RecordingStopped.h
+    ${ARCHIVE_CODEC_TARGET_DIR}/aeron_archive_client/RecordingTransition.h)
 
 add_custom_command(OUTPUT ${GENERATED_CODECS}
     COMMAND ./gradlew -Dcodec.target.dir=${ARCHIVE_CODEC_TARGET_DIR} :aeron-archive:generateCppCodecs
@@ -61,6 +69,7 @@ SET(SOURCE
     client/RecordingSubscriptionDescriptorPoller.cpp
     client/RecordingEventsPoller.cpp
     client/RecordingEventsAdapter.cpp
+    client/RecordingSignalAdapter.cpp
     client/AeronArchive.cpp
     client/ReplayMerge.cpp)
 
@@ -74,6 +83,7 @@ SET(HEADERS
     client/RecordingSubscriptionDescriptorPoller.h
     client/RecordingEventsPoller.h
     client/RecordingEventsAdapter.h
+    client/RecordingSignalAdapter.h
     client/RecordingPos.h
     client/AeronArchive.h
     client/ReplayMerge.h)

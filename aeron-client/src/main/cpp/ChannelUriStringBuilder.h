@@ -44,6 +44,7 @@ public:
         m_controlMode.reset(nullptr);
         m_tags.reset(nullptr);
         m_alias.reset(nullptr);
+        m_cc.reset(nullptr);
         m_reliable.reset(nullptr);
         m_ttl.reset(nullptr);
         m_mtu.reset(nullptr);
@@ -56,6 +57,8 @@ public:
         m_sparse.reset(nullptr);
         m_eos.reset(nullptr);
         m_tether.reset(nullptr);
+        m_group.reset(nullptr);
+        m_rejoin.reset(nullptr);
         m_isSessionIdTagged = false;
         return *this;
     }
@@ -126,6 +129,12 @@ public:
     inline this_t& alias(const std::string& alias)
     {
         m_alias.reset(new std::string(alias));
+        return *this;
+    }
+
+    inline this_t& congestionControl(const std::string& congestionControl)
+    {
+        m_cc.reset(new std::string(congestionControl));
         return *this;
     }
 
@@ -235,6 +244,24 @@ public:
         return *this;
     }
 
+    inline this_t& group(bool group)
+    {
+        m_group.reset(new Value(group ? 1 : 0));
+        return *this;
+    }
+
+    inline this_t& rejoin(bool rejoin)
+    {
+        m_rejoin.reset(new Value(rejoin ? 1 : 0));
+        return *this;
+    }
+
+    inline this_t& rejoin(std::nullptr_t nullp)
+    {
+        m_reliable.reset(nullptr);
+        return *this;
+    }
+
     inline this_t& isSessionIdTagged(bool isSessionIdTagged)
     {
         m_isSessionIdTagged = isSessionIdTagged;
@@ -327,6 +354,11 @@ public:
             sb << ALIAS_PARAM_NAME << '=' << *m_alias << '|';
         }
 
+        if (m_cc)
+        {
+            sb << CONGESTION_CONTROL_PARAM_NAME << '=' << *m_cc << '|';
+        }
+
         if (m_sparse)
         {
             sb << SPARSE_PARAM_NAME << '=' << (m_sparse->value == 1 ? "true" : "false") << '|';
@@ -340,6 +372,16 @@ public:
         if (m_tether)
         {
             sb << TETHER_PARAM_NAME << '=' << (m_tether->value == 1 ? "true" : "false") << '|';
+        }
+
+        if (m_group)
+        {
+            sb << GROUP_PARAM_NAME << '=' << (m_group->value == 1 ? "true" : "false") << '|';
+        }
+
+        if (m_rejoin)
+        {
+            sb << REJOIN_PARAM_NAME << '=' << (m_rejoin->value == 1 ? "true" : "false") << '|';
         }
 
         std::string result = sb.str();
@@ -371,6 +413,7 @@ private:
     std::unique_ptr<std::string> m_controlMode;
     std::unique_ptr<std::string> m_tags;
     std::unique_ptr<std::string> m_alias;
+    std::unique_ptr<std::string> m_cc;
     std::unique_ptr<Value> m_reliable;
     std::unique_ptr<Value> m_ttl;
     std::unique_ptr<Value> m_mtu;
@@ -383,6 +426,8 @@ private:
     std::unique_ptr<Value> m_sparse;
     std::unique_ptr<Value> m_eos;
     std::unique_ptr<Value> m_tether;
+    std::unique_ptr<Value> m_group;
+    std::unique_ptr<Value> m_rejoin;
     bool m_isSessionIdTagged = false;
 
     inline static std::string prefixTag(bool isTagged, Value& value)

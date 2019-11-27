@@ -51,9 +51,9 @@ public class EventLogAgent
 
     private static AgentRunner readerAgentRunner;
     private static Instrumentation instrumentation;
-    private static volatile ClassFileTransformer logTransformer;
+    private static ClassFileTransformer logTransformer;
 
-    static final AgentBuilder.Listener LISTENER = new AgentBuilder.Listener()
+    private static final AgentBuilder.Listener LISTENER = new AgentBuilder.Listener()
     {
         public void onDiscovery(
             final String typeName,
@@ -110,7 +110,7 @@ public class EventLogAgent
         agent(AgentBuilder.RedefinitionStrategy.RETRANSFORMATION, instrumentation);
     }
 
-    public static void removeTransformer()
+    public static synchronized void removeTransformer()
     {
         if (logTransformer != null)
         {
@@ -123,7 +123,7 @@ public class EventLogAgent
                 .or(nameEndsWith("SenderProxy"))
                 .or(nameEndsWith("ReceiverProxy"))
                 .or(nameEndsWith("UdpChannelTransport"))
-                .or(nameEndsWith("ControlRequestAdapter"))
+                .or(nameEndsWith("ControlSessionDemuxer"))
                 .or(nameEndsWith("Election"))
                 .or(nameEndsWith("ConsensusModuleAgent"));
 
@@ -140,9 +140,14 @@ public class EventLogAgent
         }
     }
 
-    private static void agent(
+    private static synchronized void agent(
         final AgentBuilder.RedefinitionStrategy redefinitionStrategy, final Instrumentation instrumentation)
     {
+        if (null != logTransformer)
+        {
+            throw new IllegalStateException("agent already instrumenting");
+        }
+
         if (0 == DriverEventLogger.ENABLED_EVENT_CODES &&
             0 == ArchiveEventLogger.ENABLED_EVENT_CODES &&
             0 == ClusterEventLogger.ENABLED_EVENT_CODES)
@@ -226,7 +231,7 @@ public class EventLogAgent
     private static AgentBuilder addArchiveInstrumentation(final AgentBuilder agentBuilder)
     {
         return agentBuilder
-            .type(nameEndsWith("ControlRequestAdapter"))
+            .type(nameEndsWith("ControlSessionDemuxer"))
             .transform(((builder, typeDescription, classLoader, module) -> builder
                 .visit(to(ControlRequestInterceptor.ControlRequest.class)
                     .on(named("onFragment")))));

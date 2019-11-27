@@ -21,6 +21,7 @@ import io.aeron.logbuffer.FragmentHandler;
 import io.aeron.logbuffer.Header;
 import io.aeron.logbuffer.LogBufferDescriptor;
 import io.aeron.protocol.DataHeaderFlyweight;
+import io.aeron.test.TestMediaDriver;
 import org.agrona.CloseHelper;
 import org.agrona.DirectBuffer;
 import org.agrona.IoUtil;
@@ -35,8 +36,14 @@ import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
 import static org.hamcrest.Matchers.is;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertThat;
-import static org.mockito.Mockito.*;
+import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.anyInt;
+import static org.mockito.Mockito.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 
 public class MultiDestinationSubscriptionTest
 {
@@ -64,17 +71,21 @@ public class MultiDestinationSubscriptionTest
 
     private Aeron clientA;
     private Aeron clientB;
-    private MediaDriver driverA;
-    private MediaDriver driverB;
+    private TestMediaDriver driverA;
+    private TestMediaDriver driverB;
     private Publication publicationA;
     private Publication publicationB;
     private Subscription subscription;
+    private Subscription copySubscription;
 
     private final UnsafeBuffer buffer = new UnsafeBuffer(new byte[MESSAGE_LENGTH]);
     private final FragmentHandler fragmentHandler = mock(FragmentHandler.class);
+    private final FragmentHandler copyFragmentHandler = mock(FragmentHandler.class);
 
     private void launch()
     {
+        TestMediaDriver.notSupportedOnCMediaDriverYet("Multi-destination-cast not available");
+
         final String baseDirA = ROOT_DIR + "A";
 
         buffer.putInt(0, 1);
@@ -85,7 +96,7 @@ public class MultiDestinationSubscriptionTest
             .aeronDirectoryName(baseDirA)
             .threadingMode(ThreadingMode.SHARED);
 
-        driverA = MediaDriver.launch(driverContextA);
+        driverA = TestMediaDriver.launch(driverContextA);
         clientA = Aeron.connect(new Aeron.Context().aeronDirectoryName(driverContextA.aeronDirectoryName()));
     }
 
@@ -99,7 +110,7 @@ public class MultiDestinationSubscriptionTest
             .aeronDirectoryName(baseDirB)
             .threadingMode(ThreadingMode.SHARED);
 
-        driverB = MediaDriver.launch(driverContextB);
+        driverB = TestMediaDriver.launch(driverContextB);
         clientB = Aeron.connect(new Aeron.Context().aeronDirectoryName(driverContextB.aeronDirectoryName()));
     }
 
@@ -109,12 +120,35 @@ public class MultiDestinationSubscriptionTest
         CloseHelper.close(publicationA);
         CloseHelper.close(publicationB);
         CloseHelper.close(subscription);
+        CloseHelper.close(copySubscription);
         CloseHelper.close(clientA);
         CloseHelper.close(driverA);
         CloseHelper.close(clientB);
         CloseHelper.close(driverB);
 
         IoUtil.delete(new File(ROOT_DIR), true);
+    }
+
+    @Test(timeout = 10_000)
+    public void subscriptionCloseShouldAlsoCloseMediaDriverPorts()
+    {
+        launch();
+
+        final String publicationChannelA = new ChannelUriStringBuilder()
+            .media(CommonContext.UDP_MEDIA)
+            .endpoint(UNICAST_ENDPOINT_A)
+            .build();
+
+        subscription = clientA.addSubscription(SUB_URI, STREAM_ID);
+        subscription.addDestination(publicationChannelA);
+
+        CloseHelper.close(subscription);
+        CloseHelper.close(clientA);
+
+        clientA = Aeron.connect(new Aeron.Context().aeronDirectoryName(driverContextA.aeronDirectoryName()));
+        subscription = clientA.addSubscription(SUB_URI, STREAM_ID);
+
+        subscription.addDestination(publicationChannelA);
     }
 
     @Test(timeout = 10_000)
@@ -129,8 +163,8 @@ public class MultiDestinationSubscriptionTest
 
         while (subscription.hasNoImages())
         {
-            SystemTest.checkInterruptedStatus();
             Thread.yield();
+            SystemTest.checkInterruptedStatus();
         }
     }
 
@@ -140,15 +174,17 @@ public class MultiDestinationSubscriptionTest
         launch();
 
         subscription = clientA.addSubscription(SUB_URI, STREAM_ID);
-        subscription.addDestination(PUB_MULTICAST_URI);
+        final long correlationId = subscription.asyncAddDestination(PUB_MULTICAST_URI);
 
         publicationA = clientA.addPublication(PUB_MULTICAST_URI, STREAM_ID);
 
         while (subscription.hasNoImages())
         {
-            SystemTest.checkInterruptedStatus();
             Thread.yield();
+            SystemTest.checkInterruptedStatus();
         }
+
+        assertFalse(clientA.isCommandActive(correlationId));
     }
 
     @Test(timeout = 10_000)
@@ -163,8 +199,8 @@ public class MultiDestinationSubscriptionTest
 
         while (subscription.hasNoImages())
         {
-            SystemTest.checkInterruptedStatus();
             Thread.yield();
+            SystemTest.checkInterruptedStatus();
         }
     }
 
@@ -182,16 +218,16 @@ public class MultiDestinationSubscriptionTest
 
         while (subscription.hasNoImages())
         {
-            SystemTest.checkInterruptedStatus();
             Thread.yield();
+            SystemTest.checkInterruptedStatus();
         }
 
         for (int i = 0; i < numMessagesToSend; i++)
         {
             while (publicationA.offer(buffer, 0, buffer.capacity()) < 0L)
             {
-                SystemTest.checkInterruptedStatus();
                 Thread.yield();
+                SystemTest.checkInterruptedStatus();
             }
 
             final MutableInteger fragmentsRead = new MutableInteger();
@@ -199,6 +235,52 @@ public class MultiDestinationSubscriptionTest
         }
 
         verifyFragments(fragmentHandler, numMessagesToSend);
+    }
+
+    @Test(timeout = 10_000)
+    public void shouldSendToSingleDestinationMultipleSubscriptionsWithUnicast()
+    {
+        final int numMessagesToSend = NUM_MESSAGES_PER_TERM * 3;
+        final String tags = "1,2";
+
+        launch();
+
+        final ChannelUriStringBuilder builder = new ChannelUriStringBuilder()
+            .media(CommonContext.UDP_MEDIA)
+            .tags(tags)
+            .controlMode(CommonContext.MDC_CONTROL_MODE_MANUAL);
+
+        final String subscriptionChannel = builder.build();
+
+        subscription = clientA.addSubscription(subscriptionChannel, STREAM_ID);
+        copySubscription = clientA.addSubscription(subscriptionChannel, STREAM_ID);
+        subscription.addDestination(PUB_UNICAST_URI);
+
+        publicationA = clientA.addPublication(PUB_UNICAST_URI, STREAM_ID);
+
+        while (subscription.hasNoImages())
+        {
+            Thread.yield();
+            SystemTest.checkInterruptedStatus();
+        }
+
+        for (int i = 0; i < numMessagesToSend; i++)
+        {
+            while (publicationA.offer(buffer, 0, buffer.capacity()) < 0L)
+            {
+                Thread.yield();
+                SystemTest.checkInterruptedStatus();
+            }
+
+            final MutableInteger fragmentsRead = new MutableInteger();
+            final MutableInteger copyFragmentsRead = new MutableInteger();
+
+            pollForFragment(subscription, fragmentHandler, fragmentsRead);
+            pollForFragment(copySubscription, copyFragmentHandler, copyFragmentsRead);
+        }
+
+        verifyFragments(fragmentHandler, numMessagesToSend);
+        verifyFragments(copyFragmentHandler, numMessagesToSend);
     }
 
     @Test(timeout = 10_000)
@@ -215,16 +297,16 @@ public class MultiDestinationSubscriptionTest
 
         while (subscription.hasNoImages())
         {
-            SystemTest.checkInterruptedStatus();
             Thread.yield();
+            SystemTest.checkInterruptedStatus();
         }
 
         for (int i = 0; i < numMessagesToSend; i++)
         {
             while (publicationA.offer(buffer, 0, buffer.capacity()) < 0L)
             {
-                SystemTest.checkInterruptedStatus();
                 Thread.yield();
+                SystemTest.checkInterruptedStatus();
             }
 
             final MutableInteger fragmentsRead = new MutableInteger();
@@ -248,16 +330,16 @@ public class MultiDestinationSubscriptionTest
 
         while (subscription.hasNoImages())
         {
-            SystemTest.checkInterruptedStatus();
             Thread.yield();
+            SystemTest.checkInterruptedStatus();
         }
 
         for (int i = 0; i < numMessagesToSend; i++)
         {
             while (publicationA.offer(buffer, 0, buffer.capacity()) < 0L)
             {
-                SystemTest.checkInterruptedStatus();
                 Thread.yield();
+                SystemTest.checkInterruptedStatus();
             }
 
             final MutableInteger fragmentsRead = new MutableInteger();
@@ -295,16 +377,16 @@ public class MultiDestinationSubscriptionTest
 
         while (subscription.hasNoImages())
         {
-            SystemTest.checkInterruptedStatus();
             Thread.yield();
+            SystemTest.checkInterruptedStatus();
         }
 
         for (int i = 0; i < numMessagesToSendForA; i++)
         {
             while (publicationA.offer(buffer, 0, buffer.capacity()) < 0L)
             {
-                SystemTest.checkInterruptedStatus();
                 Thread.yield();
+                SystemTest.checkInterruptedStatus();
             }
 
             final MutableInteger fragmentsRead = new MutableInteger();
@@ -344,8 +426,8 @@ public class MultiDestinationSubscriptionTest
         {
             while (publicationB.offer(buffer, 0, buffer.capacity()) < 0L)
             {
-                SystemTest.checkInterruptedStatus();
                 Thread.yield();
+                SystemTest.checkInterruptedStatus();
             }
 
             final MutableInteger fragmentsRead = new MutableInteger();
@@ -353,6 +435,7 @@ public class MultiDestinationSubscriptionTest
         }
 
         assertThat(subscription.imageCount(), is(1));
+        assertThat(subscription.imageAtIndex(0).activeTransportCount(), is(2));
         verifyFragments(fragmentHandler, numMessagesToSend);
     }
 
@@ -403,8 +486,8 @@ public class MultiDestinationSubscriptionTest
         {
             while (publicationA.offer(buffer, 0, buffer.capacity()) < 0L)
             {
-                SystemTest.checkInterruptedStatus();
                 Thread.yield();
+                SystemTest.checkInterruptedStatus();
             }
 
             final MutableInteger fragmentsRead = new MutableInteger();
@@ -412,8 +495,8 @@ public class MultiDestinationSubscriptionTest
 
             while (publicationB.offer(buffer, 0, buffer.capacity()) < 0L)
             {
-                SystemTest.checkInterruptedStatus();
                 Thread.yield();
+                SystemTest.checkInterruptedStatus();
             }
 
             assertThat(subscription.poll(fragmentHandler, 10), is(0));
@@ -432,14 +515,15 @@ public class MultiDestinationSubscriptionTest
 
             while (publicationA.offer(buffer, 0, buffer.capacity()) < 0L)
             {
-                SystemTest.checkInterruptedStatus();
                 Thread.yield();
+                SystemTest.checkInterruptedStatus();
             }
 
             assertThat(subscription.poll(fragmentHandler, 10), is(0));
         }
 
         assertThat(subscription.imageCount(), is(1));
+        assertThat(subscription.imageAtIndex(0).activeTransportCount(), is(2));
         verifyFragments(fragmentHandler, numMessagesToSend);
     }
 
@@ -450,8 +534,13 @@ public class MultiDestinationSubscriptionTest
             () -> fragmentsRead.get() > 0,
             (j) ->
             {
-                fragmentsRead.value += subscription.poll(handler, 10);
-                Thread.yield();
+                final int fragments = subscription.poll(handler, 10);
+                if (fragments == 0)
+                {
+                    Thread.yield();
+                }
+
+                fragmentsRead.value += fragments;
             },
             Integer.MAX_VALUE,
             TimeUnit.MILLISECONDS.toNanos(500));

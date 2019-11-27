@@ -32,9 +32,9 @@ import java.net.*;
 import java.util.HashMap;
 import java.util.Map;
 
-import static java.lang.String.format;
-import static org.hamcrest.Matchers.is;
 import static org.hamcrest.MatcherAssert.assertThat;
+import static org.hamcrest.Matchers.*;
+import static org.junit.Assert.*;
 
 @RunWith(Theories.class)
 public class UdpChannelTest
@@ -48,6 +48,22 @@ public class UdpChannelTest
         assertThat(udpChannel.localControl(), is(new InetSocketAddress("localhost", 40123)));
         assertThat(udpChannel.remoteData(), is(new InetSocketAddress("localhost", 40124)));
         assertThat(udpChannel.remoteControl(), is(new InetSocketAddress("localhost", 40124)));
+    }
+
+    @Test
+    public void shouldNotAllowDynamicControlModeWithoutExplicitControl()
+    {
+        try
+        {
+            UdpChannel.parse("aeron:udp?control-mode=dynamic");
+            fail("InvalidChannelException expected");
+        }
+        catch (final InvalidChannelException ex)
+        {
+            final Throwable cause = ex.getCause();
+            assertNotNull(cause);
+            assertThat(cause.getMessage(), containsString("explicit control expected with dynamic control mode"));
+        }
     }
 
     @Theory
@@ -426,11 +442,11 @@ public class UdpChannelTest
     private static String uri(
         final String endpointKey, final String endpointValue, final String interfaceKey, final String interfaceValue)
     {
-        return format("aeron:udp?%s=%s|%s=%s", endpointKey, endpointValue, interfaceKey, interfaceValue);
+        return "aeron:udp?" + endpointKey + "=" + endpointValue + "|" + interfaceKey + "=" + interfaceValue;
     }
 
     private static String uri(final String endpointKey, final String endpointValue)
     {
-        return format("aeron:udp?%s=%s", endpointKey, endpointValue);
+        return "aeron:udp?" + endpointKey + "=" + endpointValue;
     }
 }

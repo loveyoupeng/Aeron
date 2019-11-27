@@ -25,7 +25,10 @@
 #include "aeron_alloc.h"
 #include "media/aeron_udp_transport_poller.h"
 
-int aeron_udp_transport_poller_init(aeron_udp_transport_poller_t *poller)
+int aeron_udp_transport_poller_init(
+    aeron_udp_transport_poller_t *poller,
+    aeron_driver_context_t *context,
+    aeron_udp_channel_transport_affinity_t affinity)
 {
     poller->transports.array = NULL;
     poller->transports.length = 0;
@@ -42,6 +45,7 @@ int aeron_udp_transport_poller_init(aeron_udp_transport_poller_t *poller)
     poller->pollfds = NULL;
 #endif
 
+    poller->bindings_clientd = NULL;
     return 0;
 }
 
@@ -173,6 +177,7 @@ int aeron_udp_transport_poller_poll(
     size_t vlen,
     int64_t *bytes_rcved,
     aeron_udp_transport_recv_func_t recv_func,
+    aeron_udp_channel_transport_recvmmsg_func_t recvmmsg_func,
     void *clientd)
 {
     int work_count = 0;
@@ -181,7 +186,7 @@ int aeron_udp_transport_poller_poll(
     {
         for (size_t i = 0, length = poller->transports.length; i < length; i++)
         {
-            int recv_result = aeron_udp_channel_transport_recvmmsg(
+            int recv_result = recvmmsg_func(
                 poller->transports.array[i].transport, msgvec, vlen, bytes_rcved, recv_func, clientd);
             if (recv_result < 0)
             {
@@ -218,7 +223,7 @@ int aeron_udp_transport_poller_poll(
             {
                 if (poller->epoll_events[i].events & EPOLLIN)
                 {
-                    int recv_result = aeron_udp_channel_transport_recvmmsg(
+                    int recv_result = recvmmsg_func(
                         poller->epoll_events[i].data.ptr, msgvec, vlen, bytes_rcved, recv_func, clientd);
 
                     if (recv_result < 0)
@@ -258,7 +263,7 @@ int aeron_udp_transport_poller_poll(
             {
                 if (poller->pollfds[i].revents & POLLIN)
                 {
-                    int recv_result = aeron_udp_channel_transport_recvmmsg(
+                    int recv_result = recvmmsg_func(
                         poller->transports.array[i].transport, msgvec, vlen, bytes_rcved, recv_func, clientd);
 
                     if (recv_result < 0)

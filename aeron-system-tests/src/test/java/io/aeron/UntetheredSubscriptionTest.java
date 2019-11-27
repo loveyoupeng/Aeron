@@ -19,6 +19,7 @@ import io.aeron.driver.MediaDriver;
 import io.aeron.driver.ThreadingMode;
 import io.aeron.logbuffer.FragmentHandler;
 import io.aeron.protocol.DataHeaderFlyweight;
+import io.aeron.test.TestMediaDriver;
 import org.agrona.CloseHelper;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.junit.After;
@@ -33,7 +34,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import static org.junit.Assert.*;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 
 @RunWith(Theories.class)
 public class UntetheredSubscriptionTest
@@ -51,9 +53,11 @@ public class UntetheredSubscriptionTest
     private static final int FRAGMENT_COUNT_LIMIT = 10;
     private static final int MESSAGE_LENGTH = 512 - DataHeaderFlyweight.HEADER_LENGTH;
 
-    private final MediaDriver driver = MediaDriver.launch(new MediaDriver.Context()
+    private final TestMediaDriver driver = TestMediaDriver.launch(new MediaDriver.Context()
         .errorHandler(Throwable::printStackTrace)
         .spiesSimulateConnection(true)
+        .dirDeleteOnShutdown(true)
+        .dirDeleteOnStart(true)
         .timerIntervalNs(TimeUnit.MILLISECONDS.toNanos(20))
         .untetheredWindowLimitTimeoutNs(TimeUnit.MILLISECONDS.toNanos(100))
         .untetheredRestingTimeoutNs(TimeUnit.MILLISECONDS.toNanos(100))
@@ -68,7 +72,6 @@ public class UntetheredSubscriptionTest
     {
         CloseHelper.close(aeron);
         CloseHelper.close(driver);
-        driver.context().deleteAeronDirectory();
     }
 
     @Theory
@@ -90,18 +93,18 @@ public class UntetheredSubscriptionTest
         {
             while (!tetheredSub.isConnected() || !untetheredSub.isConnected())
             {
-                SystemTest.checkInterruptedStatus();
-                Thread.yield();
                 aeron.conductorAgentInvoker().invoke();
+                Thread.yield();
+                SystemTest.checkInterruptedStatus();
             }
 
             while (true)
             {
                 if (publication.offer(srcBuffer) < 0)
                 {
-                    SystemTest.checkInterruptedStatus();
-                    Thread.yield();
                     aeron.conductorAgentInvoker().invoke();
+                    Thread.yield();
+                    SystemTest.checkInterruptedStatus();
                 }
 
                 if (pollingUntethered && untetheredSub.poll(fragmentHandler, FRAGMENT_COUNT_LIMIT) > 0)
@@ -118,9 +121,9 @@ public class UntetheredSubscriptionTest
 
                     while (publication.offer(srcBuffer) < 0)
                     {
-                        SystemTest.checkInterruptedStatus();
-                        Thread.yield();
                         aeron.conductorAgentInvoker().invoke();
+                        Thread.yield();
+                        SystemTest.checkInterruptedStatus();
                     }
 
                     return;
@@ -151,18 +154,18 @@ public class UntetheredSubscriptionTest
         {
             while (!tetheredSub.isConnected() || !untetheredSub.isConnected())
             {
-                SystemTest.checkInterruptedStatus();
-                Thread.yield();
                 aeron.conductorAgentInvoker().invoke();
+                Thread.yield();
+                SystemTest.checkInterruptedStatus();
             }
 
             while (true)
             {
                 if (publication.offer(srcBuffer) < 0)
                 {
-                    SystemTest.checkInterruptedStatus();
-                    Thread.yield();
                     aeron.conductorAgentInvoker().invoke();
+                    Thread.yield();
+                    SystemTest.checkInterruptedStatus();
                 }
 
                 if (pollingUntethered && untetheredSub.poll(fragmentHandler, FRAGMENT_COUNT_LIMIT) > 0)
@@ -176,9 +179,9 @@ public class UntetheredSubscriptionTest
                 {
                     while (availableImageCount.get() < 2)
                     {
-                        SystemTest.checkInterruptedStatus();
-                        Thread.yield();
                         aeron.conductorAgentInvoker().invoke();
+                        Thread.yield();
+                        SystemTest.checkInterruptedStatus();
                     }
 
                     return;

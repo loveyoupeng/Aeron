@@ -16,20 +16,21 @@
 package io.aeron;
 
 import io.aeron.driver.MediaDriver;
+import io.aeron.driver.ThreadingMode;
+import io.aeron.logbuffer.FragmentHandler;
+import io.aeron.logbuffer.Header;
 import io.aeron.logbuffer.LogBufferDescriptor;
+import io.aeron.protocol.DataHeaderFlyweight;
+import io.aeron.test.TestMediaDriver;
+import org.agrona.BitUtil;
 import org.agrona.CloseHelper;
+import org.agrona.DirectBuffer;
 import org.agrona.collections.MutableInteger;
+import org.agrona.concurrent.UnsafeBuffer;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Ignore;
 import org.junit.Test;
-import io.aeron.driver.ThreadingMode;
-import io.aeron.logbuffer.FragmentHandler;
-import io.aeron.logbuffer.Header;
-import io.aeron.protocol.DataHeaderFlyweight;
-import org.agrona.BitUtil;
-import org.agrona.DirectBuffer;
-import org.agrona.concurrent.UnsafeBuffer;
 
 import java.util.concurrent.TimeUnit;
 
@@ -49,7 +50,7 @@ public class PongTest
 
     private Aeron pingClient;
     private Aeron pongClient;
-    private MediaDriver driver;
+    private TestMediaDriver driver;
     private Subscription pingSubscription;
     private Subscription pongSubscription;
     private Publication pingPublication;
@@ -61,9 +62,10 @@ public class PongTest
     @Before
     public void before()
     {
-        driver = MediaDriver.launch(
+        driver = TestMediaDriver.launch(
             new MediaDriver.Context()
                 .errorHandler(Throwable::printStackTrace)
+                .dirDeleteOnShutdown(true)
                 .publicationTermBufferLength(LogBufferDescriptor.TERM_MIN_LENGTH)
                 .threadingMode(ThreadingMode.SHARED));
 
@@ -83,8 +85,6 @@ public class PongTest
         CloseHelper.close(pongClient);
         CloseHelper.close(pingClient);
         CloseHelper.close(driver);
-
-        driver.context().deleteAeronDirectory();
     }
 
     @Test
@@ -94,8 +94,8 @@ public class PongTest
 
         while (pingPublication.offer(buffer, 0, BitUtil.SIZE_OF_INT) < 0L)
         {
-            SystemTest.checkInterruptedStatus();
             Thread.yield();
+            SystemTest.checkInterruptedStatus();
         }
 
         final MutableInteger fragmentsRead = new MutableInteger();
@@ -137,8 +137,8 @@ public class PongTest
 
         while (pingPublication.offer(buffer, 0, BitUtil.SIZE_OF_INT) < 0L)
         {
-            SystemTest.checkInterruptedStatus();
             Thread.yield();
+            SystemTest.checkInterruptedStatus();
         }
 
         final MutableInteger fragmentsRead = new MutableInteger();
@@ -172,8 +172,8 @@ public class PongTest
         // wait for disconnect to ensure we stay in lock step
         while (pingPublication.isConnected())
         {
-            SystemTest.checkInterruptedStatus();
             Thread.sleep(100);
+            SystemTest.checkInterruptedStatus();
         }
 
         // restart Pong side
@@ -184,8 +184,8 @@ public class PongTest
 
         while (pingPublication.offer(buffer, 0, BitUtil.SIZE_OF_INT) < 0L)
         {
-            SystemTest.checkInterruptedStatus();
             Thread.yield();
+            SystemTest.checkInterruptedStatus();
         }
 
         SystemTest.executeUntil(
@@ -222,8 +222,8 @@ public class PongTest
     {
         while (pongPublication.offer(buffer, offset, length) < 0L)
         {
-            SystemTest.checkInterruptedStatus();
             Thread.yield();
+            SystemTest.checkInterruptedStatus();
         }
     }
 }

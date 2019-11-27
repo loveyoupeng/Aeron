@@ -257,6 +257,24 @@ public class Image
     }
 
     /**
+     * Count of observed active transports within the image liveness timeout.
+     *
+     * If the image is closed, then this is 0. This may also be 0 if no actual datagrams have arrived. IPC
+     * Images also will be 0.
+     *
+     * @return count of active transports - 0 if Image is closed, no datagrams yet, or IPC.
+     */
+    public int activeTransportCount()
+    {
+        if (isClosed)
+        {
+            return 0;
+        }
+
+        return LogBufferDescriptor.activeTransportCount(logBuffers.metaDataBuffer());
+    }
+
+    /**
      * The {@link FileChannel} to the raw log of the Image.
      *
      * @return the {@link FileChannel} to the raw log of the Image.
@@ -368,6 +386,76 @@ public class Image
                     initialOffset = offset;
                     subscriberPosition.setOrdered(initialPosition);
                 }
+            }
+        }
+        catch (final Throwable t)
+        {
+            errorHandler.onError(t);
+        }
+        finally
+        {
+            final long resultingPosition = initialPosition + (offset - initialOffset);
+            if (resultingPosition > initialPosition)
+            {
+                subscriberPosition.setOrdered(resultingPosition);
+            }
+        }
+
+        return fragmentsRead;
+    }
+
+    /**
+     * Poll for new messages in a stream. If new messages are found beyond the last consumed position then they
+     * will be delivered to the {@link FragmentHandler} up to a limited number of fragments as specified or
+     * the maximum position specified.
+     * <p>
+     * Use a {@link FragmentAssembler} to assemble messages which span multiple fragments.
+     *
+     * @param handler       to which message fragments are delivered.
+     * @param limitPosition to consume messages up to.
+     * @param fragmentLimit for the number of fragments to be consumed during one polling operation.
+     * @return the number of fragments that have been consumed.
+     * @see FragmentAssembler
+     * @see ImageFragmentAssembler
+     */
+    public int boundedPoll(final FragmentHandler handler, final long limitPosition, final int fragmentLimit)
+    {
+        if (isClosed)
+        {
+            return 0;
+        }
+
+        int fragmentsRead = 0;
+        final long initialPosition = subscriberPosition.get();
+        final int initialOffset = (int)initialPosition & termLengthMask;
+        int offset = initialOffset;
+        final UnsafeBuffer termBuffer = activeTermBuffer(initialPosition);
+        final int limitOffset = (int)Math.min(termBuffer.capacity(), (limitPosition - initialPosition) + offset);
+        final Header header = this.header;
+        header.buffer(termBuffer);
+
+        try
+        {
+            while (fragmentsRead < fragmentLimit && offset < limitOffset)
+            {
+                final int length = frameLengthVolatile(termBuffer, offset);
+                if (length <= 0)
+                {
+                    break;
+                }
+
+                final int frameOffset = offset;
+                final int alignedLength = BitUtil.align(length, FRAME_ALIGNMENT);
+                offset += alignedLength;
+
+                if (isPaddingFrame(termBuffer, frameOffset))
+                {
+                    continue;
+                }
+
+                header.offset(frameOffset);
+                handler.onFragment(termBuffer, frameOffset + HEADER_LENGTH, length - HEADER_LENGTH, header);
+                ++fragmentsRead;
             }
         }
         catch (final Throwable t)

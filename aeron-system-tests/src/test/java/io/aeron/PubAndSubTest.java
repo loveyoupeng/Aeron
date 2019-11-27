@@ -17,7 +17,6 @@ package io.aeron;
 
 import io.aeron.driver.MediaDriver;
 import io.aeron.driver.ThreadingMode;
-import io.aeron.driver.reports.LossReport;
 import org.agrona.CloseHelper;
 import org.agrona.DirectBuffer;
 import org.agrona.collections.MutableInteger;
@@ -40,10 +39,12 @@ import io.aeron.logbuffer.Header;
 import org.agrona.BitUtil;
 import org.agrona.concurrent.UnsafeBuffer;
 
+import java.io.IOException;
 import java.nio.channels.FileChannel;
 import java.util.concurrent.TimeUnit;
 
 
+import static io.aeron.test.LossReportTestUtil.verifyLossOccurredForStream;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.*;
@@ -83,6 +84,7 @@ public class PubAndSubTest
         context
             .threadingMode(THREADING_MODE)
             .errorHandler(Throwable::printStackTrace)
+            .dirDeleteOnShutdown(true)
             .publicationConnectionTimeoutNs(TimeUnit.MILLISECONDS.toNanos(500))
             .timerIntervalNs(TimeUnit.MILLISECONDS.toNanos(100));
 
@@ -99,11 +101,6 @@ public class PubAndSubTest
         CloseHelper.quietClose(publishingClient);
         CloseHelper.quietClose(subscribingClient);
         CloseHelper.quietClose(driver);
-
-        if (null != context.aeronDirectory())
-        {
-            context.deleteAeronDirectory();
-        }
     }
 
     @Theory
@@ -162,8 +159,8 @@ public class PubAndSubTest
         {
             while (publication.offer(buffer, 0, messageLength) < 0L)
             {
-                SystemTest.checkInterruptedStatus();
                 Thread.yield();
+                SystemTest.checkInterruptedStatus();
             }
 
             final MutableInteger fragmentsRead = new MutableInteger();
@@ -210,8 +207,8 @@ public class PubAndSubTest
         {
             while (publication.offer(buffer, 0, messageLength) < 0L)
             {
-                SystemTest.checkInterruptedStatus();
                 Thread.yield();
+                SystemTest.checkInterruptedStatus();
             }
 
             final MutableInteger fragmentsRead = new MutableInteger();
@@ -236,21 +233,22 @@ public class PubAndSubTest
             while (publication.offer(buffer, 0, messageLength) < 0L)
             {
                 Thread.yield();
+                SystemTest.checkInterruptedStatus();
             }
         }
 
         // small enough to leave room for padding that is just a header
         while (publication.offer(buffer, 0, lastMessageLength) < 0L)
         {
-            SystemTest.checkInterruptedStatus();
             Thread.yield();
+            SystemTest.checkInterruptedStatus();
         }
 
         // no roll over
         while (publication.offer(buffer, 0, messageLength) < 0L)
         {
-            SystemTest.checkInterruptedStatus();
             Thread.yield();
+            SystemTest.checkInterruptedStatus();
         }
 
         final MutableInteger fragmentsRead = new MutableInteger();
@@ -290,7 +288,7 @@ public class PubAndSubTest
 
     @Theory
     @Test(timeout = 20_000)
-    public void shouldReceivePublishedMessageOneForOneWithDataLoss(final String channel)
+    public void shouldReceivePublishedMessageOneForOneWithDataLoss(final String channel) throws IOException
     {
         if (IPC_URI.equals(channel))
         {
@@ -301,9 +299,6 @@ public class PubAndSubTest
         final int numMessagesInTermBuffer = 64;
         final int messageLength = (termBufferLength / numMessagesInTermBuffer) - HEADER_LENGTH;
         final int numMessagesToSend = 2 * numMessagesInTermBuffer;
-
-        final LossReport lossReport = mock(LossReport.class);
-        context.lossReport(lossReport);
 
         final LossGenerator dataLossGenerator =
             DebugChannelEndpointConfiguration.lossGeneratorSupplier(0.10, 0xcafebabeL);
@@ -326,6 +321,7 @@ public class PubAndSubTest
             while (publication.offer(buffer, 0, messageLength) < 0L)
             {
                 Thread.yield();
+                SystemTest.checkInterruptedStatus();
             }
 
             final MutableInteger mutableInteger = new MutableInteger();
@@ -350,12 +346,12 @@ public class PubAndSubTest
             eq(messageLength),
             any(Header.class));
 
-        verify(lossReport).createEntry(anyLong(), anyLong(), anyInt(), eq(STREAM_ID), anyString(), anyString());
+        verifyLossOccurredForStream(context.aeronDirectoryName(), STREAM_ID);
     }
 
     @Theory
     @Test(timeout = 20_000)
-    public void shouldReceivePublishedMessageBatchedWithDataLoss(final String channel)
+    public void shouldReceivePublishedMessageBatchedWithDataLoss(final String channel) throws IOException
     {
         if (IPC_URI.equals(channel))
         {
@@ -368,9 +364,6 @@ public class PubAndSubTest
         final int numMessagesToSend = 2 * numMessagesInTermBuffer;
         final int numBatches = 4;
         final int numMessagesPerBatch = numMessagesToSend / numBatches;
-
-        final LossReport lossReport = mock(LossReport.class);
-        context.lossReport(lossReport);
 
         final LossGenerator dataLossGenerator =
             DebugChannelEndpointConfiguration.lossGeneratorSupplier(0.10, 0xcafebabeL);
@@ -394,8 +387,8 @@ public class PubAndSubTest
             {
                 while (publication.offer(buffer, 0, messageLength) < 0L)
                 {
-                    SystemTest.checkInterruptedStatus();
                     Thread.yield();
+                    SystemTest.checkInterruptedStatus();
                 }
             }
 
@@ -422,7 +415,7 @@ public class PubAndSubTest
             eq(messageLength),
             any(Header.class));
 
-        verify(lossReport).createEntry(anyLong(), anyLong(), anyInt(), eq(STREAM_ID), anyString(), anyString());
+        verifyLossOccurredForStream(context.aeronDirectoryName(), STREAM_ID);
     }
 
     @Theory
@@ -446,8 +439,8 @@ public class PubAndSubTest
             {
                 while (publication.offer(buffer, 0, messageLength) < 0L)
                 {
-                    SystemTest.checkInterruptedStatus();
                     Thread.yield();
+                    SystemTest.checkInterruptedStatus();
                 }
             }
 
@@ -519,8 +512,8 @@ public class PubAndSubTest
         {
             while (publication.offer(buffer, 0, messageLength) < 0L)
             {
-                SystemTest.checkInterruptedStatus();
                 Thread.yield();
+                SystemTest.checkInterruptedStatus();
             }
 
             final MutableInteger fragmentsRead = new MutableInteger();
@@ -573,8 +566,8 @@ public class PubAndSubTest
             {
                 while (publication.offer(buffer, 0, messageLength) < 0L)
                 {
-                    SystemTest.checkInterruptedStatus();
                     Thread.yield();
+                    SystemTest.checkInterruptedStatus();
                 }
             }
 
@@ -683,16 +676,16 @@ public class PubAndSubTest
 
         while (!subscription.isConnected())
         {
-            SystemTest.checkInterruptedStatus();
             Thread.yield();
+            SystemTest.checkInterruptedStatus();
         }
 
         for (int i = 0; i < numMessagesToSendStageOne; i++)
         {
             while (publication.offer(buffer, 0, messageLength) < 0L)
             {
-                SystemTest.checkInterruptedStatus();
                 Thread.yield();
+                SystemTest.checkInterruptedStatus();
             }
 
             final MutableInteger fragmentsRead = new MutableInteger();
@@ -719,8 +712,8 @@ public class PubAndSubTest
 
         while (!subscription.isConnected())
         {
-            SystemTest.checkInterruptedStatus();
             Thread.yield();
+            SystemTest.checkInterruptedStatus();
         }
 
         assertEquals(publication.position(), subscription.imageAtIndex(0).position());
@@ -729,8 +722,8 @@ public class PubAndSubTest
         {
             while (publication.offer(buffer, 0, messageLength) < 0L)
             {
-                SystemTest.checkInterruptedStatus();
                 Thread.yield();
+                SystemTest.checkInterruptedStatus();
             }
 
             final MutableInteger fragmentsRead = new MutableInteger();
@@ -779,8 +772,8 @@ public class PubAndSubTest
         {
             while (publication.offer(buffer, 0, messageLength) < 0L)
             {
-                SystemTest.checkInterruptedStatus();
                 Thread.yield();
+                SystemTest.checkInterruptedStatus();
             }
         }
 
@@ -815,16 +808,16 @@ public class PubAndSubTest
 
         while (!publication.isConnected())
         {
-            SystemTest.checkInterruptedStatus();
             Thread.sleep(1);
+            SystemTest.checkInterruptedStatus();
         }
 
         subscription.close();
 
         while (publication.isConnected())
         {
-            SystemTest.checkInterruptedStatus();
             Thread.yield();
+            SystemTest.checkInterruptedStatus();
         }
     }
 
@@ -834,8 +827,8 @@ public class PubAndSubTest
 
         while (publication.offer(buffer, 0, SIZE_OF_INT) < 0L)
         {
-            SystemTest.checkInterruptedStatus();
             Thread.yield();
+            SystemTest.checkInterruptedStatus();
         }
     }
 }

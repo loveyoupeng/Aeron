@@ -16,31 +16,35 @@
 package io.aeron.archive;
 
 import io.aeron.Aeron;
+import io.aeron.CncFileDescriptor;
+import io.aeron.CommonContext;
 import io.aeron.archive.client.AeronArchive;
 import io.aeron.archive.codecs.RecordingDescriptorDecoder;
 import io.aeron.archive.codecs.RecordingDescriptorEncoder;
 import io.aeron.archive.codecs.RecordingDescriptorHeaderDecoder;
 import io.aeron.archive.codecs.RecordingDescriptorHeaderEncoder;
+import io.aeron.archive.codecs.mark.MarkFileHeaderDecoder;
 import io.aeron.logbuffer.FrameDescriptor;
 import io.aeron.protocol.DataHeaderFlyweight;
-import org.agrona.AsciiEncoding;
-import org.agrona.BitUtil;
-import org.agrona.BufferUtil;
-import org.agrona.PrintBufferUtil;
+import org.agrona.*;
 import org.agrona.collections.ArrayUtil;
 
 import java.io.File;
+import java.io.PrintStream;
 import java.nio.ByteBuffer;
+import java.nio.MappedByteBuffer;
 import java.nio.channels.FileChannel;
 import java.util.Date;
+import java.util.List;
 import java.util.Scanner;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
-import static io.aeron.archive.Archive.Configuration.RECORDING_SEGMENT_POSTFIX;
+import static io.aeron.archive.Archive.Configuration.RECORDING_SEGMENT_SUFFIX;
 import static io.aeron.archive.Archive.segmentFileName;
 import static io.aeron.archive.Catalog.INVALID;
 import static io.aeron.archive.Catalog.VALID;
+import static io.aeron.archive.MigrationUtils.fullVersionString;
 import static io.aeron.archive.client.AeronArchive.NULL_POSITION;
 import static io.aeron.logbuffer.FrameDescriptor.*;
 import static io.aeron.protocol.HeaderFlyweight.HDR_TYPE_DATA;
@@ -48,7 +52,8 @@ import static io.aeron.protocol.HeaderFlyweight.HDR_TYPE_PAD;
 import static java.nio.file.StandardOpenOption.READ;
 
 /**
- * Tool for getting a listing from or verifying the archive catalog.
+ * Tool for inspecting and performing administrative tasks on an {@link Archive} and its contents which is described in
+ * the {@link Catalog}.
  */
 public class CatalogTool
 {
@@ -58,6 +63,7 @@ public class CatalogTool
 
     private static File archiveDir;
 
+    @SuppressWarnings("MethodLength")
     public static void main(final String[] args)
     {
         if (args.length == 0 || args.length > 3)
@@ -97,6 +103,13 @@ public class CatalogTool
                 System.out.println("Dumping " + dataFragmentLimit + " fragments per recording");
                 catalog.forEach((he, headerDecoder, e, descriptorDecoder) ->
                     dump(catalog, dataFragmentLimit, headerDecoder, descriptorDecoder));
+            }
+        }
+        else if (args.length == 2 && args[1].equals("errors"))
+        {
+            try (ArchiveMarkFile markFile = openMarkFile(null))
+            {
+                printErrors(System.out, markFile);
             }
         }
         else if (args.length == 2 && args[1].equals("pid"))
@@ -150,6 +163,39 @@ public class CatalogTool
                 System.out.println(catalog.maxEntries());
             }
         }
+        else if (args.length == 2 && args[1].equals("migrate"))
+        {
+            System.out.print(
+                "WARNING: please ensure archive is not running and that backups have been taken of archive " +
+                "directory before attempting migration(s). ");
+
+            if (readContinueAnswer())
+            {
+                try (ArchiveMarkFile markFile = openMarkFileReadWrite();
+                    Catalog catalog = openCatalogReadWrite())
+                {
+                    System.out.println(
+                        "MarkFile version=" + fullVersionString(markFile.decoder().version()));
+                    System.out.println(
+                        "Catalog version=" + fullVersionString(catalog.version()));
+                    System.out.println(
+                        "Latest version=" + fullVersionString(ArchiveMarkFile.SEMANTIC_VERSION));
+
+                    final List<ArchiveMigrationStep> steps = ArchiveMigrationPlanner.createPlan(
+                        markFile.decoder().version());
+
+                    for (final ArchiveMigrationStep step : steps)
+                    {
+                        System.out.println("Migration step " + step.toString());
+                        step.migrate(markFile, catalog, archiveDir);
+                    }
+                }
+                catch (final Exception ex)
+                {
+                    ex.printStackTrace();
+                }
+            }
+        }
     }
 
     private static void dump(
@@ -177,12 +223,10 @@ public class CatalogTool
         }
 
         final RecordingReader reader = new RecordingReader(
-            catalog,
             catalog.recordingSummary(descriptor.recordingId(), new RecordingSummary()),
             archiveDir,
             descriptor.startPosition(),
-            AeronArchive.NULL_POSITION,
-            null);
+            AeronArchive.NULL_POSITION);
 
         boolean isContinue = true;
         long fragmentCount = dataFragmentLimit;
@@ -246,6 +290,17 @@ public class CatalogTool
             archiveDir, ArchiveMarkFile.FILENAME, System::currentTimeMillis, TimeUnit.SECONDS.toMillis(5), logger);
     }
 
+    private static ArchiveMarkFile openMarkFileReadWrite()
+    {
+        return new ArchiveMarkFile(
+            archiveDir,
+            ArchiveMarkFile.FILENAME,
+            System::currentTimeMillis,
+            TimeUnit.SECONDS.toMillis(5),
+            (version) -> {},
+            null);
+    }
+
     private static Catalog openCatalogReadOnly()
     {
         return new Catalog(archiveDir, System::currentTimeMillis);
@@ -253,7 +308,12 @@ public class CatalogTool
 
     private static Catalog openCatalog()
     {
-        return new Catalog(archiveDir, System::currentTimeMillis, true);
+        return new Catalog(archiveDir, System::currentTimeMillis, true, null);
+    }
+
+    private static Catalog openCatalogReadWrite()
+    {
+        return new Catalog(archiveDir, System::currentTimeMillis, true, (version) -> {});
     }
 
     private static void printMarkInformation(final ArchiveMarkFile markFile)
@@ -281,13 +341,13 @@ public class CatalogTool
         final File maxSegmentFile;
 
         long stopPosition = decoder.stopPosition();
-        int maxSegmentIndex = Aeron.NULL_VALUE;
+        long maxSegmentPosition = Aeron.NULL_VALUE;
 
         if (NULL_POSITION == stopPosition)
         {
             final String prefix = recordingId + "-";
             String[] segmentFiles = archiveDir.list(
-                (dir, name) -> name.startsWith(prefix) && name.endsWith(RECORDING_SEGMENT_POSTFIX));
+                (dir, name) -> name.startsWith(prefix) && name.endsWith(RECORDING_SEGMENT_SUFFIX));
 
             if (null == segmentFiles)
             {
@@ -298,15 +358,15 @@ public class CatalogTool
             {
                 final int length = filename.length();
                 final int offset = prefix.length();
-                final int remaining = length - offset - RECORDING_SEGMENT_POSTFIX.length();
+                final int remaining = length - offset - RECORDING_SEGMENT_SUFFIX.length();
 
                 if (remaining > 0)
                 {
                     try
                     {
-                        maxSegmentIndex = Math.max(
-                            AsciiEncoding.parseIntAscii(filename, offset, remaining),
-                            maxSegmentIndex);
+                        maxSegmentPosition = Math.max(
+                            AsciiEncoding.parseLongAscii(filename, offset, remaining),
+                            maxSegmentPosition);
                     }
                     catch (final Exception ignore)
                     {
@@ -318,7 +378,7 @@ public class CatalogTool
                 }
             }
 
-            if (maxSegmentIndex < 0)
+            if (maxSegmentPosition < 0)
             {
                 System.err.println(
                     "(recordingId=" + recordingId + ") ERR: no recording segment files");
@@ -326,11 +386,10 @@ public class CatalogTool
                 return;
             }
 
-            maxSegmentFile = new File(archiveDir, segmentFileName(recordingId, maxSegmentIndex));
+            maxSegmentFile = new File(archiveDir, segmentFileName(recordingId, maxSegmentPosition));
             stopSegmentOffset = Catalog.recoverStopOffset(maxSegmentFile, segmentFileLength);
 
-            final long recordingLength =
-                startSegmentOffset + (maxSegmentIndex * (long)segmentFileLength) + stopSegmentOffset;
+            final long recordingLength = maxSegmentPosition + stopSegmentOffset - startSegmentOffset;
 
             stopPosition = startPosition + recordingLength;
 
@@ -343,8 +402,8 @@ public class CatalogTool
             final long dataLength = startSegmentOffset + recordingLength;
 
             stopSegmentOffset = dataLength & (segmentFileLength - 1);
-            maxSegmentIndex = (int)((recordingLength - startSegmentOffset - stopSegmentOffset) / segmentFileLength);
-            maxSegmentFile = new File(archiveDir, segmentFileName(recordingId, maxSegmentIndex));
+            maxSegmentPosition = stopPosition - (stopPosition & (segmentFileLength - 1));
+            maxSegmentFile = new File(archiveDir, segmentFileName(recordingId, maxSegmentPosition));
         }
 
         if (!maxSegmentFile.exists())
@@ -423,17 +482,43 @@ public class CatalogTool
         return false;
     }
 
+    private static void printErrors(final PrintStream out, final ArchiveMarkFile markFile)
+    {
+        out.println("Archive error log:");
+        CommonContext.printErrorLog(markFile.errorBuffer(), out);
+
+        final MarkFileHeaderDecoder decoder = markFile.decoder();
+        decoder.skipControlChannel();
+        decoder.skipLocalControlChannel();
+        decoder.skipEventsChannel();
+        final String aeronDirectory = decoder.aeronDirectory();
+
+        out.println();
+        out.println("Aeron driver error log (directory: " + aeronDirectory + "):");
+        final File cncFile = new File(aeronDirectory, CncFileDescriptor.CNC_FILE);
+
+        final MappedByteBuffer cncByteBuffer = IoUtil.mapExistingFile(cncFile, FileChannel.MapMode.READ_ONLY, "cnc");
+        final DirectBuffer cncMetaDataBuffer = CncFileDescriptor.createMetaDataBuffer(cncByteBuffer);
+        final int cncVersion = cncMetaDataBuffer.getInt(CncFileDescriptor.cncVersionOffset(0));
+
+        CncFileDescriptor.checkVersion(cncVersion);
+        CommonContext.printErrorLog(CncFileDescriptor.createErrorLogBuffer(cncByteBuffer, cncMetaDataBuffer), out);
+    }
+
     private static void printHelp()
     {
         System.out.println("Usage: <archive-dir> <command>");
         System.out.println("  describe <optional recordingId>: prints out descriptor(s) in the catalog.");
         System.out.println("  dump <optional data fragment limit per recording>: prints descriptor(s)");
         System.out.println("     in the catalog and associated recorded data.");
+        System.out.println("  errors: prints errors for the archive and media driver.");
         System.out.println("  pid: prints just PID of archive.");
         System.out.println("  verify <optional recordingId>: verifies descriptor(s) in the catalog, checking");
         System.out.println("     recording files availability and contents. Faulty entries are marked as unusable.");
         System.out.println("  count-entries: queries the number of recording entries in the catalog.");
         System.out.println("  max-entries <optional number of entries>: gets or increases the maximum number of");
         System.out.println("     recording entries the catalog can store.");
+        System.out.println("  migrate: migrate previous archive MarkFile, Catalog, and recordings from previous");
+        System.out.println("     to the latest version.");
     }
 }

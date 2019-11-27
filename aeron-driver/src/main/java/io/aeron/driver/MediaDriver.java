@@ -15,23 +15,56 @@
  */
 package io.aeron.driver;
 
-import io.aeron.*;
+import io.aeron.CncFileDescriptor;
+import io.aeron.CommonContext;
+import io.aeron.driver.buffer.FileStoreLogFactory;
 import io.aeron.driver.buffer.LogFactory;
 import io.aeron.driver.exceptions.ActiveDriverException;
-import io.aeron.driver.media.*;
-import io.aeron.driver.buffer.FileStoreLogFactory;
+import io.aeron.driver.media.ControlTransportPoller;
+import io.aeron.driver.media.DataTransportPoller;
+import io.aeron.driver.media.ReceiveChannelEndpoint;
+import io.aeron.driver.media.ReceiveChannelEndpointThreadLocals;
+import io.aeron.driver.media.SendChannelEndpoint;
 import io.aeron.driver.reports.LossReport;
 import io.aeron.driver.status.SystemCounters;
 import io.aeron.logbuffer.LogBufferDescriptor;
-import org.agrona.*;
-import org.agrona.concurrent.*;
+import org.agrona.CloseHelper;
+import org.agrona.ErrorHandler;
+import org.agrona.IoUtil;
+import org.agrona.LangUtil;
+import org.agrona.MutableDirectBuffer;
+import org.agrona.SemanticVersion;
+import org.agrona.SystemUtil;
+import org.agrona.concurrent.Agent;
+import org.agrona.concurrent.AgentInvoker;
+import org.agrona.concurrent.AgentRunner;
+import org.agrona.concurrent.CachedEpochClock;
+import org.agrona.concurrent.CachedNanoClock;
+import org.agrona.concurrent.CompositeAgent;
+import org.agrona.concurrent.EpochClock;
+import org.agrona.concurrent.HighResolutionTimer;
+import org.agrona.concurrent.IdleStrategy;
+import org.agrona.concurrent.ManyToOneConcurrentArrayQueue;
+import org.agrona.concurrent.NanoClock;
+import org.agrona.concurrent.OneToOneConcurrentArrayQueue;
+import org.agrona.concurrent.ShutdownSignalBarrier;
+import org.agrona.concurrent.SystemEpochClock;
+import org.agrona.concurrent.SystemNanoClock;
+import org.agrona.concurrent.UnsafeBuffer;
 import org.agrona.concurrent.broadcast.BroadcastTransmitter;
 import org.agrona.concurrent.errors.DistinctErrorLog;
 import org.agrona.concurrent.errors.LoggingErrorHandler;
-import org.agrona.concurrent.ringbuffer.*;
-import org.agrona.concurrent.status.*;
+import org.agrona.concurrent.ringbuffer.ManyToOneRingBuffer;
+import org.agrona.concurrent.ringbuffer.RingBuffer;
+import org.agrona.concurrent.status.AtomicCounter;
+import org.agrona.concurrent.status.ConcurrentCountersManager;
+import org.agrona.concurrent.status.CountersManager;
+import org.agrona.concurrent.status.StatusIndicator;
+import org.agrona.concurrent.status.UnsafeBufferStatusIndicator;
 
-import java.io.*;
+import java.io.ByteArrayOutputStream;
+import java.io.FileOutputStream;
+import java.io.PrintStream;
 import java.nio.MappedByteBuffer;
 import java.text.SimpleDateFormat;
 import java.util.Arrays;
@@ -40,11 +73,25 @@ import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
-import static io.aeron.CncFileDescriptor.*;
-import static io.aeron.driver.Configuration.*;
+import static io.aeron.CncFileDescriptor.CNC_VERSION;
+import static io.aeron.CncFileDescriptor.createCountersMetaDataBuffer;
+import static io.aeron.CncFileDescriptor.createCountersValuesBuffer;
+import static io.aeron.CncFileDescriptor.createErrorLogBuffer;
+import static io.aeron.CncFileDescriptor.createToClientsBuffer;
+import static io.aeron.CncFileDescriptor.createToDriverBuffer;
+import static io.aeron.driver.Configuration.CMD_QUEUE_CAPACITY;
+import static io.aeron.driver.Configuration.validateInitialWindowLength;
+import static io.aeron.driver.Configuration.validateMtuLength;
+import static io.aeron.driver.Configuration.validatePageSize;
+import static io.aeron.driver.Configuration.validateSessionIdRange;
+import static io.aeron.driver.Configuration.validateSocketBufferLengths;
+import static io.aeron.driver.Configuration.validateUnblockTimeout;
 import static io.aeron.driver.reports.LossReportUtil.mapLossReport;
-import static io.aeron.driver.status.SystemCounterDescriptor.*;
+import static io.aeron.driver.status.SystemCounterDescriptor.CONDUCTOR_PROXY_FAILS;
 import static io.aeron.driver.status.SystemCounterDescriptor.CONTROLLABLE_IDLE_STRATEGY;
+import static io.aeron.driver.status.SystemCounterDescriptor.ERRORS;
+import static io.aeron.driver.status.SystemCounterDescriptor.RECEIVER_PROXY_FAILS;
+import static io.aeron.driver.status.SystemCounterDescriptor.SENDER_PROXY_FAILS;
 import static java.nio.charset.StandardCharsets.US_ASCII;
 import static org.agrona.BitUtil.align;
 import static org.agrona.IoUtil.mapNewFile;
@@ -364,7 +411,7 @@ public final class MediaDriver implements AutoCloseable
             if (observations > 0)
             {
                 final StringBuilder builder = new StringBuilder(ctx.aeronDirectoryName());
-                removeTrailingSlashes(builder);
+                IoUtil.removeTrailingSlashes(builder);
 
                 final SimpleDateFormat dateFormat = new SimpleDateFormat("-yyyy-MM-dd-HH-mm-ss-SSSZ");
                 builder.append(dateFormat.format(new Date())).append("-error.log");
@@ -383,23 +430,6 @@ public final class MediaDriver implements AutoCloseable
         }
     }
 
-    private static void removeTrailingSlashes(final StringBuilder builder)
-    {
-        while (builder.length() > 1)
-        {
-            final int lastCharIndex = builder.length() - 1;
-            final char c = builder.charAt(lastCharIndex);
-            if ('/' == c || '\\' == c)
-            {
-                builder.setLength(lastCharIndex);
-            }
-            else
-            {
-                break;
-            }
-        }
-    }
-
     /**
      * Context for the {@link MediaDriver} that can be used to provide overrides for {@link Configuration}.
      * <p>
@@ -410,15 +440,18 @@ public final class MediaDriver implements AutoCloseable
      */
     public static class Context extends CommonContext
     {
+        private boolean isClosed = false;
         private boolean printConfigurationOnStart = Configuration.printConfigurationOnStart();
         private boolean useWindowsHighResTimer = Configuration.useWindowsHighResTimer();
         private boolean warnIfDirectoryExists = Configuration.warnIfDirExists();
         private boolean dirDeleteOnStart = Configuration.dirDeleteOnStart();
+        private boolean dirDeleteOnShutdown = Configuration.dirDeleteOnShutdown();
         private boolean termBufferSparseFile = Configuration.termBufferSparseFile();
         private boolean performStorageChecks = Configuration.performStorageChecks();
         private boolean spiesSimulateConnection = Configuration.spiesSimulateConnection();
         private boolean reliableStream = Configuration.reliableStream();
         private boolean tetherSubscriptions = Configuration.tetherSubscriptions();
+        private boolean rejoinStream = Configuration.rejoinStream();
 
         private long lowStorageWarningThreshold = Configuration.lowStorageWarningThreshold();
         private long timerIntervalNs = Configuration.timerIntervalNs();
@@ -455,6 +488,8 @@ public final class MediaDriver implements AutoCloseable
         private int publicationReservedSessionIdHigh = Configuration.publicationReservedSessionIdHigh();
         private int lossReportBufferLength = Configuration.lossReportBufferLength();
         private int sendToStatusMessagePollRatio = Configuration.sendToStatusMessagePollRatio();
+
+        private InferableBoolean receiverGroupConsideration = Configuration.receiverGroupConsideration();
 
         private EpochClock epochClock;
         private NanoClock nanoClock;
@@ -524,16 +559,32 @@ public final class MediaDriver implements AutoCloseable
          */
         public void close()
         {
-            final MappedByteBuffer lossReportBuffer = this.lossReportBuffer;
-            this.lossReportBuffer = null;
-            IoUtil.unmap(lossReportBuffer);
+            if (!isClosed)
+            {
+                isClosed = true;
 
+                CloseHelper.close(logFactory);
 
-            final MappedByteBuffer cncByteBuffer = this.cncByteBuffer;
-            this.cncByteBuffer = null;
-            IoUtil.unmap(cncByteBuffer);
+                if (errorHandler instanceof AutoCloseable)
+                {
+                    CloseHelper.close((AutoCloseable)errorHandler);
+                }
 
-            super.close();
+                final MappedByteBuffer lossReportBuffer = this.lossReportBuffer;
+                this.lossReportBuffer = null;
+                IoUtil.unmap(lossReportBuffer);
+
+                final MappedByteBuffer cncByteBuffer = this.cncByteBuffer;
+                this.cncByteBuffer = null;
+                IoUtil.unmap(cncByteBuffer);
+
+                if (dirDeleteOnShutdown && null != aeronDirectory())
+                {
+                    deleteAeronDirectory();
+                }
+
+                super.close();
+            }
         }
 
         public Context conclude()
@@ -725,6 +776,30 @@ public final class MediaDriver implements AutoCloseable
         public Context dirDeleteOnStart(final boolean dirDeleteOnStart)
         {
             this.dirDeleteOnStart = dirDeleteOnStart;
+            return this;
+        }
+
+        /**
+         * Will the driver attempt to delete {@link #aeronDirectoryName()} on shutdown.
+         *
+         * @return true when directory will be deleted, otherwise false.
+         * @see Configuration#DIR_DELETE_ON_SHUTDOWN_PROP_NAME
+         */
+        public boolean dirDeleteOnShutdown()
+        {
+            return dirDeleteOnShutdown;
+        }
+
+        /**
+         * Should the driver attempt to delete {@link #aeronDirectoryName()} on shutdown.
+         *
+         * @param dirDeleteOnShutdown Attempt deletion.
+         * @return this for a fluent API.
+         * @see Configuration#DIR_DELETE_ON_SHUTDOWN_PROP_NAME
+         */
+        public Context dirDeleteOnShutdown(final boolean dirDeleteOnShutdown)
+        {
+            this.dirDeleteOnShutdown = dirDeleteOnShutdown;
             return this;
         }
 
@@ -1394,6 +1469,71 @@ public final class MediaDriver implements AutoCloseable
         public Context tetherSubscriptions(final boolean tetherSubscription)
         {
             this.tetherSubscriptions = tetherSubscription;
+            return this;
+        }
+
+        /**
+         * Should network subscriptions be considered part of a group even if using a unicast endpoint, should it be
+         * considered an individual even if using a multicast endpoint, or should the use of a unicast/multicast
+         * endpoint infer the usage.
+         * <p>
+         * The default can be overridden with a channel param.
+         *
+         * @return true if subscriptions should be considered a group member, false if not, or depends on endpoint.
+         * @see Configuration#GROUP_RECEIVER_CONSIDERATION_PROP_NAME
+         * @see CommonContext#GROUP_PARAM_NAME
+         */
+        public InferableBoolean receiverGroupConsideration()
+        {
+            return receiverGroupConsideration;
+        }
+
+        /**
+         * Should network subscriptions be considered part of a group even if using a unicast endpoint, should it be
+         * considered an individual even if using a multicast endpoint, or should the use of a unicast/multicast
+         * endpoint infer the usage.
+         * <p>
+         * The default can be overridden with a channel param.
+         *
+         * @param receiverGroupConsideration true if subscriptions should be considered a group member,
+         *                                   false if not, or infer from endpoint.
+         * @return this for a fluent API.
+         * @see Configuration#GROUP_RECEIVER_CONSIDERATION_PROP_NAME
+         * @see CommonContext#GROUP_PARAM_NAME
+         */
+        public Context receiverGroupConsideration(final InferableBoolean receiverGroupConsideration)
+        {
+            this.receiverGroupConsideration = receiverGroupConsideration;
+            return this;
+        }
+
+        /**
+         * Does a subscription attempt to rejoin an unavailable stream after a cooldown or not.
+         * <p>
+         * The default can be overridden with a channel param.
+         *
+         * @return true if subscription will rejoin after cooldown or false if not.
+         * @see Configuration#REJOIN_STREAM_PROP_NAME
+         * @see CommonContext#REJOIN_PARAM_NAME
+         */
+        public boolean rejoinStream()
+        {
+            return rejoinStream;
+        }
+
+        /**
+         * Does a subscription attempt to rejoin an unavailable stream after a cooldown or not.
+         * <p>
+         * The default can be overridden with a channel param.
+         *
+         * @param rejoinStream true if subscription will rejoin after cooldown or false if not.
+         * @return this for a fluent API.
+         * @see Configuration#REJOIN_STREAM_PROP_NAME
+         * @see CommonContext#REJOIN_PARAM_NAME
+         */
+        public Context rejoinStream(final boolean rejoinStream)
+        {
+            this.rejoinStream = rejoinStream;
             return this;
         }
 
@@ -2348,23 +2488,9 @@ public final class MediaDriver implements AutoCloseable
          *
          * @return {@link LossReport} for identifying loss issues on specific connections.
          */
-        public LossReport lossReport()
+        LossReport lossReport()
         {
             return lossReport;
-        }
-
-        /**
-         * {@link LossReport}for identifying loss issues on specific connections.
-         * <p>
-         * The default should only be overridden for testing.
-         *
-         * @param lossReport for identifying loss issues on specific connections.
-         * @return this for a fluent API.
-         */
-        public Context lossReport(final LossReport lossReport)
-        {
-            this.lossReport = lossReport;
-            return this;
         }
 
         /**
@@ -2718,12 +2844,12 @@ public final class MediaDriver implements AutoCloseable
 
             if (null == epochClock)
             {
-                epochClock = new SystemEpochClock();
+                epochClock = SystemEpochClock.INSTANCE;
             }
 
             if (null == nanoClock)
             {
-                nanoClock = new SystemNanoClock();
+                nanoClock = SystemNanoClock.INSTANCE;
             }
 
             if (null == cachedEpochClock)
@@ -2858,11 +2984,8 @@ public final class MediaDriver implements AutoCloseable
                     aeronDirectoryName(), filePageSize, performStorageChecks, lowStorageWarningThreshold, errorHandler);
             }
 
-            if (null == lossReport)
-            {
-                lossReportBuffer = mapLossReport(aeronDirectoryName(), align(lossReportBufferLength, filePageSize));
-                lossReport = new LossReport(new UnsafeBuffer(lossReportBuffer));
-            }
+            lossReportBuffer = mapLossReport(aeronDirectoryName(), align(lossReportBufferLength, filePageSize));
+            lossReport = new LossReport(new UnsafeBuffer(lossReportBuffer));
         }
 
         private void concludeCounters()
@@ -2979,9 +3102,11 @@ public final class MediaDriver implements AutoCloseable
             }
         }
 
+        @SuppressWarnings("MethodLength")
         public String toString()
         {
             return "MediaDriver.Context{" +
+                "\n    isClosed=" + isClosed +
                 "\n    cncVersion=" + SemanticVersion.toString(CNC_VERSION) +
                 "\n    aeronDirectoryName=" + aeronDirectoryName() +
                 "\n    driverTimeoutMs=" + driverTimeoutMs() +
@@ -2989,11 +3114,14 @@ public final class MediaDriver implements AutoCloseable
                 "\n    useWindowsHighResTimer=" + useWindowsHighResTimer +
                 "\n    warnIfDirectoryExists=" + warnIfDirectoryExists +
                 "\n    dirDeleteOnStart=" + dirDeleteOnStart +
+                "\n    dirDeleteOnShutdown=" + dirDeleteOnShutdown +
                 "\n    termBufferSparseFile=" + termBufferSparseFile +
                 "\n    performStorageChecks=" + performStorageChecks +
                 "\n    spiesSimulateConnection=" + spiesSimulateConnection +
                 "\n    reliableStream=" + reliableStream +
                 "\n    tetherSubscriptions=" + tetherSubscriptions +
+                "\n    rejoinStream=" + rejoinStream +
+                "\n    receiverGroupConsideration=" + receiverGroupConsideration +
                 "\n    conductorBufferLength=" + conductorBufferLength +
                 "\n    toClientsBufferLength=" + toClientsBufferLength +
                 "\n    counterValuesBufferLength=" + counterValuesBufferLength +

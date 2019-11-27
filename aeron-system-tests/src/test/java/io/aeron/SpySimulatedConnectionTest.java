@@ -20,10 +20,13 @@ import io.aeron.driver.ThreadingMode;
 import io.aeron.logbuffer.FragmentHandler;
 import io.aeron.logbuffer.LogBufferDescriptor;
 import io.aeron.protocol.DataHeaderFlyweight;
+import io.aeron.test.MediaDriverTestWatcher;
+import io.aeron.test.TestMediaDriver;
 import org.agrona.CloseHelper;
 import org.agrona.collections.MutableInteger;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.junit.After;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.experimental.theories.DataPoint;
 import org.junit.experimental.theories.Theories;
@@ -57,7 +60,7 @@ public class SpySimulatedConnectionTest
     private final MediaDriver.Context driverContext = new MediaDriver.Context();
 
     private Aeron client;
-    private MediaDriver driver;
+    private TestMediaDriver driver;
     private Publication publication;
     private Subscription subscription;
     private Subscription spy;
@@ -70,13 +73,17 @@ public class SpySimulatedConnectionTest
     private final MutableInteger fragmentCountSub = new MutableInteger();
     private final FragmentHandler fragmentHandlerSub = (buffer1, offset, length, header) -> fragmentCountSub.value++;
 
+    @Rule
+    public MediaDriverTestWatcher watcher = new MediaDriverTestWatcher();
+
     private void launch()
     {
         driverContext.publicationTermBufferLength(TERM_BUFFER_LENGTH)
             .errorHandler(Throwable::printStackTrace)
+            .dirDeleteOnShutdown(true)
             .threadingMode(ThreadingMode.SHARED);
 
-        driver = MediaDriver.launch(driverContext);
+        driver = TestMediaDriver.launch(driverContext, watcher);
         client = Aeron.connect();
     }
 
@@ -89,8 +96,6 @@ public class SpySimulatedConnectionTest
 
         CloseHelper.quietClose(client);
         CloseHelper.quietClose(driver);
-
-        driver.context().deleteAeronDirectory();
     }
 
     @Theory
@@ -104,8 +109,8 @@ public class SpySimulatedConnectionTest
 
         while (!spy.isConnected())
         {
-            SystemTest.checkInterruptedStatus();
             Thread.yield();
+            SystemTest.checkInterruptedStatus();
         }
 
         assertFalse(publication.isConnected());
@@ -129,16 +134,16 @@ public class SpySimulatedConnectionTest
 
         while (!spy.isConnected() || !publication.isConnected())
         {
-            SystemTest.checkInterruptedStatus();
             Thread.yield();
+            SystemTest.checkInterruptedStatus();
         }
 
         for (int i = 0; i < messagesToSend; i++)
         {
             while (publication.offer(buffer, 0, buffer.capacity()) < 0L)
             {
-                SystemTest.checkInterruptedStatus();
                 Thread.yield();
+                SystemTest.checkInterruptedStatus();
             }
 
             final MutableInteger fragmentsRead = new MutableInteger();
@@ -192,8 +197,8 @@ public class SpySimulatedConnectionTest
                 }
             }
 
-            SystemTest.checkInterruptedStatus();
             Thread.yield();
+            SystemTest.checkInterruptedStatus();
 
             fragmentsFromSpy += spy.poll(fragmentHandlerSpy, 10);
 
@@ -266,27 +271,27 @@ public class SpySimulatedConnectionTest
     {
         while (!spy.isConnected() || !subscription.isConnected() || !publication.isConnected())
         {
-            SystemTest.checkInterruptedStatus();
             Thread.yield();
+            SystemTest.checkInterruptedStatus();
         }
 
         // send initial message to ensure connectivity
         while (publication.offer(buffer, 0, buffer.capacity()) < 0L)
         {
-            SystemTest.checkInterruptedStatus();
             Thread.yield();
+            SystemTest.checkInterruptedStatus();
         }
 
         while (spy.poll(mock(FragmentHandler.class), 1) == 0)
         {
-            SystemTest.checkInterruptedStatus();
             Thread.yield();
+            SystemTest.checkInterruptedStatus();
         }
 
         while (subscription.poll(mock(FragmentHandler.class), 1) == 0)
         {
-            SystemTest.checkInterruptedStatus();
             Thread.yield();
+            SystemTest.checkInterruptedStatus();
         }
     }
 }

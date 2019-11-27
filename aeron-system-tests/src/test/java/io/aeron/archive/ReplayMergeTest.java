@@ -26,27 +26,24 @@ import io.aeron.protocol.DataHeaderFlyweight;
 import org.agrona.CloseHelper;
 import org.agrona.ExpandableArrayBuffer;
 import org.agrona.SystemUtil;
-import org.agrona.collections.MutableInteger;
 import org.agrona.concurrent.status.CountersReader;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 
 import java.io.File;
+import java.util.concurrent.atomic.AtomicInteger;
 
+import static io.aeron.archive.Common.*;
 import static io.aeron.archive.codecs.SourceLocation.REMOTE;
-import static org.agrona.concurrent.status.CountersReader.NULL_COUNTER_ID;
 import static org.hamcrest.Matchers.is;
 import static org.junit.Assert.*;
 
 public class ReplayMergeTest
 {
     private static final String MESSAGE_PREFIX = "Message-Prefix-";
-    private static final long MAX_CATALOG_ENTRIES = 1024;
-    private static final int FRAGMENT_LIMIT = 10;
-    private static final int TERM_BUFFER_LENGTH = 64 * 1024;
     private static final int MIN_MESSAGES_PER_TERM =
-        TERM_BUFFER_LENGTH / (MESSAGE_PREFIX.length() + DataHeaderFlyweight.HEADER_LENGTH);
+        TERM_LENGTH / (MESSAGE_PREFIX.length() + DataHeaderFlyweight.HEADER_LENGTH);
 
     private static final int PUBLICATION_TAG = 2;
     private static final int STREAM_ID = 33;
@@ -61,7 +58,7 @@ public class ReplayMergeTest
         .tags("1," + PUBLICATION_TAG)
         .controlEndpoint(CONTROL_ENDPOINT)
         .controlMode(CommonContext.MDC_CONTROL_MODE_DYNAMIC)
-        .termLength(TERM_BUFFER_LENGTH);
+        .termLength(TERM_LENGTH);
 
     private ChannelUriStringBuilder recordingChannel = new ChannelUriStringBuilder()
         .media(CommonContext.UDP_MEDIA)
@@ -88,7 +85,7 @@ public class ReplayMergeTest
         .endpoint(REPLAY_ENDPOINT);
 
     private final ExpandableArrayBuffer buffer = new ExpandableArrayBuffer();
-    private final MutableInteger received = new MutableInteger(0);
+    private final AtomicInteger received = new AtomicInteger();
     private final MediaDriver.Context mediaDriverContext = new MediaDriver.Context();
 
     private ArchivingMediaDriver archivingMediaDriver;
@@ -103,10 +100,11 @@ public class ReplayMergeTest
         archivingMediaDriver = ArchivingMediaDriver.launch(
             mediaDriverContext
                 .termBufferSparseFile(true)
-                .publicationTermBufferLength(TERM_BUFFER_LENGTH)
+                .publicationTermBufferLength(TERM_LENGTH)
                 .threadingMode(ThreadingMode.SHARED)
                 .errorHandler(Throwable::printStackTrace)
                 .spiesSimulateConnection(false)
+                .dirDeleteOnShutdown(true)
                 .dirDeleteOnStart(true),
             new Archive.Context()
                 .maxCatalogEntries(MAX_CATALOG_ENTRIES)
@@ -136,11 +134,10 @@ public class ReplayMergeTest
             System.out.println("received " + received.get() + "/" + (MIN_MESSAGES_PER_TERM * 6));
         }
 
-        CloseHelper.close(aeronArchive);
-        CloseHelper.close(aeron);
+        CloseHelper.quietClose(aeronArchive);
+        CloseHelper.quietClose(aeron);
         CloseHelper.close(archivingMediaDriver);
 
-        archivingMediaDriver.mediaDriver().context().deleteAeronDirectory();
         archivingMediaDriver.archive().context().deleteArchiveDirectory();
     }
 
@@ -151,6 +148,17 @@ public class ReplayMergeTest
         final int subsequentMessageCount = MIN_MESSAGES_PER_TERM * 3;
         final int totalMessageCount = initialMessageCount + subsequentMessageCount;
 
+        final FragmentHandler fragmentHandler = new FragmentAssembler(
+            (buffer, offset, length, header) ->
+            {
+                final String expected = MESSAGE_PREFIX + received.get();
+                final String actual = buffer.getStringWithoutLengthAscii(offset, length);
+
+                assertEquals(expected, actual);
+
+                received.incrementAndGet();
+            });
+
         try (Publication publication = aeron.addPublication(publicationChannel.build(), STREAM_ID))
         {
             final int sessionId = publication.sessionId();
@@ -160,7 +168,7 @@ public class ReplayMergeTest
             aeronArchive.startRecording(recordingChannel, STREAM_ID, REMOTE);
 
             final CountersReader counters = aeron.countersReader();
-            final int counterId = awaitCounterId(counters, publication.sessionId());
+            final int counterId = awaitRecordingCounterId(counters, publication.sessionId());
             final long recordingId = RecordingPos.getRecordingId(counters, counterId);
 
             offerMessages(publication, 0, initialMessageCount, MESSAGE_PREFIX);
@@ -176,25 +184,14 @@ public class ReplayMergeTest
                     recordingId,
                     0))
             {
-                final FragmentHandler fragmentHandler = new FragmentAssembler(
-                    (buffer, offset, length, header) ->
-                    {
-                        final String expected = MESSAGE_PREFIX + received.value;
-                        final String actual = buffer.getStringWithoutLengthAscii(offset, length);
-
-                        assertEquals(expected, actual);
-
-                        received.value++;
-                    });
-
                 for (int i = initialMessageCount; i < totalMessageCount; i++)
                 {
                     offer(publication, i, MESSAGE_PREFIX);
 
                     if (0 == replayMerge.poll(fragmentHandler, FRAGMENT_LIMIT))
                     {
-                        SystemTest.checkInterruptedStatus();
                         Thread.yield();
+                        SystemTest.checkInterruptedStatus();
                     }
                 }
 
@@ -202,14 +199,15 @@ public class ReplayMergeTest
                 {
                     if (0 == replayMerge.poll(fragmentHandler, FRAGMENT_LIMIT))
                     {
-                        SystemTest.checkInterruptedStatus();
                         Thread.yield();
+                        SystemTest.checkInterruptedStatus();
                     }
                 }
 
-                assertThat(received.get(), is(totalMessageCount));
                 assertTrue(replayMerge.isMerged());
-                assertEquals(ReplayMerge.State.MERGED, replayMerge.state());
+                assertTrue(replayMerge.isLiveAdded());
+                assertFalse(replayMerge.hasFailed());
+                assertThat(received.get(), is(totalMessageCount));
             }
             finally
             {
@@ -224,8 +222,8 @@ public class ReplayMergeTest
 
         while (publication.offer(buffer, 0, length) <= 0)
         {
-            SystemTest.checkInterruptedStatus();
             Thread.yield();
+            SystemTest.checkInterruptedStatus();
         }
     }
 
@@ -235,28 +233,6 @@ public class ReplayMergeTest
         for (int i = startIndex; i < (startIndex + count); i++)
         {
             offer(publication, i, prefix);
-        }
-    }
-
-    private static int awaitCounterId(final CountersReader counters, final int sessionId)
-    {
-        int counterId;
-
-        while (NULL_COUNTER_ID == (counterId = RecordingPos.findCounterIdBySession(counters, sessionId)))
-        {
-            SystemTest.checkInterruptedStatus();
-            Thread.yield();
-        }
-
-        return counterId;
-    }
-
-    private static void awaitPosition(final CountersReader counters, final int counterId, final long position)
-    {
-        while (counters.getCounterValue(counterId) < position)
-        {
-            SystemTest.checkInterruptedStatus();
-            Thread.yield();
         }
     }
 }

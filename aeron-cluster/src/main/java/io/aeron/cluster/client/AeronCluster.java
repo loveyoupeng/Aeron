@@ -41,7 +41,7 @@ import static org.agrona.SystemUtil.getDurationInNanos;
  * Client for interacting with an Aeron Cluster.
  * <p>
  * A client will attempt to open a session and then offer ingress messages which are replicated to clustered services
- * for reliability. If the clustered service responds then response messages and events come back via the egress stream.
+ * for reliability. If the clustered service responds then response messages and events are sent via the egress stream.
  * <p>
  * <b>Note:</b> Instances of this class are not threadsafe.
  */
@@ -49,14 +49,13 @@ import static org.agrona.SystemUtil.getDurationInNanos;
 public final class AeronCluster implements AutoCloseable
 {
     /**
-     * Length of a session message header for an ingress or egress with a cluster.
+     * Length of a session message header for cluster ingress or egress.
      */
     public static final int SESSION_HEADER_LENGTH =
         MessageHeaderEncoder.ENCODED_LENGTH + SessionMessageHeaderEncoder.BLOCK_LENGTH;
 
-
-    static final int SEND_ATTEMPTS = 3;
-    static final int FRAGMENT_LIMIT = 10;
+    private static final int SEND_ATTEMPTS = 3;
+    private static final int FRAGMENT_LIMIT = 10;
 
     private final long clusterSessionId;
     private long leadershipTermId;
@@ -291,7 +290,7 @@ public final class AeronCluster implements AutoCloseable
      * <p>
      * This can be wrapped with a {@link IngressSessionDecorator} for pre-pending the cluster session header to
      * messages.
-     * {@link io.aeron.cluster.codecs.SessionMessageHeaderEncoder} or should be used for raw access.
+     * {@link io.aeron.cluster.codecs.SessionMessageHeaderEncoder} should be used for raw access.
      *
      * @return the raw {@link Publication} for connecting to the cluster.
      */
@@ -304,7 +303,7 @@ public final class AeronCluster implements AutoCloseable
      * Get the raw {@link Subscription} for receiving from the cluster.
      * <p>
      * The can be wrapped with a {@link EgressAdapter} for dispatching events from the cluster.
-     * {@link io.aeron.cluster.codecs.SessionMessageHeaderDecoder} or should be used for raw access.
+     * {@link io.aeron.cluster.codecs.SessionMessageHeaderDecoder} should be used for raw access.
      *
      * @return the raw {@link Subscription} for receiving from the cluster.
      */
@@ -693,6 +692,7 @@ public final class AeronCluster implements AutoCloseable
             {
                 sessionCloseRequestEncoder
                     .wrapAndApplyHeader(bufferClaim.buffer(), bufferClaim.offset(), messageHeaderEncoder)
+                    .leadershipTermId(leadershipTermId)
                     .clusterSessionId(clusterSessionId);
 
                 bufferClaim.commit();
@@ -737,10 +737,11 @@ public final class AeronCluster implements AutoCloseable
      */
     public static class Configuration
     {
-        public static final int MAJOR_VERSION = 0;
-        public static final int MINOR_VERSION = 0;
-        public static final int PATCH_VERSION = 1;
-        public static final int SEMANTIC_VERSION = SemanticVersion.compose(MAJOR_VERSION, MINOR_VERSION, PATCH_VERSION);
+        public static final int PROTOCOL_MAJOR_VERSION = 0;
+        public static final int PROTOCOL_MINOR_VERSION = 0;
+        public static final int PROTOCOL_PATCH_VERSION = 1;
+        public static final int PROTOCOL_SEMANTIC_VERSION = SemanticVersion.compose(
+            PROTOCOL_MAJOR_VERSION, PROTOCOL_MINOR_VERSION, PROTOCOL_PATCH_VERSION);
 
         /**
          * Timeout when waiting on a message to be sent or received.
@@ -1556,7 +1557,7 @@ public final class AeronCluster implements AutoCloseable
                 .wrapAndApplyHeader(buffer, 0, messageHeaderEncoder)
                 .correlationId(correlationId)
                 .responseStreamId(ctx.egressStreamId())
-                .version(Configuration.SEMANTIC_VERSION)
+                .version(Configuration.PROTOCOL_SEMANTIC_VERSION)
                 .responseChannel(ctx.egressChannel())
                 .putEncodedCredentials(encodedCredentials, 0, encodedCredentials.length);
 

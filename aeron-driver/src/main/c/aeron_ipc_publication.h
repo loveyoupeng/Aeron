@@ -25,41 +25,40 @@
 #include "concurrent/aeron_counters_manager.h"
 #include "aeron_system_counters.h"
 
-typedef enum aeron_ipc_publication_status_enum
+typedef enum aeron_ipc_publication_state_enum
 {
-    AERON_IPC_PUBLICATION_STATUS_ACTIVE,
-    AERON_IPC_PUBLICATION_STATUS_INACTIVE,
-    AERON_IPC_PUBLICATION_STATUS_LINGER
+    AERON_IPC_PUBLICATION_STATE_ACTIVE,
+    AERON_IPC_PUBLICATION_STATE_INACTIVE,
+    AERON_IPC_PUBLICATION_STATE_LINGER
 }
-aeron_ipc_publication_status_t;
+aeron_ipc_publication_state_t;
 
 typedef struct aeron_ipc_publication_stct
 {
+    aeron_mapped_raw_log_t mapped_raw_log;
+    aeron_logbuffer_metadata_t *log_meta_data;
+    aeron_position_t pub_lmt_position;
+    aeron_position_t pub_pos_position;
+    aeron_clock_func_t nano_clock;
+
     struct aeron_ipc_publication_conductor_fields_stct
     {
         bool has_reached_end_of_life;
-        aeron_ipc_publication_status_t status;
+        aeron_ipc_publication_state_t state;
         int32_t refcnt;
         aeron_driver_managed_resource_t managed_resource;
         aeron_subscribable_t subscribable;
-        int64_t clean_position;
         int64_t trip_limit;
+        int64_t clean_position;
         int64_t consumer_position;
         int64_t last_consumer_position;
         int64_t time_of_last_consumer_position_change;
     }
     conductor_fields;
 
-    aeron_mapped_raw_log_t mapped_raw_log;
-    aeron_position_t pub_lmt_position;
-    aeron_position_t pub_pos_position;
-    aeron_logbuffer_metadata_t *log_meta_data;
-    aeron_clock_func_t nano_clock;
-
     char *log_file_name;
     int64_t term_window_length;
     int64_t trip_gain;
-    int64_t image_liveness_timeout_ns;
     int64_t unblock_timeout_ns;
     int32_t session_id;
     int32_t stream_id;

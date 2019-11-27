@@ -159,6 +159,7 @@ int64_t aeron_epoch_clock()
 }
 
 extern int aeron_number_of_trailing_zeroes(int32_t value);
+extern int aeron_number_of_trailing_zeroes_u64(uint64_t value);
 extern int aeron_number_of_leading_zeroes(int32_t value);
 extern int32_t aeron_find_next_power_of_two(int32_t value);
 
@@ -578,12 +579,16 @@ void aeron_driver_context_print_configuration(aeron_driver_context_t *context)
     fprintf(fpout, "\n    aeron_dir=%s", context->aeron_dir);
     fprintf(fpout, "\n    driver_timeout_ms=%" PRIu64, context->driver_timeout_ms);
     fprintf(fpout, "\n    print_configuration_on_start=%d", context->print_configuration_on_start);
+    fprintf(fpout, "\n    dirs_delete_on_start=%d", context->dirs_delete_on_start);
+    fprintf(fpout, "\n    dirs_delete_on_shutdown=%d", context->dirs_delete_on_shutdown);
     fprintf(fpout, "\n    warn_if_dirs_exists=%d", context->warn_if_dirs_exist);
     fprintf(fpout, "\n    term_buffer_sparse_file=%d", context->term_buffer_sparse_file);
     fprintf(fpout, "\n    perform_storage_checks=%d", context->perform_storage_checks);
     fprintf(fpout, "\n    spies_simulate_connection=%d", context->spies_simulate_connection);
     fprintf(fpout, "\n    reliable_stream=%d", context->reliable_stream);
     fprintf(fpout, "\n    tether_subscriptions=%d", context->tether_subscriptions);
+    fprintf(fpout, "\n    rejoin_stream=%d", context->rejoin_stream);
+    fprintf(fpout, "\n    receiver_group_consideration=%d", context->receiver_group_consideration);
     fprintf(fpout, "\n    to_driver_buffer_length=%" PRIu64, (uint64_t)context->to_driver_buffer_length);
     fprintf(fpout, "\n    to_clients_buffer_length=%" PRIu64, (uint64_t)context->to_clients_buffer_length);
     fprintf(fpout, "\n    counters_values_buffer_length=%" PRIu64, (uint64_t)context->counters_values_buffer_length);
@@ -1052,6 +1057,11 @@ int aeron_driver_close(aeron_driver_t *driver)
         {
             return -1;
         }
+    }
+
+    if (driver->context->dirs_delete_on_shutdown)
+    {
+        aeron_delete_directory(driver->context->aeron_dir);
     }
 
     aeron_free(driver);

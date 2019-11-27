@@ -20,6 +20,8 @@ import io.aeron.logbuffer.LogBufferDescriptor;
 import static io.aeron.ChannelUri.SPY_QUALIFIER;
 import static io.aeron.CommonContext.*;
 import static io.aeron.logbuffer.FrameDescriptor.FRAME_ALIGNMENT;
+import static io.aeron.logbuffer.LogBufferDescriptor.TERM_MAX_LENGTH;
+import static org.agrona.SystemUtil.*;
 
 /**
  * Type safe means of building a channel URI associated with a {@link Publication} or {@link Subscription}.
@@ -42,6 +44,7 @@ public class ChannelUriStringBuilder
     private String controlMode;
     private String tags;
     private String alias;
+    private String cc;
     private Boolean reliable;
     private Integer ttl;
     private Integer mtu;
@@ -54,6 +57,8 @@ public class ChannelUriStringBuilder
     private Boolean sparse;
     private Boolean eos;
     private Boolean tether;
+    private Boolean group;
+    private Boolean rejoin;
     private boolean isSessionIdTagged;
 
     /**
@@ -71,6 +76,7 @@ public class ChannelUriStringBuilder
         controlMode = null;
         tags = null;
         alias = null;
+        cc = null;
         reliable = null;
         ttl = null;
         mtu = null;
@@ -83,6 +89,8 @@ public class ChannelUriStringBuilder
         sparse = null;
         eos = null;
         tether = null;
+        group = null;
+        rejoin = null;
         isSessionIdTagged = false;
 
         return this;
@@ -153,6 +161,18 @@ public class ChannelUriStringBuilder
     }
 
     /**
+     * Set the prefix value to be what is in the {@link ChannelUri}.
+     *
+     * @param channelUri to read the value from.
+     * @return this for a fluent API.
+     * @see ChannelUri#SPY_QUALIFIER
+     */
+    public ChannelUriStringBuilder prefix(final ChannelUri channelUri)
+    {
+        return prefix(channelUri.prefix());
+    }
+
+    /**
      * Get the prefix for the additional action to be taken on the request.
      *
      * @return the prefix for the additional action to be taken on the request.
@@ -185,6 +205,17 @@ public class ChannelUriStringBuilder
     }
 
     /**
+     * Set the endpoint value to be what is in the {@link ChannelUri}.
+     *
+     * @param channelUri to read the value from.
+     * @return this for a fluent API.
+     */
+    public ChannelUriStringBuilder media(final ChannelUri channelUri)
+    {
+        return media(channelUri.media());
+    }
+
+    /**
      * The media over which the channel transmits.
      *
      * @return the media over which the channel transmits.
@@ -206,6 +237,18 @@ public class ChannelUriStringBuilder
     {
         this.endpoint = endpoint;
         return this;
+    }
+
+    /**
+     * Set the endpoint value to be what is in the {@link ChannelUri} which may be null.
+     *
+     * @param channelUri to read the value from.
+     * @return this for a fluent API.
+     * @see CommonContext#ENDPOINT_PARAM_NAME
+     */
+    public ChannelUriStringBuilder endpoint(final ChannelUri channelUri)
+    {
+        return endpoint(channelUri.get(ENDPOINT_PARAM_NAME));
     }
 
     /**
@@ -233,6 +276,18 @@ public class ChannelUriStringBuilder
     }
 
     /**
+     * Set the network interface value to be what is in the {@link ChannelUri} which may be null.
+     *
+     * @param channelUri to read the value from.
+     * @return this for a fluent API.
+     * @see CommonContext#INTERFACE_PARAM_NAME
+     */
+    public ChannelUriStringBuilder networkInterface(final ChannelUri channelUri)
+    {
+        return networkInterface(channelUri.get(INTERFACE_PARAM_NAME));
+    }
+
+    /**
      * Get the address of the local interface in the form host:[port]/[subnet mask] for routing traffic.
      *
      * @return the address of the local interface in the form host:[port]/[subnet mask] for routing traffic.
@@ -254,6 +309,18 @@ public class ChannelUriStringBuilder
     {
         this.controlEndpoint = controlEndpoint;
         return this;
+    }
+
+    /**
+     * Set the control endpoint value to be what is in the {@link ChannelUri} which may be null.
+     *
+     * @param channelUri to read the value from.
+     * @return this for a fluent API.
+     * @see CommonContext#MDC_CONTROL_PARAM_NAME
+     */
+    public ChannelUriStringBuilder controlEndpoint(final ChannelUri channelUri)
+    {
+        return controlEndpoint(channelUri.get(MDC_CONTROL_PARAM_NAME));
     }
 
     /**
@@ -292,6 +359,18 @@ public class ChannelUriStringBuilder
     }
 
     /**
+     * Set the control mode to be what is in the {@link ChannelUri} which may be null.
+     *
+     * @param channelUri to read the value from.
+     * @return this for a fluent API.
+     * @see CommonContext#MDC_CONTROL_MODE_PARAM_NAME
+     */
+    public ChannelUriStringBuilder controlMode(final ChannelUri channelUri)
+    {
+        return controlMode(channelUri.get(MDC_CONTROL_MODE_PARAM_NAME));
+    }
+
+    /**
      * Get the control mode for multi-destination-cast.
      *
      * @return the control mode for multi-destination-cast.
@@ -315,6 +394,27 @@ public class ChannelUriStringBuilder
     {
         this.reliable = isReliable;
         return this;
+    }
+
+    /**
+     * Set the reliable value to be what is in the {@link ChannelUri} which may be null.
+     *
+     * @param channelUri to read the value from.
+     * @return this for a fluent API.
+     * @see CommonContext#RELIABLE_STREAM_PARAM_NAME
+     */
+    public ChannelUriStringBuilder reliable(final ChannelUri channelUri)
+    {
+        final String reliableStr = channelUri.get(RELIABLE_STREAM_PARAM_NAME);
+        if (null == reliableStr)
+        {
+            reliable = null;
+            return this;
+        }
+        else
+        {
+            return reliable(Boolean.valueOf(reliableStr));
+        }
     }
 
     /**
@@ -345,6 +445,27 @@ public class ChannelUriStringBuilder
 
         this.ttl = ttl;
         return this;
+    }
+
+    /**
+     * Set the ttl value to be what is in the {@link ChannelUri} which may be null.
+     *
+     * @param channelUri to read the value from.
+     * @return this for a fluent API.
+     * @see CommonContext#TTL_PARAM_NAME
+     */
+    public ChannelUriStringBuilder ttl(final ChannelUri channelUri)
+    {
+        final String ttlStr = channelUri.get(TTL_PARAM_NAME);
+        if (null == ttlStr)
+        {
+            ttl = null;
+            return this;
+        }
+        else
+        {
+            return ttl(Integer.valueOf(ttlStr));
+        }
     }
 
     /**
@@ -386,6 +507,33 @@ public class ChannelUriStringBuilder
     }
 
     /**
+     * Set the mtu value to be what is in the {@link ChannelUri} which may be null.
+     *
+     * @param channelUri to read the value from.
+     * @return this for a fluent API.
+     * @see CommonContext#MTU_LENGTH_PARAM_NAME
+     */
+    public ChannelUriStringBuilder mtu(final ChannelUri channelUri)
+    {
+        final String mtuStr = channelUri.get(MTU_LENGTH_PARAM_NAME);
+        if (null == mtuStr)
+        {
+            mtu = null;
+            return this;
+        }
+        else
+        {
+            final long value = parseSize(MTU_LENGTH_PARAM_NAME, mtuStr);
+            if (value > Integer.MAX_VALUE)
+            {
+                throw new IllegalStateException(MTU_LENGTH_PARAM_NAME + " " + value + " > " + Integer.MAX_VALUE);
+            }
+
+            return mtu((int)value);
+        }
+    }
+
+    /**
      * Get the maximum transmission unit (MTU) including Aeron header for a datagram payload. If this is greater
      * than the network MTU for UDP then the packet will be fragmented and can amplify the impact of loss.
      *
@@ -416,6 +564,34 @@ public class ChannelUriStringBuilder
     }
 
     /**
+     * Set the termLength value to be what is in the {@link ChannelUri} which may be null.
+     *
+     * @param channelUri to read the value from.
+     * @return this for a fluent API.
+     * @see CommonContext#TERM_LENGTH_PARAM_NAME
+     */
+    public ChannelUriStringBuilder termLength(final ChannelUri channelUri)
+    {
+        final String termLengthStr = channelUri.get(TERM_LENGTH_PARAM_NAME);
+        if (null == termLengthStr)
+        {
+            termLength = null;
+            return this;
+        }
+        else
+        {
+            final long value = parseSize(TERM_LENGTH_PARAM_NAME, termLengthStr);
+            if (value > Integer.MAX_VALUE)
+            {
+                throw new IllegalStateException(
+                    "Term length more than max length of " + TERM_MAX_LENGTH + ": length=" + termLength);
+            }
+
+            return termLength((int)value);
+        }
+    }
+
+    /**
      * Get the length of buffer used for each term of the log.
      *
      * @return the length of buffer used for each term of the log.
@@ -437,6 +613,27 @@ public class ChannelUriStringBuilder
     {
         this.initialTermId = initialTermId;
         return this;
+    }
+
+    /**
+     * Set the initialTermId value to be what is in the {@link ChannelUri} which may be null.
+     *
+     * @param channelUri to read the value from.
+     * @return this for a fluent API.
+     * @see CommonContext#INITIAL_TERM_ID_PARAM_NAME
+     */
+    public ChannelUriStringBuilder initialTermId(final ChannelUri channelUri)
+    {
+        final String termLengthStr = channelUri.get(INITIAL_TERM_ID_PARAM_NAME);
+        if (null == termLengthStr)
+        {
+            initialTermId = null;
+            return this;
+        }
+        else
+        {
+            return initialTermId(Integer.valueOf(termLengthStr));
+        }
     }
 
     /**
@@ -465,6 +662,27 @@ public class ChannelUriStringBuilder
     }
 
     /**
+     * Set the termId value to be what is in the {@link ChannelUri} which may be null.
+     *
+     * @param channelUri to read the value from.
+     * @return this for a fluent API.
+     * @see CommonContext#TERM_ID_PARAM_NAME
+     */
+    public ChannelUriStringBuilder termId(final ChannelUri channelUri)
+    {
+        final String termIdStr = channelUri.get(TERM_ID_PARAM_NAME);
+        if (null == termIdStr)
+        {
+            termId = null;
+            return this;
+        }
+        else
+        {
+            return termId(Integer.valueOf(termIdStr));
+        }
+    }
+
+    /**
      * Get the current term id at which a publication will start.
      *
      * @return the current term id at which a publication will start.
@@ -487,7 +705,7 @@ public class ChannelUriStringBuilder
     {
         if (null != termOffset)
         {
-            if ((termOffset < 0 || termOffset > LogBufferDescriptor.TERM_MAX_LENGTH))
+            if ((termOffset < 0 || termOffset > TERM_MAX_LENGTH))
             {
                 throw new IllegalArgumentException("term offset not in range 0-1g: " + termOffset);
             }
@@ -500,6 +718,27 @@ public class ChannelUriStringBuilder
 
         this.termOffset = termOffset;
         return this;
+    }
+
+    /**
+     * Set the termOffset value to be what is in the {@link ChannelUri} which may be null.
+     *
+     * @param channelUri to read the value from.
+     * @return this for a fluent API.
+     * @see CommonContext#TERM_OFFSET_PARAM_NAME
+     */
+    public ChannelUriStringBuilder termOffset(final ChannelUri channelUri)
+    {
+        final String termOffsetStr = channelUri.get(TERM_OFFSET_PARAM_NAME);
+        if (null == termOffsetStr)
+        {
+            termOffset = null;
+            return this;
+        }
+        else
+        {
+            return termOffset(Integer.valueOf(termOffsetStr));
+        }
     }
 
     /**
@@ -524,6 +763,27 @@ public class ChannelUriStringBuilder
     {
         this.sessionId = sessionId;
         return this;
+    }
+
+    /**
+     * Set the sessionId value to be what is in the {@link ChannelUri} which may be null.
+     *
+     * @param channelUri to read the value from.
+     * @return this for a fluent API.
+     * @see CommonContext#SESSION_ID_PARAM_NAME
+     */
+    public ChannelUriStringBuilder sessionId(final ChannelUri channelUri)
+    {
+        final String sessionIdStr = channelUri.get(SESSION_ID_PARAM_NAME);
+        if (null == sessionIdStr)
+        {
+            sessionId = null;
+            return this;
+        }
+        else
+        {
+            return sessionId(Integer.valueOf(sessionIdStr));
+        }
     }
 
     /**
@@ -557,6 +817,27 @@ public class ChannelUriStringBuilder
     }
 
     /**
+     * Set the linger value to be what is in the {@link ChannelUri} which may be null.
+     *
+     * @param channelUri to read the value from.
+     * @return this for a fluent API.
+     * @see CommonContext#LINGER_PARAM_NAME
+     */
+    public ChannelUriStringBuilder linger(final ChannelUri channelUri)
+    {
+        final String lingerStr = channelUri.get(LINGER_PARAM_NAME);
+        if (null == lingerStr)
+        {
+            linger = null;
+            return this;
+        }
+        else
+        {
+            return linger(parseDuration(LINGER_PARAM_NAME, lingerStr));
+        }
+    }
+
+    /**
      * Get the time a network publication will linger in nanoseconds after being drained. This time is so that tail loss
      * can be recovered.
      *
@@ -580,6 +861,27 @@ public class ChannelUriStringBuilder
     {
         this.sparse = isSparse;
         return this;
+    }
+
+    /**
+     * Set the sparse value to be what is in the {@link ChannelUri} which may be null.
+     *
+     * @param channelUri to read the value from.
+     * @return this for a fluent API.
+     * @see CommonContext#SPARSE_PARAM_NAME
+     */
+    public ChannelUriStringBuilder sparse(final ChannelUri channelUri)
+    {
+        final String sparseStr = channelUri.get(SPARSE_PARAM_NAME);
+        if (null == sparseStr)
+        {
+            sparse = null;
+            return this;
+        }
+        else
+        {
+            return sparse(Boolean.valueOf(sparseStr));
+        }
     }
 
     /**
@@ -607,6 +909,27 @@ public class ChannelUriStringBuilder
     }
 
     /**
+     * Set the eos value to be what is in the {@link ChannelUri} which may be null.
+     *
+     * @param channelUri to read the value from.
+     * @return this for a fluent API.
+     * @see CommonContext#EOS_PARAM_NAME
+     */
+    public ChannelUriStringBuilder eos(final ChannelUri channelUri)
+    {
+        final String eosStr = channelUri.get(EOS_PARAM_NAME);
+        if (null == eosStr)
+        {
+            eos = null;
+            return this;
+        }
+        else
+        {
+            return eos(Boolean.valueOf(eosStr));
+        }
+    }
+
+    /**
      * Should an EOS flag be sent on the media or not.
      *
      * @return true if the EOS param should be set.
@@ -631,6 +954,27 @@ public class ChannelUriStringBuilder
     }
 
     /**
+     * Set the tether value to be what is in the {@link ChannelUri} which may be null.
+     *
+     * @param channelUri to read the value from.
+     * @return this for a fluent API.
+     * @see CommonContext#TETHER_PARAM_NAME
+     */
+    public ChannelUriStringBuilder tether(final ChannelUri channelUri)
+    {
+        final String tetherStr = channelUri.get(TETHER_PARAM_NAME);
+        if (null == tetherStr)
+        {
+            tether = null;
+            return this;
+        }
+        else
+        {
+            return tether(Boolean.valueOf(tetherStr));
+        }
+    }
+
+    /**
      * Should the subscription channel be tethered or not for local flow control.
      *
      * @return value of the tether param.
@@ -639,6 +983,55 @@ public class ChannelUriStringBuilder
     public Boolean tether()
     {
         return tether;
+    }
+
+    /**
+     * Is the receiver likely to be part of a group. This informs behaviour such as loss handling.
+     *
+     * @param group value to be set for the group param.
+     * @return this for a fluent API.
+     * @see CommonContext#GROUP_PARAM_NAME
+     * @see #controlMode()
+     * @see #controlEndpoint()
+     */
+    public ChannelUriStringBuilder group(final Boolean group)
+    {
+        this.group = group;
+        return this;
+    }
+
+    /**
+     * Set the group value to be what is in the {@link ChannelUri} which may be null.
+     *
+     * @param channelUri to read the value from.
+     * @return this for a fluent API.
+     * @see CommonContext#GROUP_PARAM_NAME
+     */
+    public ChannelUriStringBuilder group(final ChannelUri channelUri)
+    {
+        final String groupStr = channelUri.get(GROUP_PARAM_NAME);
+        if (null == groupStr)
+        {
+            group = null;
+            return this;
+        }
+        else
+        {
+            return group(Boolean.valueOf(groupStr));
+        }
+    }
+
+    /**
+     * Is the receiver likely to be part of a group. This informs behaviour such as loss handling.
+     *
+     * @return value of the group param.
+     * @see CommonContext#GROUP_PARAM_NAME
+     * @see #controlMode()
+     * @see #controlEndpoint()
+     */
+    public Boolean group()
+    {
+        return group;
     }
 
     /**
@@ -654,6 +1047,18 @@ public class ChannelUriStringBuilder
     {
         this.tags = tags;
         return this;
+    }
+
+    /**
+     * Set the tags to be value which is in the {@link ChannelUri} which may be null.
+     *
+     * @param channelUri to read the value from.
+     * @return this for a fluent API.
+     * @see CommonContext#TAGS_PARAM_NAME
+     */
+    public ChannelUriStringBuilder tags(final ChannelUri channelUri)
+    {
+        return tags(channelUri.get(TAGS_PARAM_NAME));
     }
 
     /**
@@ -709,6 +1114,18 @@ public class ChannelUriStringBuilder
     }
 
     /**
+     * Set the alias to be value which is in the {@link ChannelUri} which may be null.
+     *
+     * @param channelUri to read the value from.
+     * @return this for a fluent API.
+     * @see CommonContext#TAGS_PARAM_NAME
+     */
+    public ChannelUriStringBuilder alias(final ChannelUri channelUri)
+    {
+        return alias(channelUri.get(ALIAS_PARAM_NAME));
+    }
+
+    /**
      * Get the alias present in the URI.
      *
      * @return alias for the URI.
@@ -717,6 +1134,87 @@ public class ChannelUriStringBuilder
     public String alias()
     {
         return alias;
+    }
+
+    /**
+     * Set the congestion control algorithm to be used on a channel.
+     *
+     * @param congestionControl for the URI.
+     * @return this for a fluent API.
+     * @see CommonContext#CONGESTION_CONTROL_PARAM_NAME
+     */
+    public ChannelUriStringBuilder congestionControl(final String congestionControl)
+    {
+        this.cc = congestionControl;
+        return this;
+    }
+
+    /**
+     * Set the congestion control to be value which is in the {@link ChannelUri} which may be null.
+     *
+     * @param channelUri to read the value from.
+     * @return this for a fluent API.
+     * @see CommonContext#TAGS_PARAM_NAME
+     */
+    public ChannelUriStringBuilder congestionControl(final ChannelUri channelUri)
+    {
+        return congestionControl(channelUri.get(CONGESTION_CONTROL_PARAM_NAME));
+    }
+
+    /**
+     * Get the congestion control algorithm to be used on a channel.
+     *
+     * @return alias for the URI.
+     * @see CommonContext#CONGESTION_CONTROL_PARAM_NAME
+     */
+    public String congestionControl()
+    {
+        return cc;
+    }
+
+    /**
+     * Set the subscription semantics for if a stream should be rejoined after going unavailable.
+     *
+     * @param rejoin false if stream is not to be rejoined.
+     * @return this for a fluent API.
+     * @see CommonContext#REJOIN_PARAM_NAME
+     */
+    public ChannelUriStringBuilder rejoin(final Boolean rejoin)
+    {
+        this.rejoin = rejoin;
+        return this;
+    }
+
+    /**
+     * Set the rejoin value to be what is in the {@link ChannelUri} which may be null.
+     *
+     * @param channelUri to read the value from.
+     * @return this for a fluent API.
+     * @see CommonContext#REJOIN_PARAM_NAME
+     */
+    public ChannelUriStringBuilder rejoin(final ChannelUri channelUri)
+    {
+        final String rejoinStr = channelUri.get(REJOIN_PARAM_NAME);
+        if (null == rejoinStr)
+        {
+            rejoin = null;
+            return this;
+        }
+        else
+        {
+            return rejoin(Boolean.valueOf(rejoinStr));
+        }
+    }
+
+    /**
+     * Get the subscription semantics for if a stream should be rejoined after going unavailable.
+     *
+     * @return the subscription semantics for if a stream should be rejoined after going unavailable.
+     * @see CommonContext#REJOIN_PARAM_NAME
+     */
+    public Boolean rejoin()
+    {
+        return rejoin;
     }
 
     /**
@@ -836,6 +1334,11 @@ public class ChannelUriStringBuilder
             sb.append(ALIAS_PARAM_NAME).append('=').append(alias).append('|');
         }
 
+        if (null != cc)
+        {
+            sb.append(CONGESTION_CONTROL_PARAM_NAME).append('=').append(cc).append('|');
+        }
+
         if (null != sparse)
         {
             sb.append(SPARSE_PARAM_NAME).append('=').append(sparse).append('|');
@@ -849,6 +1352,16 @@ public class ChannelUriStringBuilder
         if (null != tether)
         {
             sb.append(TETHER_PARAM_NAME).append('=').append(tether).append('|');
+        }
+
+        if (null != group)
+        {
+            sb.append(GROUP_PARAM_NAME).append('=').append(group).append('|');
+        }
+
+        if (null != rejoin)
+        {
+            sb.append(REJOIN_PARAM_NAME).append('=').append(rejoin).append('|');
         }
 
         final char lastChar = sb.charAt(sb.length() - 1);

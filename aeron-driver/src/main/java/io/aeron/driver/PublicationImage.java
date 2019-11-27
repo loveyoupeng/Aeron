@@ -28,9 +28,7 @@ import io.aeron.protocol.DataHeaderFlyweight;
 import io.aeron.protocol.RttMeasurementFlyweight;
 import org.agrona.collections.ArrayListUtil;
 import org.agrona.collections.ArrayUtil;
-import org.agrona.concurrent.EpochClock;
-import org.agrona.concurrent.NanoClock;
-import org.agrona.concurrent.UnsafeBuffer;
+import org.agrona.concurrent.*;
 import org.agrona.concurrent.status.AtomicCounter;
 import org.agrona.concurrent.status.Position;
 import org.agrona.concurrent.status.ReadablePosition;
@@ -51,7 +49,7 @@ import static org.agrona.UnsafeAccess.UNSAFE;
 class PublicationImagePadding1
 {
     @SuppressWarnings("unused")
-    protected long p1, p2, p3, p4, p5, p6, p7, p8, p9, p10, p11, p12, p13, p14, p15;
+    protected long p1, p2, p3, p4, p5, p6, p7;
 }
 
 class PublicationImageConductorFields extends PublicationImagePadding1
@@ -66,7 +64,7 @@ class PublicationImageConductorFields extends PublicationImagePadding1
 class PublicationImagePadding2 extends PublicationImageConductorFields
 {
     @SuppressWarnings("unused")
-    protected long p16, p17, p18, p19, p20, p21, p22, p23, p24, p25, p26, p27, p28, p29, p30;
+    protected long p1, p2, p3, p4, p5, p6, p7, p8;
 }
 
 class PublicationImageReceiverFields extends PublicationImagePadding2
@@ -79,7 +77,7 @@ class PublicationImageReceiverFields extends PublicationImagePadding2
 class PublicationImagePadding3 extends PublicationImageReceiverFields
 {
     @SuppressWarnings("unused")
-    protected long p31, p32, p33, p34, p35, p36, p37, p38, p39, p40, p41, p42, p43, p44, p45;
+    protected long p1, p2, p3, p4, p5, p6, p7;
 }
 
 /**
@@ -94,22 +92,22 @@ public class PublicationImage
         INIT, ACTIVE, INACTIVE, LINGER, DONE
     }
 
-    private volatile long beginLossChange = Aeron.NULL_VALUE;
-    private volatile long endLossChange = Aeron.NULL_VALUE;
-    private int lossTermId;
-    private int lossTermOffset;
-    private int lossLength;
-
     private volatile long beginSmChange = Aeron.NULL_VALUE;
     private volatile long endSmChange = Aeron.NULL_VALUE;
     private long nextSmPosition;
     private int nextSmReceiverWindowLength;
     private long timeOfLastStatusMessageScheduleNs;
 
-    private long lastLossChangeNumber = Aeron.NULL_VALUE;
-    private long lastSmChangeNumber = Aeron.NULL_VALUE;
     private long lastSmPosition;
     private long lastSmWindowLimit;
+    private long lastSmChangeNumber = Aeron.NULL_VALUE;
+    private long lastLossChangeNumber = Aeron.NULL_VALUE;
+
+    private volatile long beginLossChange = Aeron.NULL_VALUE;
+    private volatile long endLossChange = Aeron.NULL_VALUE;
+    private int lossTermId;
+    private int lossTermOffset;
+    private int lossLength;
 
     private long timeOfLastStateChangeNs;
 
@@ -128,7 +126,7 @@ public class PublicationImage
     private volatile State state = INIT;
 
     private final NanoClock nanoClock;
-    private final NanoClock cachedNanoClock;
+    private final CachedNanoClock cachedNanoClock;
     private final ReceiveChannelEndpoint channelEndpoint;
     private final UnsafeBuffer[] termBuffers;
     private final Position hwmPosition;
@@ -142,7 +140,7 @@ public class PublicationImage
     private final AtomicCounter flowControlUnderRuns;
     private final AtomicCounter flowControlOverRuns;
     private final AtomicCounter lossGapFills;
-    private final EpochClock cachedEpochClock;
+    private final CachedEpochClock cachedEpochClock;
     private final RawLog rawLog;
 
     public PublicationImage(
@@ -164,8 +162,8 @@ public class PublicationImage
         final Position hwmPosition,
         final Position rebuildPosition,
         final NanoClock nanoClock,
-        final NanoClock cachedNanoClock,
-        final EpochClock cachedEpochClock,
+        final CachedNanoClock cachedNanoClock,
+        final CachedEpochClock cachedEpochClock,
         final SystemCounters systemCounters,
         final InetSocketAddress sourceAddress,
         final CongestionControl congestionControl,
@@ -536,9 +534,9 @@ public class PublicationImage
      * @param termId         for the data packet to insert into the appropriate term.
      * @param termOffset     for the start of the packet in the term.
      * @param buffer         for the data packet to insert into the appropriate term.
-     * @param length         of the data packet
-     * @param transportIndex which the packet came from.
-     * @param srcAddress     which the packet came from.
+     * @param length         of the data packet.
+     * @param transportIndex from which the packet came.
+     * @param srcAddress     from which the packet came.
      * @return number of bytes applied as a result of this insertion.
      */
     int insertPacket(
@@ -553,28 +551,36 @@ public class PublicationImage
         final long packetPosition = computePosition(termId, termOffset, positionBitsToShift, initialTermId);
         final long proposedPosition = isHeartbeat ? packetPosition : packetPosition + length;
 
-        if (!isFlowControlUnderRun(packetPosition) && !isFlowControlOverRun(proposedPosition))
+        if (!isFlowControlOverRun(proposedPosition))
         {
-            trackConnection(transportIndex, srcAddress, lastPacketTimestampNs);
-
-            if (isHeartbeat)
+            if (!isFlowControlUnderRun(packetPosition))
             {
-                if (DataHeaderFlyweight.isEndOfStream(buffer) && !isEndOfStream && allEos(transportIndex))
+                final long nowNs = cachedNanoClock.nanoTime();
+                lastPacketTimestampNs = nowNs;
+                trackConnection(transportIndex, srcAddress, nowNs);
+
+                if (isHeartbeat)
                 {
-                    LogBufferDescriptor.endOfStreamPosition(rawLog.metaData(), proposedPosition);
-                    isEndOfStream = true;
+                    if (DataHeaderFlyweight.isEndOfStream(buffer) && !isEndOfStream && allEos(transportIndex))
+                    {
+                        LogBufferDescriptor.endOfStreamPosition(rawLog.metaData(), proposedPosition);
+                        isEndOfStream = true;
+                    }
+
+                    heartbeatsReceived.incrementOrdered();
+                }
+                else
+                {
+                    final UnsafeBuffer termBuffer = termBuffers[indexByPosition(packetPosition, positionBitsToShift)];
+                    TermRebuilder.insert(termBuffer, termOffset, buffer, length);
                 }
 
-                heartbeatsReceived.incrementOrdered();
+                hwmPosition.proposeMaxOrdered(proposedPosition);
             }
-            else
+            else if (packetPosition >= (lastSmPosition - nextSmReceiverWindowLength))
             {
-                final UnsafeBuffer termBuffer = termBuffers[indexByPosition(packetPosition, positionBitsToShift)];
-                TermRebuilder.insert(termBuffer, termOffset, buffer, length);
+                trackConnection(transportIndex, srcAddress, cachedNanoClock.nanoTime());
             }
-
-            lastPacketTimestampNs = cachedNanoClock.nanoTime();
-            hwmPosition.proposeMaxOrdered(proposedPosition);
         }
 
         return length;
@@ -632,6 +638,8 @@ public class PublicationImage
                     lastSmPosition = smPosition;
                     lastSmWindowLimit = smPosition + receiverWindowLength;
                     lastSmChangeNumber = changeNumber;
+
+                    updateActiveTransportCount();
                 }
 
                 workCount = 1;
@@ -767,7 +775,7 @@ public class PublicationImage
                 break;
 
             case LINGER:
-                if ((timeOfLastStateChangeNs + imageLivenessTimeoutNs) - timeNs < 0)
+                if (hasNoSubscribers() || ((timeOfLastStateChangeNs + imageLivenessTimeoutNs) - timeNs < 0))
                 {
                     state = State.DONE;
                     conductor.cleanupImage(this);
@@ -797,6 +805,11 @@ public class PublicationImage
         }
 
         return true;
+    }
+
+    private boolean hasNoSubscribers()
+    {
+        return subscriberPositions.length == 0;
     }
 
     private boolean isFlowControlUnderRun(final long packetPosition)
@@ -850,6 +863,7 @@ public class PublicationImage
             imageConnections[transportIndex] = imageConnection;
         }
 
+        imageConnection.timeOfLastActivityNs = nowNs;
         imageConnection.timeOfLastFrameNs = nowNs;
     }
 
@@ -960,6 +974,22 @@ public class PublicationImage
                     break;
             }
         }
+    }
+
+    private void updateActiveTransportCount()
+    {
+        final long nowNs = cachedNanoClock.nanoTime();
+        int activeTransportCount = 0;
+
+        for (final ImageConnection imageConnection : imageConnections)
+        {
+            if (null != imageConnection && nowNs < (imageConnection.timeOfLastFrameNs + imageLivenessTimeoutNs))
+            {
+                activeTransportCount++;
+            }
+        }
+
+        LogBufferDescriptor.activeTransportCount(rawLog.metaData(), activeTransportCount);
     }
 
     private ReadablePosition[] positionArray(final ArrayList<SubscriberPosition> subscriberPositions, final long nowNs)

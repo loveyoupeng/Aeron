@@ -17,6 +17,7 @@ package io.aeron.archive;
 
 import io.aeron.Publication;
 import io.aeron.Subscription;
+import io.aeron.archive.client.AeronArchive;
 import io.aeron.archive.client.ArchiveException;
 import io.aeron.archive.codecs.*;
 import io.aeron.logbuffer.BufferClaim;
@@ -29,6 +30,7 @@ import static io.aeron.archive.codecs.RecordingDescriptorEncoder.recordingIdEnco
 
 class ControlResponseProxy
 {
+    private static final int SEND_ATTEMPTS = 3;
     private static final int MESSAGE_HEADER_LENGTH = MessageHeaderEncoder.ENCODED_LENGTH;
     private static final int DESCRIPTOR_CONTENT_OFFSET =
         RecordingDescriptorHeaderDecoder.BLOCK_LENGTH + recordingIdEncodingOffset();
@@ -41,6 +43,8 @@ class ControlResponseProxy
     private final RecordingDescriptorEncoder recordingDescriptorEncoder = new RecordingDescriptorEncoder();
     private final RecordingSubscriptionDescriptorEncoder recordingSubscriptionDescriptorEncoder =
         new RecordingSubscriptionDescriptorEncoder();
+    private final RecordingSignalEventEncoder recordingSignalEventEncoder = new RecordingSignalEventEncoder();
+    private final ChallengeEncoder challengeEncoder = new ChallengeEncoder();
 
     int sendDescriptor(
         final long controlSessionId,
@@ -51,7 +55,8 @@ class ControlResponseProxy
         final int messageLength = Catalog.descriptorLength(descriptorBuffer) + MESSAGE_HEADER_LENGTH;
         final int contentLength = messageLength - recordingIdEncodingOffset() - MESSAGE_HEADER_LENGTH;
 
-        for (int i = 0; i < 3; i++)
+        int attempts = SEND_ATTEMPTS;
+        do
         {
             final long result = session.controlPublication().tryClaim(messageLength, bufferClaim);
             if (result > 0)
@@ -74,6 +79,7 @@ class ControlResponseProxy
 
             checkResult(session, result);
         }
+        while (--attempts > 0);
 
         return 0;
     }
@@ -111,9 +117,25 @@ class ControlResponseProxy
             .correlationId(correlationId)
             .relevantId(relevantId)
             .code(code)
+            .version(AeronArchive.Configuration.PROTOCOL_SEMANTIC_VERSION)
             .errorMessage(errorMessage);
 
         return send(session, buffer, MESSAGE_HEADER_LENGTH + responseEncoder.encodedLength());
+    }
+
+    boolean sendChallenge(
+        final long controlSessionId,
+        final long correlationId,
+        final byte[] encodedChallenge,
+        final ControlSession session)
+    {
+        challengeEncoder
+            .wrapAndApplyHeader(buffer, 0, messageHeaderEncoder)
+            .controlSessionId(controlSessionId)
+            .correlationId(correlationId)
+            .putEncodedChallenge(encodedChallenge, 0, encodedChallenge.length);
+
+        return send(session, buffer, MESSAGE_HEADER_LENGTH + challengeEncoder.encodedLength());
     }
 
     void attemptErrorResponse(
@@ -129,11 +151,13 @@ class ControlResponseProxy
             .correlationId(correlationId)
             .relevantId(relevantId)
             .code(ControlResponseCode.ERROR)
+            .version(AeronArchive.Configuration.PROTOCOL_SEMANTIC_VERSION)
             .errorMessage(errorMessage);
 
         final int length = MESSAGE_HEADER_LENGTH + responseEncoder.encodedLength();
 
-        for (int i = 0; i < 3; i++)
+        int attempts = SEND_ATTEMPTS;
+        do
         {
             final long result = controlPublication.offer(buffer, 0, length);
             if (result > 0)
@@ -141,11 +165,49 @@ class ControlResponseProxy
                 break;
             }
         }
+        while (--attempts > 0);
+    }
+
+    void attemptSendSignal(
+        final long controlSessionId,
+        final long correlationId,
+        final long recordingId,
+        final long subscriptionId,
+        final long position,
+        final RecordingSignal recordingSignal,
+        final Publication controlPublication)
+    {
+        final int messageLength = MESSAGE_HEADER_LENGTH + RecordingSignalEventEncoder.BLOCK_LENGTH;
+
+        int attempts = SEND_ATTEMPTS;
+        do
+        {
+            final long result = controlPublication.tryClaim(messageLength, bufferClaim);
+            if (result > 0)
+            {
+                final MutableDirectBuffer buffer = bufferClaim.buffer();
+                final int bufferOffset = bufferClaim.offset();
+
+                recordingSignalEventEncoder
+                    .wrapAndApplyHeader(buffer, bufferOffset, messageHeaderEncoder)
+                    .controlSessionId(controlSessionId)
+                    .correlationId(correlationId)
+                    .recordingId(recordingId)
+                    .subscriptionId(subscriptionId)
+                    .position(position)
+                    .signal(recordingSignal);
+
+                bufferClaim.commit();
+                break;
+            }
+        }
+        while (--attempts > 0);
     }
 
     private boolean send(final ControlSession session, final DirectBuffer buffer, final int length)
     {
-        for (int i = 0; i < 3; i++)
+        int attempts = SEND_ATTEMPTS;
+        do
         {
             final long result = session.controlPublication().offer(buffer, 0, length);
             if (result > 0)
@@ -155,6 +217,7 @@ class ControlResponseProxy
 
             checkResult(session, result);
         }
+        while (--attempts > 0);
 
         return false;
     }

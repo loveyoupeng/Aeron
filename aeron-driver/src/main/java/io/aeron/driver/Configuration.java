@@ -28,9 +28,7 @@ import io.aeron.protocol.DataHeaderFlyweight;
 import org.agrona.BitUtil;
 import org.agrona.LangUtil;
 import org.agrona.collections.ArrayUtil;
-import org.agrona.concurrent.BackoffIdleStrategy;
-import org.agrona.concurrent.ControllableIdleStrategy;
-import org.agrona.concurrent.IdleStrategy;
+import org.agrona.concurrent.*;
 import org.agrona.concurrent.broadcast.BroadcastBufferDescriptor;
 import org.agrona.concurrent.ringbuffer.RingBufferDescriptor;
 import org.agrona.concurrent.status.CountersReader;
@@ -72,6 +70,11 @@ public class Configuration
     public static final String DIR_DELETE_ON_START_PROP_NAME = "aeron.dir.delete.on.start";
 
     /**
+     * Should driver attempt to delete {@link CommonContext#AERON_DIR_PROP_NAME} on shutdown.
+     */
+    public static final String DIR_DELETE_ON_SHUTDOWN_PROP_NAME = "aeron.dir.delete.on.shutdown";
+
+    /**
      * Should high resolution timer be used on Windows.
      */
     public static final String USE_WINDOWS_HIGH_RES_TIMER_PROP_NAME = "aeron.use.windows.high.res.timer";
@@ -90,6 +93,11 @@ public class Configuration
      * Property name for boolean value of term buffers should be created sparse.
      */
     public static final String TERM_BUFFER_SPARSE_FILE_PROP_NAME = "aeron.term.buffer.sparse.file";
+
+    /**
+     * Property name for default boolean value for if subscriptions should be considered a group member or individual.
+     */
+    public static final String GROUP_RECEIVER_CONSIDERATION_PROP_NAME = "aeron.receiver.group.consideration";
 
     /**
      * Property name for page size to align all files to.
@@ -618,6 +626,11 @@ public class Configuration
      */
     public static final String TERMINATION_VALIDATOR_PROP_NAME = "aeron.driver.termination.validator";
 
+    /**
+     * Property name for default boolean value for if a stream is rejoinable. True to allow rejoin, false to not.
+     */
+    public static final String REJOIN_STREAM_PROP_NAME = "aeron.rejoin.stream";
+
     public static boolean printConfigurationOnStart()
     {
         return "true".equalsIgnoreCase(getProperty(PRINT_CONFIGURATION_ON_START_PROP_NAME, "false"));
@@ -636,6 +649,11 @@ public class Configuration
     public static boolean dirDeleteOnStart()
     {
         return "true".equalsIgnoreCase(getProperty(DIR_DELETE_ON_START_PROP_NAME, "false"));
+    }
+
+    public static boolean dirDeleteOnShutdown()
+    {
+        return "true".equalsIgnoreCase(getProperty(DIR_DELETE_ON_SHUTDOWN_PROP_NAME, "false"));
     }
 
     public static boolean termBufferSparseFile()
@@ -661,6 +679,11 @@ public class Configuration
     public static boolean spiesSimulateConnection()
     {
         return "true".equalsIgnoreCase(getProperty(SPIES_SIMULATE_CONNECTION_PROP_NAME, "false"));
+    }
+
+    public static CommonContext.InferableBoolean receiverGroupConsideration()
+    {
+        return CommonContext.InferableBoolean.parse(getProperty(GROUP_RECEIVER_CONSIDERATION_PROP_NAME));
     }
 
     public static int conductorBufferLength()
@@ -730,6 +753,11 @@ public class Configuration
             UNTETHERED_RESTING_TIMEOUT_PROP_NAME, UNTETHERED_RESTING_TIMEOUT_DEFAULT_NS);
     }
 
+    public static boolean rejoinStream()
+    {
+        return "true".equalsIgnoreCase(getProperty(REJOIN_STREAM_PROP_NAME, "true"));
+    }
+
     /**
      * How far ahead a producer can get from a consumer position.
      *
@@ -762,6 +790,18 @@ public class Configuration
 
         switch (strategyName)
         {
+            case "org.agrona.concurrent.NoOpIdleStrategy":
+                idleStrategy = NoOpIdleStrategy.INSTANCE;
+                break;
+
+            case "org.agrona.concurrent.BusySpinIdleStrategy":
+                idleStrategy = BusySpinIdleStrategy.INSTANCE;
+                break;
+
+            case "org.agrona.concurrent.YieldingIdleStrategy":
+                idleStrategy = YieldingIdleStrategy.INSTANCE;
+                break;
+
             case DEFAULT_IDLE_STRATEGY:
                 idleStrategy = new BackoffIdleStrategy(
                     IDLE_MAX_SPINS, IDLE_MAX_YIELDS, IDLE_MIN_PARK_NS, IDLE_MAX_PARK_NS);

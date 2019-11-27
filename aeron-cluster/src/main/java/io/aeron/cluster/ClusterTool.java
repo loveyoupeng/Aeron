@@ -17,6 +17,7 @@ package io.aeron.cluster;
 
 import io.aeron.Aeron;
 import io.aeron.CncFileDescriptor;
+import io.aeron.CommonContext;
 import io.aeron.archive.client.AeronArchive;
 import io.aeron.cluster.codecs.BooleanType;
 import io.aeron.cluster.codecs.mark.ClusterComponentType;
@@ -28,7 +29,6 @@ import org.agrona.SystemUtil;
 import org.agrona.collections.ArrayUtil;
 import org.agrona.collections.MutableBoolean;
 import org.agrona.collections.MutableLong;
-import org.agrona.concurrent.AtomicBuffer;
 import org.agrona.concurrent.EpochClock;
 import org.agrona.concurrent.SystemEpochClock;
 import org.agrona.concurrent.status.AtomicCounter;
@@ -37,7 +37,9 @@ import org.agrona.concurrent.status.CountersReader;
 import java.io.File;
 import java.io.PrintStream;
 import java.nio.MappedByteBuffer;
+import java.nio.channels.FileChannel;
 import java.util.Date;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
@@ -49,15 +51,16 @@ import static org.agrona.SystemUtil.getDurationInNanos;
  * Tool for investigating the state of a cluster node.
  * <pre>
  * Usage: ClusterTool &#60;cluster-dir&#62; &#60;command&#62; [options]
- *          describe: prints out all descriptors in the file.
- *               pid: prints PID of cluster component.
- *     recovery-plan: [service count] prints recovery plan of cluster component.
- *     recording-log: prints recording log of cluster component.
- *            errors: prints Aeron and cluster component error logs.
- *      list-members: print leader memberId, active members list, and passive members list.
- *     remove-member: [memberId] requests removal of a member specified in memberId.
- *    remove-passive: [memberId] requests removal of passive member specified in memberId.
- *      backup-query: [delay] schedules (or displays) time of next backup query for cluster backup.
+ *                   describe: prints out all descriptors in the file.
+ *                        pid: prints PID of cluster component.
+ *              recovery-plan: [service count] prints recovery plan of cluster component.
+ *              recording-log: prints recording log of cluster component.
+ *                     errors: prints Aeron and cluster component error logs.
+ *               list-members: print leader memberId, active members list, and passive members list.
+ *              remove-member: [memberId] requests removal of a member specified in memberId.
+ *             remove-passive: [memberId] requests removal of passive member specified in memberId.
+ *               backup-query: [delay] schedules (or displays) time of next backup query for cluster backup.
+ *  tombstone-latest-snapshot: Mark the latest snapshot as a tombstone so previous is loaded..
  * </pre>
  */
 public class ClusterTool
@@ -146,6 +149,10 @@ public class ClusterTool
                         NANOSECONDS.toMillis(SystemUtil.parseDuration(AERON_CLUSTER_TOOL_DELAY_PROP_NAME, args[2])));
                 }
                 break;
+
+            case "tombstone-latest-snapshot":
+                tombstoneLatestSnapshot(System.out, clusterDir);
+                break;
         }
     }
 
@@ -154,9 +161,13 @@ public class ClusterTool
      */
     public static class ClusterMembership
     {
+        long currentTimeNs = NULL_VALUE;
         int leaderMemberId = NULL_VALUE;
-        String activeMembers = null;
-        String passiveMembers = null;
+        int memberId = NULL_VALUE;
+        String activeMembersStr = null;
+        String passiveMembersStr = null;
+        List<ClusterMember> activeMembers = null;
+        List<ClusterMember> passiveMembers = null;
     }
 
     public static void describe(final PrintStream out, final File clusterDir)
@@ -240,14 +251,16 @@ public class ClusterTool
 
                 if (queryClusterMembers(markFile, clusterMembership, timeoutMs))
                 {
-                    out.format("leaderMemberId=%d, activeMembers=%s, passiveMembers=%s%n",
-                        clusterMembership.leaderMemberId,
-                        clusterMembership.activeMembers,
-                        clusterMembership.passiveMembers);
+                    out.println(
+                        "currentTimeNs=" + clusterMembership.currentTimeNs +
+                        ", leaderMemberId=" + clusterMembership.leaderMemberId +
+                        ", memberId=" + clusterMembership.memberId +
+                        ", activeMembers=" + clusterMembership.activeMembers +
+                        ", passiveMembers=" + clusterMembership.passiveMembers);
                 }
                 else
                 {
-                    out.format("timeout waiting for response from node");
+                    out.println("timeout waiting for response from node");
                 }
             }
         }
@@ -312,7 +325,7 @@ public class ClusterTool
                 }
                 else
                 {
-                    final EpochClock epochClock = new SystemEpochClock();
+                    final EpochClock epochClock = SystemEpochClock.INSTANCE;
                     nextBackupQueryDeadlineMs(markFile, epochClock.time() + delayMs);
                     out.format("%2$tF %1$tH:%1$tM:%1$tS setting next: %2$tF %2$tH:%2$tM:%2$tS%n",
                         new Date(),
@@ -377,17 +390,50 @@ public class ClusterTool
         final int toConsensusModuleStreamId = markFile.decoder().consensusModuleStreamId();
 
         final MutableLong id = new MutableLong(NULL_VALUE);
-        final MemberServiceAdapter.MemberServiceHandler handler =
-            (correlationId, leaderMemberId, activeMembers, passiveMembers) ->
+        final MemberServiceAdapter.MemberServiceHandler handler = new MemberServiceAdapter.MemberServiceHandler()
+        {
+            public void onClusterMembersResponse(
+                final long correlationId,
+                final int leaderMemberId,
+                final String activeMembers,
+                final String passiveMembers)
             {
                 if (correlationId == id.longValue())
                 {
                     clusterMembership.leaderMemberId = leaderMemberId;
-                    clusterMembership.activeMembers = activeMembers;
-                    clusterMembership.passiveMembers = passiveMembers;
+                    clusterMembership.activeMembersStr = activeMembers;
+                    clusterMembership.passiveMembersStr = passiveMembers;
                     id.set(NULL_VALUE);
                 }
-            };
+            }
+
+            public void onClusterMembersExtendedResponse(
+                final long correlationId,
+                final long currentTimeNs,
+                final int leaderMemberId,
+                final int memberId,
+                final List<ClusterMember> activeMembers,
+                final List<ClusterMember> passiveMembers)
+            {
+                if (correlationId == id.longValue())
+                {
+                    clusterMembership.currentTimeNs = currentTimeNs;
+                    clusterMembership.leaderMemberId = leaderMemberId;
+                    clusterMembership.memberId = memberId;
+                    clusterMembership.activeMembers = activeMembers;
+                    clusterMembership.passiveMembers = passiveMembers;
+
+                    ClusterMember[] activeMemberArray = new ClusterMember[activeMembers.size()];
+                    ClusterMember[] passiveMemberArray = new ClusterMember[passiveMembers.size()];
+                    activeMemberArray = activeMembers.toArray(activeMemberArray);
+                    passiveMemberArray = passiveMembers.toArray(passiveMemberArray);
+
+                    clusterMembership.activeMembersStr = ClusterMember.encodeAsString(activeMemberArray);
+                    clusterMembership.passiveMembersStr = ClusterMember.encodeAsString(passiveMemberArray);
+                    id.set(NULL_VALUE);
+                }
+            }
+        };
 
         try (Aeron aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(aeronDirectoryName));
             ConsensusModuleProxy consensusModuleProxy = new ConsensusModuleProxy(
@@ -521,6 +567,16 @@ public class ClusterTool
         return result.value;
     }
 
+    public static boolean tombstoneLatestSnapshot(final PrintStream out, final File clusterDir)
+    {
+        try (RecordingLog recordingLog = new RecordingLog(clusterDir))
+        {
+            final boolean result = recordingLog.tombstoneLatestSnapshot();
+            out.println(" tombstone latest snapshot: " + result);
+            return result;
+        }
+    }
+
     private static ClusterMarkFile openMarkFile(final File clusterDir, final Consumer<String> logger)
     {
         return new ClusterMarkFile(clusterDir, ClusterMarkFile.FILENAME, System::currentTimeMillis, TIMEOUT_MS, logger);
@@ -562,33 +618,43 @@ public class ClusterTool
     private static void printErrors(final PrintStream out, final ClusterMarkFile markFile)
     {
         out.println("Cluster component error log:");
-        ClusterMarkFile.saveErrorLog(out, markFile.errorBuffer());
+        CommonContext.printErrorLog(markFile.errorBuffer(), out);
 
         final String aeronDirectory = markFile.decoder().aeronDirectory();
+        out.println();
         out.println("Aeron driver error log (directory: " + aeronDirectory + "):");
         final File cncFile = new File(aeronDirectory, CncFileDescriptor.CNC_FILE);
 
-        final MappedByteBuffer cncByteBuffer = IoUtil.mapExistingFile(cncFile, "cnc");
+        final MappedByteBuffer cncByteBuffer = IoUtil.mapExistingFile(cncFile, FileChannel.MapMode.READ_ONLY, "cnc");
         final DirectBuffer cncMetaDataBuffer = CncFileDescriptor.createMetaDataBuffer(cncByteBuffer);
         final int cncVersion = cncMetaDataBuffer.getInt(CncFileDescriptor.cncVersionOffset(0));
 
         CncFileDescriptor.checkVersion(cncVersion);
-
-        final AtomicBuffer buffer = CncFileDescriptor.createErrorLogBuffer(cncByteBuffer, cncMetaDataBuffer);
-        ClusterMarkFile.saveErrorLog(out, buffer);
+        CommonContext.printErrorLog(CncFileDescriptor.createErrorLogBuffer(cncByteBuffer, cncMetaDataBuffer), out);
     }
 
     private static void printHelp(final PrintStream out)
     {
         out.println("Usage: <cluster-dir> <command> [options]");
-        out.println("  describe: prints out all descriptors in the file.");
-        out.println("  pid: prints PID of cluster component.");
-        out.println("  recovery-plan: [service count] prints recovery plan of cluster component.");
-        out.println("  recording-log: prints recording log of cluster component.");
-        out.println("  errors: prints Aeron and cluster component error logs.");
-        out.println("  list-members: print leader memberId, active members list, and passive members list.");
-        out.println("  remove-member: [memberId] requests removal of a member specified in memberId.");
-        out.println("  remove-passive: [memberId] requests removal of passive member specified in memberId.");
-        out.println("  backup-query: [delay] display time of next backup query or set time of next backup query.");
+        out.println(
+            "                    describe: prints out all descriptors in the file.");
+        out.println(
+            "                        pid: prints PID of cluster component.");
+        out.println(
+            "              recovery-plan: [service count] prints recovery plan of cluster component.");
+        out.println(
+            "              recording-log: prints recording log of cluster component.");
+        out.println(
+            "                     errors: prints Aeron and cluster component error logs.");
+        out.println(
+            "               list-members: print leader memberId, active members list, and passive members list.");
+        out.println(
+            "              remove-member: [memberId] requests removal of a member specified in memberId.");
+        out.println(
+            "             remove-passive: [memberId] requests removal of passive member specified in memberId.");
+        out.println(
+            "               backup-query: [delay] display time of next backup query or set time of next backup query.");
+        out.println(
+            "  tombstone-latest-snapshot: Mark the latest snapshot as a tombstone so previous is loaded.");
     }
 }

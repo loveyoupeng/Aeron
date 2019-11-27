@@ -54,6 +54,7 @@ typedef struct aeron_send_channel_endpoint_stct
     aeron_udp_destination_tracker_t *destination_tracker;
     aeron_driver_sender_proxy_t *sender_proxy;
     aeron_int64_to_ptr_hash_map_t publication_dispatch_map;
+    aeron_udp_channel_transport_bindings_t *transport_bindings;
 }
 aeron_send_channel_endpoint_t;
 
@@ -112,6 +113,12 @@ inline int aeron_send_channel_endpoint_remove_destination(
     aeron_send_channel_endpoint_t *endpoint, struct sockaddr_storage *addr)
 {
     return aeron_udp_destination_tracker_remove_destination(endpoint->destination_tracker, addr);
+}
+
+inline int aeron_send_channel_endpoint_bind_addr_and_port(
+    aeron_send_channel_endpoint_t *endpoint, char *buffer, size_t length)
+{
+    return endpoint->transport_bindings->bind_addr_and_port_func(&endpoint->transport, buffer, length);
 }
 
 #endif //AERON_SEND_CHANNEL_ENDPOINT_H

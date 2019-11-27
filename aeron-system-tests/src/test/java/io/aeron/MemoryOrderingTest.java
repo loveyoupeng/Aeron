@@ -19,9 +19,12 @@ import io.aeron.driver.MediaDriver;
 import io.aeron.driver.ThreadingMode;
 import io.aeron.logbuffer.FragmentHandler;
 import io.aeron.logbuffer.Header;
+import io.aeron.test.TestMediaDriver;
 import org.agrona.CloseHelper;
 import org.agrona.DirectBuffer;
-import org.agrona.concurrent.*;
+import org.agrona.concurrent.IdleStrategy;
+import org.agrona.concurrent.UnsafeBuffer;
+import org.agrona.concurrent.YieldingIdleStrategy;
 import org.junit.After;
 import org.junit.Test;
 
@@ -42,8 +45,9 @@ public class MemoryOrderingTest
 
     private static volatile String failedMessage = null;
 
-    private final MediaDriver driver = MediaDriver.launch(new MediaDriver.Context()
+    private final TestMediaDriver driver = TestMediaDriver.launch(new MediaDriver.Context()
         .errorHandler(Throwable::printStackTrace)
+        .dirDeleteOnShutdown(true)
         .threadingMode(ThreadingMode.SHARED)
         .publicationTermBufferLength(TERM_BUFFER_LENGTH));
 
@@ -54,20 +58,18 @@ public class MemoryOrderingTest
     {
         CloseHelper.close(aeron);
         CloseHelper.close(driver);
-        driver.context().deleteAeronDirectory();
     }
 
     @Test(timeout = 20_000)
     public void shouldReceiveMessagesInOrderWithFirstLongWordIntact() throws Exception
     {
-        final UnsafeBuffer srcBuffer = new UnsafeBuffer(ByteBuffer.allocateDirect(MESSAGE_LENGTH));
+        final UnsafeBuffer srcBuffer = new UnsafeBuffer(ByteBuffer.allocate(MESSAGE_LENGTH));
         srcBuffer.setMemory(0, MESSAGE_LENGTH, (byte)7);
 
         try (Subscription subscription = aeron.addSubscription(CHANNEL, STREAM_ID);
             Publication publication = aeron.addPublication(CHANNEL, STREAM_ID))
         {
-            final BusySpinIdleStrategy idleStrategy = new BusySpinIdleStrategy();
-
+            final IdleStrategy idleStrategy = YieldingIdleStrategy.INSTANCE;
             final Thread subscriberThread = new Thread(new Subscriber(subscription));
             subscriberThread.setDaemon(true);
             subscriberThread.start();
@@ -88,8 +90,8 @@ public class MemoryOrderingTest
                         fail(failedMessage);
                     }
 
-                    SystemTest.checkInterruptedStatus();
                     idleStrategy.idle();
+                    SystemTest.checkInterruptedStatus();
                 }
 
                 if (i % BURST_LENGTH == 0)
@@ -111,14 +113,13 @@ public class MemoryOrderingTest
     @Test(timeout = 20_000)
     public void shouldReceiveMessagesInOrderWithFirstLongWordIntactFromExclusivePublication() throws Exception
     {
-        final UnsafeBuffer srcBuffer = new UnsafeBuffer(ByteBuffer.allocateDirect(MESSAGE_LENGTH));
+        final UnsafeBuffer srcBuffer = new UnsafeBuffer(ByteBuffer.allocate(MESSAGE_LENGTH));
         srcBuffer.setMemory(0, MESSAGE_LENGTH, (byte)7);
 
         try (Subscription subscription = aeron.addSubscription(CHANNEL, STREAM_ID);
             ExclusivePublication publication = aeron.addExclusivePublication(CHANNEL, STREAM_ID))
         {
-            final BusySpinIdleStrategy idleStrategy = new BusySpinIdleStrategy();
-
+            final IdleStrategy idleStrategy = YieldingIdleStrategy.INSTANCE;
             final Thread subscriberThread = new Thread(new Subscriber(subscription));
             subscriberThread.setDaemon(true);
             subscriberThread.start();
@@ -134,13 +135,13 @@ public class MemoryOrderingTest
 
                 while (publication.offer(srcBuffer) < 0L)
                 {
-                    SystemTest.checkInterruptedStatus();
                     if (null != failedMessage)
                     {
                         fail(failedMessage);
                     }
 
                     idleStrategy.idle();
+                    SystemTest.checkInterruptedStatus();
                 }
 
                 if (i % BURST_LENGTH == 0)
@@ -174,7 +175,7 @@ public class MemoryOrderingTest
 
         public void run()
         {
-            final BusySpinIdleStrategy idleStrategy = new BusySpinIdleStrategy();
+            final IdleStrategy idleStrategy = YieldingIdleStrategy.INSTANCE;
 
             while (messageNum < NUM_MESSAGES && null == failedMessage)
             {

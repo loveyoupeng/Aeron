@@ -15,11 +15,12 @@
  */
 package io.aeron.driver.media;
 
-import io.aeron.CommonContext;
+import io.aeron.ErrorCode;
 import io.aeron.driver.DataPacketDispatcher;
 import io.aeron.driver.DriverConductorProxy;
 import io.aeron.driver.MediaDriver;
 import io.aeron.driver.PublicationImage;
+import io.aeron.exceptions.ControlProtocolException;
 import io.aeron.exceptions.AeronException;
 import io.aeron.protocol.*;
 import io.aeron.status.ChannelEndpointStatus;
@@ -85,15 +86,8 @@ public class ReceiveChannelEndpoint extends UdpChannelTransport
         rttMeasurementFlyweight = threadLocals.rttMeasurementFlyweight();
         receiverId = threadLocals.receiverId();
 
-        final String mode = udpChannel.channelUri().get(CommonContext.MDC_CONTROL_MODE_PARAM_NAME);
-        if (CommonContext.MDC_CONTROL_MODE_MANUAL.equals(mode))
-        {
-            this.multiRcvDestination = new MultiRcvDestination(context.nanoClock(), DESTINATION_ADDRESS_TIMEOUT);
-        }
-        else
-        {
-            this.multiRcvDestination = null;
-        }
+        multiRcvDestination = udpChannel.isManualControlMode() ?
+            new MultiRcvDestination(context.nanoClock(), DESTINATION_ADDRESS_TIMEOUT) : null;
     }
 
     /**
@@ -131,6 +125,11 @@ public class ReceiveChannelEndpoint extends UdpChannelTransport
         return udpChannel().originalUriString();
     }
 
+    public AtomicCounter statusIndicatorCounter()
+    {
+        return statusIndicator;
+    }
+
     public int statusIndicatorCounterId()
     {
         return statusIndicator.id();
@@ -145,6 +144,11 @@ public class ReceiveChannelEndpoint extends UdpChannelTransport
                 "channel cannot be registered unless INITIALISING: status=" + status(currentStatus));
         }
 
+        if (null == multiRcvDestination)
+        {
+            statusIndicator.appendToLabel(bindAddressAndPort());
+        }
+
         statusIndicator.setOrdered(ChannelEndpointStatus.ACTIVE);
     }
 
@@ -157,11 +161,11 @@ public class ReceiveChannelEndpoint extends UdpChannelTransport
         }
     }
 
-    public void closeMultiRcvDestination()
+    public void closeMultiRcvDestination(final DataTransportPoller poller)
     {
         if (null != multiRcvDestination)
         {
-            multiRcvDestination.close();
+            multiRcvDestination.close(poller);
         }
     }
 
@@ -262,7 +266,7 @@ public class ReceiveChannelEndpoint extends UdpChannelTransport
     {
         if (null == multiRcvDestination)
         {
-            throw new AeronException("channel does not allow manual control");
+            throw new ControlProtocolException(ErrorCode.INVALID_CHANNEL, "channel does not allow manual control");
         }
     }
 
@@ -306,6 +310,21 @@ public class ReceiveChannelEndpoint extends UdpChannelTransport
         {
             throw new IllegalStateException("udpChannel for unknown index " + transportIndex);
         }
+    }
+
+    public boolean hasTag()
+    {
+        return super.udpChannel.hasTag();
+    }
+
+    public long tag()
+    {
+        return super.udpChannel.tag();
+    }
+
+    public boolean matchesTag(final UdpChannel udpChannel)
+    {
+        return super.udpChannel.matchesTag(udpChannel);
     }
 
     public int multicastTtl()
@@ -417,6 +436,7 @@ public class ReceiveChannelEndpoint extends UdpChannelTransport
     {
         if (!isClosed)
         {
+            rttMeasurementBuffer.clear();
             rttMeasurementFlyweight
                 .sessionId(sessionId)
                 .streamId(streamId)
@@ -485,6 +505,7 @@ public class ReceiveChannelEndpoint extends UdpChannelTransport
     {
         if (!isClosed)
         {
+            rttMeasurementBuffer.clear();
             rttMeasurementFlyweight
                 .sessionId(sessionId)
                 .streamId(streamId)

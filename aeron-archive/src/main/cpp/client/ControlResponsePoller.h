@@ -16,6 +16,8 @@
 #ifndef AERON_ARCHIVE_CONTROL_RESPONSE_POLLER_H
 #define AERON_ARCHIVE_CONTROL_RESPONSE_POLLER_H
 
+#include <utility>
+
 #include "Aeron.h"
 #include "ControlledFragmentAssembler.h"
 
@@ -49,12 +51,16 @@ public:
         m_controlSessionId = -1;
         m_correlationId = -1;
         m_relevantId = -1;
-        m_templateId = -1;
+        m_version = 0;
+        m_codeValue = -1;
         m_errorMessage = "";
         m_pollComplete = false;
         m_isCodeOk = false;
         m_isCodeError = false;
         m_isControlResponse = false;
+        m_wasChallenged = false;
+        delete [] m_encodedChallenge.first;
+        m_encodedChallenge.second = 0;
 
         return m_subscription->controlledPoll(m_fragmentHandler, m_fragmentLimit);
     }
@@ -90,13 +96,13 @@ public:
     }
 
     /**
-     * Get the template id of the last received message.
+     * Version response from the server in semantic version form.
      *
-     * @return the template id of the last received message.
+     * @return response from the server in semantic version form.
      */
-    inline std::int64_t templateId()
+    inline std::int32_t version()
     {
-        return m_templateId;
+        return m_version;
     }
 
     /**
@@ -159,6 +165,26 @@ public:
         return m_codeValue;
     }
 
+    /**
+     * Was the last polling action received a challenge message?
+     *
+     * @return true if the last polling action received was a challenge message, false if not.
+     */
+    inline bool wasChallenged()
+    {
+        return m_wasChallenged;
+    }
+
+    /**
+     * Get the encoded challenge of the last challenge.
+     *
+     * @return the encoded challenge of the last challenge.
+     */
+    inline std::pair<const char *, std::uint32_t> encodedChallenge()
+    {
+        return m_encodedChallenge;
+    }
+
     ControlledPollAction onFragment(AtomicBuffer& buffer, util::index_t offset, util::index_t length, Header& header);
 
 private:
@@ -170,13 +196,15 @@ private:
     std::int64_t m_controlSessionId = -1;
     std::int64_t m_correlationId = -1;
     std::int64_t m_relevantId = -1;
-    std::int16_t m_templateId = -1;
-    std::string m_errorMessage = "";
+    std::int32_t m_version = 0;
     int m_codeValue = -1;
+    std::string m_errorMessage = "";
     bool m_pollComplete = false;
     bool m_isCodeOk = false;
     bool m_isCodeError = false;
     bool m_isControlResponse = false;
+    bool m_wasChallenged = false;
+    std::pair<const char *, std::uint32_t> m_encodedChallenge = { nullptr, 0 };
 };
 
 }}}

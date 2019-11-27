@@ -74,6 +74,14 @@ int aeron_driver_context_set_dir_delete_on_start(aeron_driver_context_t * contex
 bool aeron_driver_context_get_dir_delete_on_start(aeron_driver_context_t *context);
 
 /**
+ * Attempt to delete directories on shutdown.
+ */
+#define AERON_DIR_DELETE_ON_SHUTDOWN_ENV_VAR "AERON_DIR_DELETE_ON_SHUTDOWN"
+
+int aeron_driver_context_set_dir_delete_on_shutdown(aeron_driver_context_t * context, bool value);
+bool aeron_driver_context_get_dir_delete_on_shutdown(aeron_driver_context_t *context);
+
+/**
  * Length (in bytes) of the conductor buffer for control commands from the clients to the media driver conductor.
  */
 #define AERON_TO_CONDUCTOR_BUFFER_LENGTH_ENV_VAR "AERON_CONDUCTOR_BUFFER_LENGTH"
@@ -308,6 +316,7 @@ size_t aeron_driver_context_get_rcv_initial_window_length(aeron_driver_context_t
 
 typedef struct aeron_congestion_control_strategy_stct aeron_congestion_control_strategy_t;
 typedef struct aeron_counters_manager_stct aeron_counters_manager_t;
+struct sockaddr_storage;
 
 typedef int (*aeron_congestion_control_strategy_supplier_func_t)(
     aeron_congestion_control_strategy_t **strategy,
@@ -318,6 +327,8 @@ typedef int (*aeron_congestion_control_strategy_supplier_func_t)(
     int64_t registration_id,
     int32_t term_length,
     int32_t sender_mtu_length,
+    struct sockaddr_storage *control_address,
+    struct sockaddr_storage *src_address,
     aeron_driver_context_t *context,
     aeron_counters_manager_t *counters_manager);
 
@@ -574,10 +585,57 @@ uint64_t aeron_driver_context_get_retransmit_unicast_delay_ns(aeron_driver_conte
 int aeron_driver_context_set_retransmit_unicast_linger_ns(aeron_driver_context_t *context, uint64_t value);
 uint64_t aeron_driver_context_get_retransmit_unicast_linger_ns(aeron_driver_context_t *context);
 
+/**
+ * Group semantics for network subscriptions.
+ */
+#define AERON_RECEIVER_GROUP_CONSIDERATION_ENV_VAR "AERON_RECEIVER_GROUP_CONSIDERATION"
+
+typedef enum aeron_inferable_boolean_enum
+{
+    AERON_FORCE_FALSE,
+    AERON_FORCE_TRUE,
+    AERON_INFER
+}
+aeron_inferable_boolean_t;
+
+int aeron_driver_context_set_receiver_group_consideration(
+    aeron_driver_context_t *context, aeron_inferable_boolean_t value);
+aeron_inferable_boolean_t aeron_driver_context_get_receiver_group_consideration(aeron_driver_context_t *context);
+
+/**
+ * Property name for default boolean value for if a stream is rejoinable. True to allow rejoin, false to not.
+ * */
+#define AERON_REJOIN_STREAM_ENV_VAR "AERON_REJOIN_STREAM"
+
+int aeron_driver_context_set_rejoin_stream(aeron_driver_context_t *context, bool value);
+bool aeron_driver_context_get_rejoin_stream(aeron_driver_context_t *context);
+
 #define AERON_IPC_CHANNEL "aeron:ipc"
 #define AERON_IPC_CHANNEL_LEN strlen(AERON_IPC_CHANNEL)
 #define AERON_SPY_PREFIX "aeron-spy:"
 #define AERON_SPY_PREFIX_LEN strlen(AERON_SPY_PREFIX)
+
+/**
+ * Bindings for UDP Channel Transports.
+ */
+#define AERON_UDP_CHANNEL_TRANSPORT_BINDINGS_ENV_VAR "AERON_UDP_CHANNEL_TRANSPORT_BINDINGS"
+
+typedef struct aeron_udp_channel_transport_bindings_stct aeron_udp_channel_transport_bindings_t;
+
+int aeron_driver_context_set_udp_channel_transport_bindings(
+    aeron_driver_context_t *context, aeron_udp_channel_transport_bindings_t *value);
+aeron_udp_channel_transport_bindings_t *aeron_driver_context_get_udp_channel_transport_bindings(
+    aeron_driver_context_t *context);
+
+#define AERON_PUBLICATION_RESERVED_SESSION_ID_LOW_ENV_VAR "AERON_PUBLICATION_RESERVED_SESSION_ID_LOW"
+
+int aeron_driver_context_set_publication_reserved_session_id_low(aeron_driver_context_t *context, int32_t value);
+int32_t aeron_driver_context_get_publication_reserved_session_id_low(aeron_driver_context_t *context);
+
+#define AERON_PUBLICATION_RESERVED_SESSION_ID_HIGH_ENV_VAR "AERON_PUBLICATION_RESERVED_SESSION_ID_HIGH"
+
+int aeron_driver_context_set_publication_reserved_session_id_high(aeron_driver_context_t *context, int32_t value);
+int32_t aeron_driver_context_get_publication_reserved_session_id_high(aeron_driver_context_t *context);
 
 /**
  * Return full version and build string.

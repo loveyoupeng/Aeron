@@ -39,22 +39,26 @@ import static io.aeron.Aeron.NULL_VALUE;
 import static io.aeron.archive.client.AeronArchive.NULL_POSITION;
 import static io.aeron.archive.codecs.SourceLocation.LOCAL;
 import static io.aeron.cluster.client.AeronCluster.SESSION_HEADER_LENGTH;
+import static io.aeron.cluster.service.ClusteredServiceContainer.Configuration.MARK_FILE_UPDATE_INTERVAL_NS;
 import static io.aeron.cluster.service.ClusteredServiceContainer.SNAPSHOT_TYPE_ID;
 import static java.util.Collections.unmodifiableCollection;
 import static org.agrona.concurrent.status.CountersReader.NULL_COUNTER_ID;
 
 class ClusteredServiceAgent implements Agent, Cluster
 {
+    static final long MARK_FILE_UPDATE_INTERVAL_MS = TimeUnit.NANOSECONDS.toMillis(MARK_FILE_UPDATE_INTERVAL_NS);
+
+    private boolean isServiceActive;
+    private volatile boolean isAbort;
     private final int serviceId;
     private int memberId = NULL_VALUE;
     private long ackId = 0;
+    private long timeOfLastMarkFileUpdateMs;
     private long cachedTimeMs;
     private long clusterTime;
     private long clusterLogPosition = NULL_POSITION;
     private long terminationPosition = NULL_POSITION;
     private long roleChangePosition = NULL_POSITION;
-    private boolean isServiceActive;
-    private volatile boolean isAbort;
 
     private final AeronArchive.Context archiveCtx;
     private final ClusteredServiceContainer.Context ctx;
@@ -287,16 +291,24 @@ class ClusteredServiceAgent implements Agent, Cluster
         return consensusModuleProxy.tryClaim(length + SESSION_HEADER_LENGTH, bufferClaim, headerBuffer);
     }
 
+    public void reset()
+    {
+        idleStrategy.reset();
+    }
+
     public void idle()
     {
-        checkForClockTick();
         idleStrategy.idle();
+        checkForClockTick();
     }
 
     public void idle(final int workCount)
     {
-        checkForClockTick();
         idleStrategy.idle(workCount);
+        if (workCount <= 0)
+        {
+            checkForClockTick();
+        }
     }
 
     public void onJoinLog(
@@ -422,9 +434,9 @@ class ClusteredServiceAgent implements Agent, Cluster
         final long leadershipTermId,
         final long logPosition,
         final long timestamp,
-        @SuppressWarnings("unused") final long termBaseLogPosition,
-        @SuppressWarnings("unused") final int leaderMemberId,
-        @SuppressWarnings("unused") final int logSessionId,
+        final long termBaseLogPosition,
+        final int leaderMemberId,
+        final int logSessionId,
         final TimeUnit timeUnit,
         final int appVersion)
     {
@@ -434,13 +446,24 @@ class ClusteredServiceAgent implements Agent, Cluster
                 "incompatible version: " + SemanticVersion.toString(ctx.appVersion()) +
                 " log=" + SemanticVersion.toString(appVersion)));
             ctx.terminationHook().run();
-            return;
         }
+        else
+        {
+            sessionMessageHeaderEncoder.leadershipTermId(leadershipTermId);
+            clusterLogPosition = logPosition;
+            clusterTime = timestamp;
+            this.timeUnit = timeUnit;
 
-        sessionMessageHeaderEncoder.leadershipTermId(leadershipTermId);
-        clusterLogPosition = logPosition;
-        clusterTime = timestamp;
-        this.timeUnit = timeUnit;
+            service.onNewLeadershipTermEvent(
+                leadershipTermId,
+                logPosition,
+                timestamp,
+                termBaseLogPosition,
+                leaderMemberId,
+                logSessionId,
+                timeUnit,
+                appVersion);
+        }
     }
 
     @SuppressWarnings("unused")
@@ -910,7 +933,11 @@ class ClusteredServiceAgent implements Agent, Cluster
                 }
             }
 
-            markFile.updateActivityTimestamp(nowMs);
+            if (nowMs >= (timeOfLastMarkFileUpdateMs + MARK_FILE_UPDATE_INTERVAL_MS))
+            {
+                markFile.updateActivityTimestamp(nowMs);
+                timeOfLastMarkFileUpdateMs = nowMs;
+            }
 
             return true;
         }

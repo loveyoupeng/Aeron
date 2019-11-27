@@ -33,10 +33,11 @@ import org.agrona.concurrent.status.StatusIndicator;
 import java.io.File;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
 import java.util.function.Supplier;
 
-import static io.aeron.driver.status.SystemCounterDescriptor.SYSTEM_COUNTER_TYPE_ID;
+import static io.aeron.cluster.service.ClusteredServiceContainer.Configuration.*;
 import static java.util.concurrent.atomic.AtomicIntegerFieldUpdater.newUpdater;
 import static org.agrona.SystemUtil.getSizeAsInt;
 import static org.agrona.SystemUtil.loadPropertiesFiles;
@@ -145,6 +146,11 @@ public final class ClusteredServiceContainer implements AutoCloseable
     public static class Configuration
     {
         /**
+         * Update interval for cluster mark file.
+         */
+        public static final long MARK_FILE_UPDATE_INTERVAL_NS = TimeUnit.SECONDS.toNanos(1);
+
+        /**
          * Identity for a clustered service. Services should be numbered from 0 and be contiguous.
          */
         public static final String SERVICE_ID_PROP_NAME = "aeron.cluster.service.id";
@@ -228,7 +234,7 @@ public final class ClusteredServiceContainer implements AutoCloseable
         /**
          * Default channel to be used for archiving snapshots.
          */
-        public static final String SNAPSHOT_CHANNEL_DEFAULT = CommonContext.IPC_CHANNEL;
+        public static final String SNAPSHOT_CHANNEL_DEFAULT = CommonContext.IPC_CHANNEL + "?alias=snapshot";
 
         /**
          * Stream id within a channel for archiving snapshots.
@@ -269,6 +275,18 @@ public final class ClusteredServiceContainer implements AutoCloseable
          * Default to true that this a responding service to client requests.
          */
         public static final boolean RESPONDER_SERVICE_DEFAULT = true;
+
+        /**
+         * Delegating {@link ErrorHandler} which will be first in the chain before delegating to the
+         * {@link Context#errorHandler()}.
+         */
+        public static final String DELEGATING_ERROR_HANDLER_PROP_NAME =
+            "aeron.cluster.service.delegating.error.handler";
+
+        /**
+         * Counter type id for the clustered service error count.
+         */
+        public static final int CLUSTERED_SERVICE_ERROR_COUNT_TYPE_ID = 215;
 
         /**
          * The value {@link #SERVICE_ID_DEFAULT} or system property {@link #SERVICE_ID_PROP_NAME} if set.
@@ -369,7 +387,14 @@ public final class ClusteredServiceContainer implements AutoCloseable
             return Integer.getInteger(SNAPSHOT_STREAM_ID_PROP_NAME, SNAPSHOT_STREAM_ID_DEFAULT);
         }
 
+        /**
+         * Default {@link IdleStrategy} to be employed for cluster agents.
+         */
         public static final String DEFAULT_IDLE_STRATEGY = "org.agrona.concurrent.BackoffIdleStrategy";
+
+        /**
+         * {@link IdleStrategy} to be employed for cluster agents.
+         */
         public static final String CLUSTER_IDLE_STRATEGY_PROP_NAME = "aeron.cluster.idle.strategy";
 
         /**
@@ -423,6 +448,54 @@ public final class ClusteredServiceContainer implements AutoCloseable
 
             return "true".equals(property);
         }
+
+        /**
+         * Create a new {@link ClusteredService} based on the configured {@link #SERVICE_CLASS_NAME_PROP_NAME}.
+         *
+         * @return a new {@link ClusteredService} based on the configured {@link #SERVICE_CLASS_NAME_PROP_NAME}.
+         */
+        public static ClusteredService newClusteredService()
+        {
+            final String className = System.getProperty(Configuration.SERVICE_CLASS_NAME_PROP_NAME);
+            if (null == className)
+            {
+                throw new ClusterException("either a instance or class name for the service must be provided");
+            }
+
+            try
+            {
+                return (ClusteredService)Class.forName(className).getConstructor().newInstance();
+            }
+            catch (final Exception ex)
+            {
+                LangUtil.rethrowUnchecked(ex);
+                return null;
+            }
+        }
+
+        /**
+         * Create a new {@link DelegatingErrorHandler} defined by {@link #DELEGATING_ERROR_HANDLER_PROP_NAME}.
+         *
+         * @return a new {@link DelegatingErrorHandler} defined by {@link #DELEGATING_ERROR_HANDLER_PROP_NAME} or
+         * null if property not set.
+         */
+        public static DelegatingErrorHandler newDelegatingErrorHandler()
+        {
+            final String className = System.getProperty(Configuration.DELEGATING_ERROR_HANDLER_PROP_NAME);
+            if (null != className)
+            {
+                try
+                {
+                    return (DelegatingErrorHandler)Class.forName(className).getConstructor().newInstance();
+                }
+                catch (final Exception ex)
+                {
+                    LangUtil.rethrowUnchecked(ex);
+                }
+            }
+
+            return null;
+        }
     }
 
     /**
@@ -457,6 +530,7 @@ public final class ClusteredServiceContainer implements AutoCloseable
         private EpochClock epochClock;
         private DistinctErrorLog errorLog;
         private ErrorHandler errorHandler;
+        private DelegatingErrorHandler delegatingErrorHandler;
         private AtomicCounter errorCounter;
         private CountedErrorHandler countedErrorHandler;
         private AeronArchive.Context archiveContext;
@@ -513,7 +587,7 @@ public final class ClusteredServiceContainer implements AutoCloseable
 
             if (null == epochClock)
             {
-                epochClock = new SystemEpochClock();
+                epochClock = SystemEpochClock.INSTANCE;
             }
 
             if (null == clusterDir)
@@ -544,13 +618,28 @@ public final class ClusteredServiceContainer implements AutoCloseable
                 errorHandler = new LoggingErrorHandler(errorLog);
             }
 
+            if (null == delegatingErrorHandler)
+            {
+                delegatingErrorHandler = Configuration.newDelegatingErrorHandler();
+                if (null != delegatingErrorHandler)
+                {
+                    delegatingErrorHandler.next(errorHandler);
+                    errorHandler = delegatingErrorHandler;
+                }
+            }
+            else
+            {
+                delegatingErrorHandler.next(errorHandler);
+                errorHandler = delegatingErrorHandler;
+            }
+
             if (null == aeron)
             {
                 aeron = Aeron.connect(
                     new Aeron.Context()
                         .aeronDirectoryName(aeronDirectoryName)
                         .errorHandler(errorHandler)
-                        .awaitingIdleStrategy(new YieldingIdleStrategy())
+                        .awaitingIdleStrategy(YieldingIdleStrategy.INSTANCE)
                         .epochClock(epochClock));
 
                 ownsAeronClient = true;
@@ -558,7 +647,8 @@ public final class ClusteredServiceContainer implements AutoCloseable
 
             if (null == errorCounter)
             {
-                errorCounter = aeron.addCounter(SYSTEM_COUNTER_TYPE_ID, "Cluster errors - service " + serviceId);
+                errorCounter =
+                    aeron.addCounter(CLUSTERED_SERVICE_ERROR_COUNT_TYPE_ID, "Cluster errors - service " + serviceId);
             }
 
             if (null == countedErrorHandler)
@@ -582,7 +672,7 @@ public final class ClusteredServiceContainer implements AutoCloseable
                 .aeron(aeron)
                 .ownsAeronClient(false)
                 .errorHandler(countedErrorHandler)
-                .lock(new NoOpLock());
+                .lock(NoOpLock.INSTANCE);
 
             if (null == shutdownSignalBarrier)
             {
@@ -596,20 +686,7 @@ public final class ClusteredServiceContainer implements AutoCloseable
 
             if (null == clusteredService)
             {
-                final String className = System.getProperty(Configuration.SERVICE_CLASS_NAME_PROP_NAME);
-                if (null == className)
-                {
-                    throw new ClusterException("either a instance or class name for the service must be provided");
-                }
-
-                try
-                {
-                    clusteredService = (ClusteredService)Class.forName(className).getConstructor().newInstance();
-                }
-                catch (final Exception ex)
-                {
-                    LangUtil.rethrowUnchecked(ex);
-                }
+                clusteredService = Configuration.newClusteredService();
             }
 
             abortLatch = new CountDownLatch(aeron.conductorAgentInvoker() == null ? 1 : 0);
@@ -929,9 +1006,9 @@ public final class ClusteredServiceContainer implements AutoCloseable
         }
 
         /**
-         * Set the {@link EpochClock} to be used for tracking wall clock time when interacting with the archive.
+         * Set the {@link EpochClock} to be used for tracking wall clock time when interacting with the container.
          *
-         * @param clock {@link EpochClock} to be used for tracking wall clock time when interacting with the archive.
+         * @param clock {@link EpochClock} to be used for tracking wall clock time when interacting with the container.
          * @return this for a fluent API.
          */
         public Context epochClock(final EpochClock clock)
@@ -941,9 +1018,9 @@ public final class ClusteredServiceContainer implements AutoCloseable
         }
 
         /**
-         * Get the {@link EpochClock} to used for tracking wall clock time within the archive.
+         * Get the {@link EpochClock} to used for tracking wall clock time within the container.
          *
-         * @return the {@link EpochClock} to used for tracking wall clock time within the archive.
+         * @return the {@link EpochClock} to used for tracking wall clock time within the container.
          */
         public EpochClock epochClock()
         {
@@ -951,9 +1028,9 @@ public final class ClusteredServiceContainer implements AutoCloseable
         }
 
         /**
-         * Get the {@link ErrorHandler} to be used by the Archive.
+         * Get the {@link ErrorHandler} to be used by the {@link ClusteredServiceContainer}.
          *
-         * @return the {@link ErrorHandler} to be used by the Archive.
+         * @return the {@link ErrorHandler} to be used by the {@link ClusteredServiceContainer}.
          */
         public ErrorHandler errorHandler()
         {
@@ -961,9 +1038,9 @@ public final class ClusteredServiceContainer implements AutoCloseable
         }
 
         /**
-         * Set the {@link ErrorHandler} to be used by the Archive.
+         * Set the {@link ErrorHandler} to be used by the {@link ClusteredServiceContainer}.
          *
-         * @param errorHandler the error handler to be used by the Archive.
+         * @param errorHandler the error handler to be used by the {@link ClusteredServiceContainer}.
          * @return this for a fluent API
          */
         public Context errorHandler(final ErrorHandler errorHandler)
@@ -973,9 +1050,35 @@ public final class ClusteredServiceContainer implements AutoCloseable
         }
 
         /**
-         * Get the error counter that will record the number of errors the archive has observed.
+         * Get the {@link DelegatingErrorHandler} to be used by the {@link ClusteredServiceContainer} which will
+         * delegate to {@link #errorHandler()} as next in the chain.
          *
-         * @return the error counter that will record the number of errors the archive has observed.
+         * @return the {@link DelegatingErrorHandler} to be used by the {@link ClusteredServiceContainer}.
+         * @see Configuration#DELEGATING_ERROR_HANDLER_PROP_NAME
+         */
+        public DelegatingErrorHandler delegatingErrorHandler()
+        {
+            return delegatingErrorHandler;
+        }
+
+        /**
+         * Set the {@link DelegatingErrorHandler} to be used by the {@link ClusteredServiceContainer} which will
+         * delegate to {@link #errorHandler()} as next in the chain.
+         *
+         * @param delegatingErrorHandler the error handler to be used by the {@link ClusteredServiceContainer}.
+         * @return this for a fluent API
+         * @see Configuration#DELEGATING_ERROR_HANDLER_PROP_NAME
+         */
+        public Context delegatingErrorHandler(final DelegatingErrorHandler delegatingErrorHandler)
+        {
+            this.delegatingErrorHandler = delegatingErrorHandler;
+            return this;
+        }
+
+        /**
+         * Get the error counter that will record the number of errors the container has observed.
+         *
+         * @return the error counter that will record the number of errors the container has observed.
          */
         public AtomicCounter errorCounter()
         {

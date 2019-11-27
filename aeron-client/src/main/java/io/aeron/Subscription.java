@@ -26,7 +26,7 @@ import java.util.function.Consumer;
 class SubscriptionLhsPadding
 {
     @SuppressWarnings("unused")
-    protected long p1, p2, p3, p4, p5, p6, p7, p8, p9, p10, p11, p12, p13, p14, p15;
+    protected long p1, p2, p3, p4, p5, p6, p7;
 }
 
 class SubscriptionFields extends SubscriptionLhsPadding
@@ -34,8 +34,8 @@ class SubscriptionFields extends SubscriptionLhsPadding
     protected static final Image[] EMPTY_ARRAY = new Image[0];
 
     protected final long registrationId;
-    protected int roundRobinIndex = 0;
     protected final int streamId;
+    protected int roundRobinIndex = 0;
     protected volatile boolean isClosed = false;
     protected volatile Image[] images = EMPTY_ARRAY;
     protected final ClientConductor conductor;
@@ -84,7 +84,7 @@ class SubscriptionFields extends SubscriptionLhsPadding
 public class Subscription extends SubscriptionFields implements AutoCloseable
 {
     @SuppressWarnings("unused")
-    protected long p16, p17, p18, p19, p20, p21, p22, p23, p24, p25, p26, p27, p28, p29, p30;
+    protected long p1, p2, p3, p4, p5, p6, p7;
 
     Subscription(
         final ClientConductor conductor,
@@ -411,7 +411,7 @@ public class Subscription extends SubscriptionFields implements AutoCloseable
     /**
      * Add a destination manually to a multi-destination Subscription.
      *
-     * @param endpointChannel for the destination to add
+     * @param endpointChannel for the destination to add.
      */
     public void addDestination(final String endpointChannel)
     {
@@ -426,7 +426,7 @@ public class Subscription extends SubscriptionFields implements AutoCloseable
     /**
      * Remove a previously added destination from a multi-destination Subscription.
      *
-     * @param endpointChannel for the destination to remove
+     * @param endpointChannel for the destination to remove.
      */
     public void removeDestination(final String endpointChannel)
     {
@@ -436,6 +436,44 @@ public class Subscription extends SubscriptionFields implements AutoCloseable
         }
 
         conductor.removeRcvDestination(registrationId, endpointChannel);
+    }
+
+    /**
+     * Asynchronously add a destination manually to a multi-destination Subscription.
+     * <p>
+     * Errors will be delivered asynchronously to the {@link Aeron.Context#errorHandler()}. Completion can be
+     * tracked by passing the returned correlation id to {@link Aeron#isCommandActive(long)}.
+     *
+     * @param endpointChannel for the destination to add.
+     * @return the correlationId for the command.
+     */
+    public long asyncAddDestination(final String endpointChannel)
+    {
+        if (isClosed)
+        {
+            throw new AeronException("Subscription is closed");
+        }
+
+        return conductor.asyncAddRcvDestination(registrationId, endpointChannel);
+    }
+
+    /**
+     * Asynchronously remove a previously added destination from a multi-destination Subscription.
+     * <p>
+     * Errors will be delivered asynchronously to the {@link Aeron.Context#errorHandler()}. Completion can be
+     * tracked by passing the returned correlation id to {@link Aeron#isCommandActive(long)}.
+     *
+     * @param endpointChannel for the destination to remove.
+     * @return the correlationId for the command.
+     */
+    public long asyncRemoveDestination(final String endpointChannel)
+    {
+        if (isClosed)
+        {
+            throw new AeronException("Subscription is closed");
+        }
+
+        return conductor.asyncRemoveRcvDestination(registrationId, endpointChannel);
     }
 
     void channelStatusId(final int id)

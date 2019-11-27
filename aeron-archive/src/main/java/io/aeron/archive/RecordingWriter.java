@@ -16,6 +16,7 @@
 package io.aeron.archive;
 
 import io.aeron.Image;
+import io.aeron.archive.client.AeronArchive;
 import io.aeron.archive.client.ArchiveException;
 import io.aeron.logbuffer.BlockHandler;
 import io.aeron.protocol.DataHeaderFlyweight;
@@ -53,8 +54,8 @@ class RecordingWriter implements BlockHandler
     private final FileChannel archiveDirChannel;
     private final File archiveDir;
 
+    private long segmentPosition;
     private int segmentOffset;
-    private int segmentIndex;
     private FileChannel recordingFileChannel;
 
     private boolean isClosed = false;
@@ -75,10 +76,11 @@ class RecordingWriter implements BlockHandler
         forceWrites = ctx.fileSyncLevel() > 0;
         forceMetadata = ctx.fileSyncLevel() > 1;
 
+        final int termLength = image.termBufferLength();
         final long joinPosition = image.joinPosition();
-        final long startTermBasePosition = startPosition - (startPosition & (image.termBufferLength() - 1));
-        segmentOffset = (int)(joinPosition - startTermBasePosition) & (segmentLength - 1);
-        segmentIndex = Archive.segmentFileIndex(startPosition, joinPosition, segmentLength);
+        final long startTermBasePosition = startPosition - (startPosition & (termLength - 1));
+        segmentOffset = (int)((joinPosition - startTermBasePosition) & (segmentLength - 1));
+        segmentPosition = AeronArchive.segmentFileBasePosition(startPosition, joinPosition, termLength, segmentLength);
     }
 
     public void onBlock(
@@ -114,8 +116,6 @@ class RecordingWriter implements BlockHandler
         }
         catch (final ClosedByInterruptException ex)
         {
-            //noinspection ResultOfMethodCallIgnored
-            Thread.interrupted();
             close();
             throw new ArchiveException("file closed by interrupt, recording aborted", ex, ArchiveException.GENERIC);
         }
@@ -130,8 +130,8 @@ class RecordingWriter implements BlockHandler
     {
         if (!isClosed)
         {
-            CloseHelper.close(recordingFileChannel);
             isClosed = true;
+            CloseHelper.quietClose(recordingFileChannel);
         }
     }
 
@@ -152,7 +152,7 @@ class RecordingWriter implements BlockHandler
 
     private void openRecordingSegmentFile()
     {
-        final File file = new File(archiveDir, Archive.segmentFileName(recordingId, segmentIndex));
+        final File file = new File(archiveDir, Archive.segmentFileName(recordingId, segmentPosition));
 
         RandomAccessFile recordingFile = null;
         try
@@ -177,7 +177,7 @@ class RecordingWriter implements BlockHandler
     {
         CloseHelper.close(recordingFileChannel);
         segmentOffset = 0;
-        segmentIndex++;
+        segmentPosition += segmentLength;
 
         openRecordingSegmentFile();
     }

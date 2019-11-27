@@ -18,17 +18,18 @@ package io.aeron.driver.media;
 import java.net.InetSocketAddress;
 
 /**
- * State tracking for a connection endpoint to an image.
+ * State tracking for a connection endpoint to an image from a transport.
  */
 public class ImageConnection
 {
+    public long timeOfLastActivityNs;
     public long timeOfLastFrameNs;
     public boolean isEos;
     public final InetSocketAddress controlAddress;
 
-    public ImageConnection(final long timeOfLastFrameNs, final InetSocketAddress controlAddress)
+    public ImageConnection(final long timeOfLastActivityNs, final InetSocketAddress controlAddress)
     {
-        this.timeOfLastFrameNs = timeOfLastFrameNs;
+        this.timeOfLastActivityNs = timeOfLastActivityNs;
         this.controlAddress = controlAddress;
     }
 }

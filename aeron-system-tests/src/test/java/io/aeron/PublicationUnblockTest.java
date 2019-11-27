@@ -17,18 +17,19 @@ package io.aeron;
 
 import io.aeron.driver.MediaDriver;
 import io.aeron.driver.ThreadingMode;
+import io.aeron.logbuffer.BufferClaim;
+import io.aeron.logbuffer.FragmentHandler;
 import io.aeron.logbuffer.LogBufferDescriptor;
+import io.aeron.test.TestMediaDriver;
 import org.agrona.CloseHelper;
 import org.agrona.collections.MutableInteger;
+import org.agrona.concurrent.UnsafeBuffer;
 import org.junit.After;
 import org.junit.Test;
 import org.junit.experimental.theories.DataPoint;
 import org.junit.experimental.theories.Theories;
 import org.junit.experimental.theories.Theory;
 import org.junit.runner.RunWith;
-import io.aeron.logbuffer.BufferClaim;
-import io.aeron.logbuffer.FragmentHandler;
-import org.agrona.concurrent.UnsafeBuffer;
 
 import java.util.concurrent.TimeUnit;
 
@@ -47,9 +48,10 @@ public class PublicationUnblockTest
     private static final int STREAM_ID = 1;
     private static final int FRAGMENT_COUNT_LIMIT = 10;
 
-    private final MediaDriver driver = MediaDriver.launch(new MediaDriver.Context()
+    private final TestMediaDriver driver = TestMediaDriver.launch(new MediaDriver.Context()
         .threadingMode(ThreadingMode.SHARED)
         .errorHandler(Throwable::printStackTrace)
+        .dirDeleteOnShutdown(true)
         .publicationTermBufferLength(LogBufferDescriptor.TERM_MIN_LENGTH)
         .clientLivenessTimeoutNs(TimeUnit.MILLISECONDS.toNanos(400))
         .timerIntervalNs(TimeUnit.MILLISECONDS.toNanos(10))
@@ -63,7 +65,6 @@ public class PublicationUnblockTest
     {
         CloseHelper.close(aeron);
         CloseHelper.close(driver);
-        driver.context().deleteAeronDirectory();
     }
 
     @Theory
@@ -84,8 +85,8 @@ public class PublicationUnblockTest
 
             while (publicationOne.tryClaim(length, bufferClaim) < 0L)
             {
-                SystemTest.checkInterruptedStatus();
                 Thread.yield();
+                SystemTest.checkInterruptedStatus();
             }
 
             bufferClaim.buffer().setMemory(bufferClaim.offset(), length, (byte)65);
@@ -93,20 +94,20 @@ public class PublicationUnblockTest
 
             while (publicationTwo.offer(srcBuffer, 0, length) < 0L)
             {
-                SystemTest.checkInterruptedStatus();
                 Thread.yield();
+                SystemTest.checkInterruptedStatus();
             }
 
             while (publicationOne.tryClaim(length, bufferClaim) < 0L)
             {
-                SystemTest.checkInterruptedStatus();
                 Thread.yield();
+                SystemTest.checkInterruptedStatus();
             }
 
             while (publicationTwo.offer(srcBuffer, 0, length) < 0L)
             {
-                SystemTest.checkInterruptedStatus();
                 Thread.yield();
+                SystemTest.checkInterruptedStatus();
             }
 
             final int expectedFragments = 3;
@@ -116,8 +117,8 @@ public class PublicationUnblockTest
                 final int fragments = subscription.poll(fragmentHandler, FRAGMENT_COUNT_LIMIT);
                 if (fragments == 0)
                 {
-                    SystemTest.checkInterruptedStatus();
                     Thread.yield();
+                    SystemTest.checkInterruptedStatus();
                 }
 
                 numFragments += fragments;

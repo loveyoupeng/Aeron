@@ -36,8 +36,10 @@ import org.agrona.concurrent.status.AtomicCounter;
 import org.agrona.concurrent.status.CountersReader;
 import org.junit.After;
 import org.junit.Before;
+import org.junit.Ignore;
 import org.junit.Test;
 
+import java.io.PrintStream;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -87,7 +89,6 @@ public class ClusterNodeRestartTest
         {
             clusteredMediaDriver.consensusModule().context().deleteDirectory();
             clusteredMediaDriver.archive().context().deleteArchiveDirectory();
-            clusteredMediaDriver.mediaDriver().context().deleteAeronDirectory();
         }
     }
 
@@ -104,8 +105,8 @@ public class ClusterNodeRestartTest
 
         while (serviceMsgCounter.get() == 0)
         {
-            TestUtil.checkInterruptedStatus();
             Thread.yield();
+            TestUtil.checkInterruptedStatus();
         }
 
         forceCloseForRestart();
@@ -116,8 +117,8 @@ public class ClusterNodeRestartTest
 
         while (restartServiceMsgCounter.get() == 0)
         {
-            TestUtil.checkInterruptedStatus();
             Thread.yield();
+            TestUtil.checkInterruptedStatus();
         }
     }
 
@@ -134,8 +135,8 @@ public class ClusterNodeRestartTest
 
         while (serviceMsgCounter.get() == 0)
         {
-            TestUtil.checkInterruptedStatus();
             Thread.yield();
+            TestUtil.checkInterruptedStatus();
         }
 
         forceCloseForRestart();
@@ -148,8 +149,8 @@ public class ClusterNodeRestartTest
 
         while (restartServiceMsgCounter.get() == 1)
         {
-            TestUtil.checkInterruptedStatus();
             Thread.yield();
+            TestUtil.checkInterruptedStatus();
         }
     }
 
@@ -168,8 +169,8 @@ public class ClusterNodeRestartTest
 
         while (snapshotCount.get() == 0)
         {
-            TestUtil.checkInterruptedStatus();
             Thread.sleep(1);
+            TestUtil.checkInterruptedStatus();
         }
 
         forceCloseForRestart();
@@ -181,8 +182,8 @@ public class ClusterNodeRestartTest
 
         while (null == serviceState.get())
         {
-            TestUtil.checkInterruptedStatus();
             Thread.yield();
+            TestUtil.checkInterruptedStatus();
         }
 
         assertThat(serviceState.get(), is("0"));
@@ -203,6 +204,7 @@ public class ClusterNodeRestartTest
         while (serviceMsgCounter.get() != 3)
         {
             Thread.yield();
+            TestUtil.checkInterruptedStatus();
         }
 
         final CountersReader counters = aeronCluster.context().aeron().countersReader();
@@ -212,8 +214,8 @@ public class ClusterNodeRestartTest
 
         while (snapshotCount.get() == 0)
         {
-            TestUtil.checkInterruptedStatus();
             Thread.sleep(1);
+            TestUtil.checkInterruptedStatus();
         }
 
         forceCloseForRestart();
@@ -225,8 +227,8 @@ public class ClusterNodeRestartTest
 
         while (null == serviceState.get())
         {
-            TestUtil.checkInterruptedStatus();
             Thread.yield();
+            TestUtil.checkInterruptedStatus();
         }
 
         assertThat(serviceState.get(), is("3"));
@@ -247,6 +249,7 @@ public class ClusterNodeRestartTest
         while (serviceMsgCounter.get() != 3)
         {
             Thread.yield();
+            TestUtil.checkInterruptedStatus();
         }
 
         final CountersReader counters = aeronCluster.context().aeron().countersReader();
@@ -256,16 +259,16 @@ public class ClusterNodeRestartTest
 
         while (snapshotCount.get() == 0)
         {
-            TestUtil.checkInterruptedStatus();
             Thread.sleep(1);
+            TestUtil.checkInterruptedStatus();
         }
 
         sendCountedMessageIntoCluster(3);
 
         while (serviceMsgCounter.get() != 4)
         {
-            TestUtil.checkInterruptedStatus();
             Thread.yield();
+            TestUtil.checkInterruptedStatus();
         }
 
         forceCloseForRestart();
@@ -277,8 +280,8 @@ public class ClusterNodeRestartTest
 
         while (serviceMsgCounter.get() != 1)
         {
-            TestUtil.checkInterruptedStatus();
             Thread.yield();
+            TestUtil.checkInterruptedStatus();
         }
 
         assertThat(serviceState.get(), is("4"));
@@ -302,8 +305,8 @@ public class ClusterNodeRestartTest
 
             while (controlToggle.get() != ClusterControl.ToggleState.NEUTRAL.code())
             {
-                TestUtil.checkInterruptedStatus();
                 Thread.sleep(1);
+                TestUtil.checkInterruptedStatus();
             }
         }
 
@@ -326,6 +329,7 @@ public class ClusterNodeRestartTest
         while (serviceMsgCounter.get() != 4)
         {
             Thread.yield();
+            TestUtil.checkInterruptedStatus();
         }
 
         final CountersReader counters = aeronCluster.context().aeron().countersReader();
@@ -335,16 +339,16 @@ public class ClusterNodeRestartTest
 
         while (snapshotCount.get() == 0)
         {
-            TestUtil.checkInterruptedStatus();
             Thread.sleep(1);
+            TestUtil.checkInterruptedStatus();
         }
 
         sendCountedMessageIntoCluster(4);
 
         while (serviceMsgCounter.get() != 5)
         {
-            TestUtil.checkInterruptedStatus();
             Thread.yield();
+            TestUtil.checkInterruptedStatus();
         }
 
         forceCloseForRestart();
@@ -356,8 +360,8 @@ public class ClusterNodeRestartTest
 
         while (serviceMsgCounter.get() != 1)
         {
-            TestUtil.checkInterruptedStatus();
             Thread.yield();
+            TestUtil.checkInterruptedStatus();
         }
 
         assertThat(serviceState.get(), is("5"));
@@ -375,8 +379,8 @@ public class ClusterNodeRestartTest
 
         while (triggeredTimersCounter.get() < 2)
         {
-            TestUtil.checkInterruptedStatus();
             Thread.yield();
+            TestUtil.checkInterruptedStatus();
         }
 
         forceCloseForRestart();
@@ -388,9 +392,84 @@ public class ClusterNodeRestartTest
 
         while (triggeredTimersCounter.get() <= triggeredSinceStart)
         {
-            TestUtil.checkInterruptedStatus();
             Thread.yield();
+            TestUtil.checkInterruptedStatus();
         }
+    }
+
+    @Ignore
+    @Test(timeout = 10_000)
+    public void shouldRestartServiceTwiceWithTombstoneSnapshotAndFurtherLog() throws Exception
+    {
+        final AtomicLong serviceMsgCounter = new AtomicLong(0);
+
+        launchService(serviceMsgCounter);
+        connectClient();
+
+        sendCountedMessageIntoCluster(0);
+        sendCountedMessageIntoCluster(1);
+        sendCountedMessageIntoCluster(2);
+
+        while (serviceMsgCounter.get() != 3)
+        {
+            Thread.yield();
+            TestUtil.checkInterruptedStatus();
+        }
+
+        final CountersReader counters = container.context().aeron().countersReader();
+        final AtomicCounter controlToggle = ClusterControl.findControlToggle(counters);
+        assertNotNull(controlToggle);
+        assertTrue(ClusterControl.ToggleState.SNAPSHOT.toggle(controlToggle));
+
+        while (snapshotCount.get() == 0)
+        {
+            Thread.sleep(1);
+            TestUtil.checkInterruptedStatus();
+        }
+
+        sendCountedMessageIntoCluster(3);
+
+        while (serviceMsgCounter.get() != 4)
+        {
+            Thread.yield();
+            TestUtil.checkInterruptedStatus();
+        }
+
+        forceCloseForRestart();
+
+        final PrintStream mockOut = mock(PrintStream.class);
+        assertTrue(ClusterTool.tombstoneLatestSnapshot(
+            mockOut, clusteredMediaDriver.consensusModule().context().clusterDir()));
+
+        serviceMsgCounter.set(0);
+        launchClusteredMediaDriver(false);
+        launchService(serviceMsgCounter);
+
+        while (serviceMsgCounter.get() != 4)
+        {
+            Thread.yield();
+            TestUtil.checkInterruptedStatus();
+        }
+
+        assertThat(serviceState.get(), is("4"));
+
+        connectClient();
+        sendCountedMessageIntoCluster(4);
+
+        while (serviceMsgCounter.get() != 5)
+        {
+            Thread.yield();
+            TestUtil.checkInterruptedStatus();
+        }
+
+        forceCloseForRestart();
+
+        serviceMsgCounter.set(0);
+        launchClusteredMediaDriver(false);
+        launchService(serviceMsgCounter);
+
+        connectClient();
+        assertThat(serviceState.get(), is("5"));
     }
 
     private void sendCountedMessageIntoCluster(final int value)
@@ -420,16 +499,14 @@ public class ClusterNodeRestartTest
             }
 
             checkResult(result);
-            TestUtil.checkInterruptedStatus();
-
             Thread.yield();
+            TestUtil.checkInterruptedStatus();
         }
     }
 
     private void launchService(final AtomicLong msgCounter)
     {
-        final ClusteredService service =
-            new StubClusteredService()
+        final ClusteredService service = new StubClusteredService()
             {
                 private int nextCorrelationId = 0;
                 private int counterValue = 0;
@@ -518,8 +595,7 @@ public class ClusterNodeRestartTest
 
     private void launchReschedulingService(final AtomicInteger triggeredTimersCounter)
     {
-        final ClusteredService service =
-            new StubClusteredService()
+        final ClusteredService service = new StubClusteredService()
             {
                 public void onSessionMessage(
                     final ClientSession session,
@@ -616,9 +692,11 @@ public class ClusterNodeRestartTest
                 .threadingMode(ThreadingMode.SHARED)
                 .termBufferSparseFile(true)
                 .errorHandler(TestUtil.errorHandler(0))
+                .dirDeleteOnShutdown(true)
                 .dirDeleteOnStart(true),
             new Archive.Context()
                 .maxCatalogEntries(MAX_CATALOG_ENTRIES)
+                .recordingEventsEnabled(false)
                 .threadingMode(ArchiveThreadingMode.SHARED)
                 .deleteArchiveOnStart(initialLaunch),
             new ConsensusModule.Context()

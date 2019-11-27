@@ -19,6 +19,7 @@ import io.aeron.driver.MediaDriver;
 import io.aeron.driver.status.SystemCounterDescriptor;
 import org.agrona.CloseHelper;
 import org.agrona.concurrent.ShutdownSignalBarrier;
+import org.agrona.concurrent.status.AtomicCounter;
 
 import static org.agrona.SystemUtil.loadPropertiesFiles;
 
@@ -78,14 +79,28 @@ public class ArchivingMediaDriver implements AutoCloseable
      */
     public static ArchivingMediaDriver launch(final MediaDriver.Context driverCtx, final Archive.Context archiveCtx)
     {
-        final MediaDriver driver = MediaDriver.launch(driverCtx);
+        MediaDriver driver = null;
+        Archive archive = null;
+        try
+        {
+            driver = MediaDriver.launch(driverCtx);
 
-        final Archive archive = Archive.launch(archiveCtx
-            .mediaDriverAgentInvoker(driver.sharedAgentInvoker())
-            .errorHandler(driverCtx.errorHandler())
-            .errorCounter(driverCtx.systemCounters().get(SystemCounterDescriptor.ERRORS)));
+            final int errorCounterId = SystemCounterDescriptor.ERRORS.id();
+            final AtomicCounter errorCounter = null == archiveCtx.errorCounter() ?
+                new AtomicCounter(driverCtx.countersValuesBuffer(), errorCounterId) : archiveCtx.errorCounter();
 
-        return new ArchivingMediaDriver(driver, archive);
+            archive = Archive.launch(archiveCtx
+                .mediaDriverAgentInvoker(driver.sharedAgentInvoker())
+                .errorHandler(driverCtx.errorHandler())
+                .errorCounter(errorCounter));
+
+            return new ArchivingMediaDriver(driver, archive);
+        }
+        catch (final Exception ex)
+        {
+            CloseHelper.quietCloseAll(archive, driver);
+            throw ex;
+        }
     }
 
     /**

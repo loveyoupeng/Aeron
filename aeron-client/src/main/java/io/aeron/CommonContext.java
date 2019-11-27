@@ -55,6 +55,27 @@ import static java.util.concurrent.atomic.AtomicIntegerFieldUpdater.newUpdater;
 public class CommonContext implements Cloneable
 {
     /**
+     * Condition to specify a triple state conditional of always override to be true, always override to be false,
+     * or infer value.
+     */
+    public enum InferableBoolean
+    {
+        FORCE_FALSE,
+        FORCE_TRUE,
+        INFER;
+
+        public static InferableBoolean parse(final String value)
+        {
+            if (null == value || "infer".equalsIgnoreCase(value))
+            {
+                return INFER;
+            }
+
+            return "true".equalsIgnoreCase(value) ? FORCE_TRUE : FORCE_FALSE;
+        }
+    }
+
+    /**
      * Property name for driver timeout after which the driver is considered inactive.
      */
     public static final String DRIVER_TIMEOUT_PROP_NAME = "aeron.driver.timeout";
@@ -200,6 +221,8 @@ public class CommonContext implements Cloneable
 
     /**
      * Parameter name for channel URI param to indicate an alias for the given URI. Value not interpreted by Aeron.
+     * <p>
+     * This is a reserved application level param used to identify a particular channel for application purposes.
      */
     public static final String ALIAS_PARAM_NAME = "alias";
 
@@ -214,6 +237,28 @@ public class CommonContext implements Cloneable
      * true then that subscription is included in flow control. If only one subscription then it tethers pace.
      */
     public static final String TETHER_PARAM_NAME = "tether";
+
+    /**
+     * Parameter name for channel URI param to indicate Subscription represents a group member or individual
+     * from the perspective of message reception. This can inform loss handling and similar semantics.
+     * <p>
+     * When configuring an subscription for an MDC publication then should be added as this is effective multicast.
+     * @see CommonContext#MDC_CONTROL_MODE_PARAM_NAME
+     * @see CommonContext#MDC_CONTROL_PARAM_NAME
+     */
+    public static final String GROUP_PARAM_NAME = "group";
+
+    /**
+     * Parameter name for Subscription URI param to indicate if Images that go unavailable should be allowed to
+     * rejoin after a short cooldown or not.
+     */
+    public static final String REJOIN_PARAM_NAME = "rejoin";
+
+    /**
+     * Parameter name for Subscription URI param to indicate the congestion control algorithm to be used.
+     * Options include {@code static} and {@code cubic}.
+     */
+    public static final String CONGESTION_CONTROL_PARAM_NAME = "cc";
 
     /**
      * Using an integer because there is no support for boolean. 1 is concluded, 0 is not concluded.
@@ -656,21 +701,7 @@ public class CommonContext implements Cloneable
 
         CncFileDescriptor.checkVersion(cncVersion);
 
-        int distinctErrorCount = 0;
-        final AtomicBuffer buffer = CncFileDescriptor.createErrorLogBuffer(cncByteBuffer, cncMetaDataBuffer);
-        if (ErrorLogReader.hasErrors(buffer))
-        {
-            final SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSSZ");
-            final ErrorConsumer errorConsumer = (count, firstTimestamp, lastTimestamp, ex) ->
-                formatError(out, dateFormat, count, firstTimestamp, lastTimestamp, ex);
-
-            distinctErrorCount = ErrorLogReader.read(buffer, errorConsumer);
-        }
-
-        out.println();
-        out.println(distinctErrorCount + " distinct errors observed.");
-
-        return distinctErrorCount;
+        return printErrorLog(CncFileDescriptor.createErrorLogBuffer(cncByteBuffer, cncMetaDataBuffer), out);
     }
 
     /**
@@ -680,19 +711,32 @@ public class CommonContext implements Cloneable
     {
     }
 
-    public static void formatError(
-        final PrintStream out,
-        final SimpleDateFormat dateFormat,
-        final int observationCount,
-        final long firstObservationTimestamp,
-        final long lastObservationTimestamp,
-        final String encodedException)
+    /**
+     * Print the contents of an error log to a {@link PrintStream} in human readable format.
+     *
+     * @param errorBuffer to read errors from.
+     * @param out         print the errors to.
+     * @return number of distinct errors observed.
+     */
+    public static int printErrorLog(final AtomicBuffer errorBuffer, final PrintStream out)
     {
-        out.format(
-            "***%n%d observations from %s to %s for:%n %s%n",
-            observationCount,
-            dateFormat.format(new Date(firstObservationTimestamp)),
-            dateFormat.format(new Date(lastObservationTimestamp)),
-            encodedException);
+        int distinctErrorCount = 0;
+
+        if (errorBuffer.capacity() > 0 && ErrorLogReader.hasErrors(errorBuffer))
+        {
+            final SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSSZ");
+            final ErrorConsumer errorConsumer = (count, firstTimestamp, lastTimestamp, ex) ->
+                out.format(
+                "***%n%d observations from %s to %s for:%n %s%n",
+                count,
+                dateFormat.format(new Date(firstTimestamp)),
+                dateFormat.format(new Date(lastTimestamp)),
+                ex);
+
+            distinctErrorCount = ErrorLogReader.read(errorBuffer, errorConsumer);
+            out.format("%n%d distinct errors observed.%n", distinctErrorCount);
+        }
+
+        return distinctErrorCount;
     }
 }

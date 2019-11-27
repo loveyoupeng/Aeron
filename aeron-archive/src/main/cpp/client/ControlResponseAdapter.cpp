@@ -23,17 +23,17 @@
 using namespace aeron;
 using namespace aeron::archive::client;
 
-static aeron::fragment_handler_t fragmentHandler(ControlResponseAdapter& poller)
+static aeron::fragment_handler_t fragmentHandler(ControlResponseAdapter &adapter)
 {
     return [&](AtomicBuffer& buffer, util::index_t offset, util::index_t length, Header& header)
     {
-        poller.onFragment(buffer, offset, length, header);
+        adapter.onFragment(buffer, offset, length, header);
     };
 }
 
 ControlResponseAdapter::ControlResponseAdapter(
-    const on_control_response_t& onResponse,
-    const recording_descriptor_consumer_t& onRecordingDescriptor,
+    const on_control_response_t &onResponse,
+    const recording_descriptor_consumer_t &onRecordingDescriptor,
     std::shared_ptr<aeron::Subscription> subscription,
     int fragmentLimit) :
     m_fragmentHandler(fragmentHandler(*this)),
@@ -57,7 +57,7 @@ void ControlResponseAdapter::onFragment(
     {
         throw ArchiveException(
             "expected schemaId=" + std::to_string(MessageHeader::sbeSchemaId()) +
-                ", actual=" + std::to_string(schemaId),
+            ", actual=" + std::to_string(schemaId),
             SOURCEINFO);
     }
 

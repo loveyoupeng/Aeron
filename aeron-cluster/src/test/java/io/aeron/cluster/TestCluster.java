@@ -120,9 +120,10 @@ public class TestCluster implements AutoCloseable
         CloseHelper.close(client);
         CloseHelper.close(clientMediaDriver);
 
-        if (null != clientMediaDriver)
+        if (null != backupNode)
         {
-            clientMediaDriver.context().deleteAeronDirectory();
+            backupNode.close();
+            backupNode.cleanUp();
         }
 
         for (int i = 0, length = nodes.length; i < length; i++)
@@ -132,12 +133,6 @@ public class TestCluster implements AutoCloseable
                 nodes[i].close();
                 nodes[i].cleanUp();
             }
-        }
-
-        if (null != backupNode)
-        {
-            backupNode.close();
-            backupNode.cleanUp();
         }
     }
 
@@ -209,6 +204,7 @@ public class TestCluster implements AutoCloseable
             .termBufferSparseFile(true)
             .multicastFlowControlSupplier(new MinMulticastFlowControlSupplier())
             .errorHandler(TestUtil.errorHandler(index))
+            .dirDeleteOnShutdown(true)
             .dirDeleteOnStart(true);
 
         context.archiveContext
@@ -218,6 +214,7 @@ public class TestCluster implements AutoCloseable
             .controlChannel(context.aeronArchiveContext.controlRequestChannel())
             .controlStreamId(context.aeronArchiveContext.controlRequestStreamId())
             .localControlChannel("aeron:ipc?term-length=64k")
+            .recordingEventsEnabled(false)
             .localControlStreamId(context.aeronArchiveContext.controlRequestStreamId())
             .recordingEventsChannel(context.aeronArchiveContext.recordingEventsChannel())
             .threadingMode(ArchiveThreadingMode.SHARED)
@@ -273,6 +270,7 @@ public class TestCluster implements AutoCloseable
             .termBufferSparseFile(true)
             .multicastFlowControlSupplier(new MinMulticastFlowControlSupplier())
             .errorHandler(TestUtil.errorHandler(index))
+            .dirDeleteOnShutdown(true)
             .dirDeleteOnStart(true);
 
         context.archiveContext
@@ -285,6 +283,7 @@ public class TestCluster implements AutoCloseable
             .localControlChannel("aeron:ipc?term-length=64k")
             .localControlStreamId(context.aeronArchiveContext.controlRequestStreamId())
             .recordingEventsChannel(context.aeronArchiveContext.recordingEventsChannel())
+            .recordingEventsEnabled(false)
             .threadingMode(ArchiveThreadingMode.SHARED)
             .deleteArchiveOnStart(cleanStart);
 
@@ -334,6 +333,7 @@ public class TestCluster implements AutoCloseable
             .termBufferSparseFile(true)
             .multicastFlowControlSupplier(new MinMulticastFlowControlSupplier())
             .errorHandler(TestUtil.errorHandler(index))
+            .dirDeleteOnShutdown(true)
             .dirDeleteOnStart(true);
 
         context.archiveContext
@@ -399,6 +399,7 @@ public class TestCluster implements AutoCloseable
             .termBufferSparseFile(true)
             .multicastFlowControlSupplier(new MinMulticastFlowControlSupplier())
             .errorHandler(TestUtil.errorHandler(backupNodeIndex))
+            .dirDeleteOnShutdown(true)
             .dirDeleteOnStart(true);
 
         context.archiveContext
@@ -513,6 +514,8 @@ public class TestCluster implements AutoCloseable
         clientMediaDriver = MediaDriver.launch(
             new MediaDriver.Context()
                 .threadingMode(ThreadingMode.SHARED)
+                .dirDeleteOnStart(true)
+                .dirDeleteOnShutdown(true)
                 .aeronDirectoryName(aeronDirName));
 
         client = AeronCluster.connect(

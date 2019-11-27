@@ -18,14 +18,15 @@ package io.aeron;
 import io.aeron.driver.MediaDriver;
 import io.aeron.driver.ThreadingMode;
 import io.aeron.status.ReadableCounter;
+import io.aeron.test.TestMediaDriver;
 import org.agrona.CloseHelper;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.agrona.concurrent.status.CountersReader;
 import org.junit.After;
 import org.junit.Test;
 
-import static org.hamcrest.Matchers.is;
 import static org.hamcrest.MatcherAssert.assertThat;
+import static org.hamcrest.Matchers.is;
 import static org.junit.Assert.assertFalse;
 import static org.mockito.Mockito.*;
 
@@ -38,7 +39,7 @@ public class CounterTest
 
     private Aeron clientA;
     private Aeron clientB;
-    private MediaDriver driver;
+    private TestMediaDriver driver;
 
     private final AvailableCounterHandler availableCounterHandlerClientA = mock(AvailableCounterHandler.class);
     private final UnavailableCounterHandler unavailableCounterHandlerClientA = mock(UnavailableCounterHandler.class);
@@ -51,8 +52,9 @@ public class CounterTest
     {
         labelBuffer.putStringWithoutLengthAscii(0, COUNTER_LABEL);
 
-        driver = MediaDriver.launch(
+        driver = TestMediaDriver.launch(
             new MediaDriver.Context()
+                .dirDeleteOnShutdown(true)
                 .errorHandler(Throwable::printStackTrace)
                 .threadingMode(ThreadingMode.SHARED));
 
@@ -74,7 +76,6 @@ public class CounterTest
         CloseHelper.quietClose(clientA);
 
         CloseHelper.close(driver);
-        driver.context().deleteAeronDirectory();
     }
 
     @Test(timeout = 2000)
@@ -145,8 +146,8 @@ public class CounterTest
 
         while (null == readableCounter)
         {
-            SystemTest.checkInterruptedStatus();
             SystemTest.sleep(1);
+            SystemTest.checkInterruptedStatus();
         }
 
         assertFalse(readableCounter.isClosed());
@@ -156,8 +157,8 @@ public class CounterTest
 
         while (!readableCounter.isClosed())
         {
-            SystemTest.checkInterruptedStatus();
             SystemTest.sleep(1);
+            SystemTest.checkInterruptedStatus();
         }
     }
 

@@ -202,6 +202,19 @@ public class Aeron implements AutoCloseable
     }
 
     /**
+     * Is the command still active for a given correlation id.
+     *
+     * @param correlationId to check if it is still active.
+     * @return true in the command is still in active processing or false if completed successfully or errored.
+     * @see Publication#asyncAddDestination(String)
+     * @see Subscription#asyncAddDestination(String)
+     */
+    public boolean isCommandActive(final long correlationId)
+    {
+        return conductor.isCommandActive(correlationId);
+    }
+
+    /**
      * Clean up and release all Aeron client resources and shutdown conductor thread if not using
      * {@link Context#useConductorAgentInvoker(boolean)}.
      * <p>
@@ -630,12 +643,12 @@ public class Aeron implements AutoCloseable
 
             if (null == epochClock)
             {
-                epochClock = new SystemEpochClock();
+                epochClock = SystemEpochClock.INSTANCE;
             }
 
             if (null == nanoClock)
             {
-                nanoClock = new SystemNanoClock();
+                nanoClock = SystemNanoClock.INSTANCE;
             }
 
             if (null == idleStrategy)

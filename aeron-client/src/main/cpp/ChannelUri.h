@@ -54,6 +54,9 @@ constexpr const char SPARSE_PARAM_NAME[] = "sparse";
 constexpr const char ALIAS_PARAM_NAME[] = "alias";
 constexpr const char EOS_PARAM_NAME[] = "eos";
 constexpr const char TETHER_PARAM_NAME[] = "tether";
+constexpr const char GROUP_PARAM_NAME[] = "group";
+constexpr const char REJOIN_PARAM_NAME[] = "rejoin";
+constexpr const char CONGESTION_CONTROL_PARAM_NAME[] = "cc";
 
 using namespace aeron::util;
 
@@ -236,6 +239,7 @@ public:
                             builder.clear();
                             state = State::PARAMS_KEY;
                             break;
+
                         case ':':
                             throw IllegalArgumentException("encountered ':' within media definition", SOURCEINFO);
 

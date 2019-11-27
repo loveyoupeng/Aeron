@@ -16,7 +16,7 @@
 package io.aeron.cluster.service;
 
 import io.aeron.Aeron;
-import io.aeron.cluster.client.AeronCluster;
+import io.aeron.CommonContext;
 import io.aeron.cluster.client.ClusterException;
 import io.aeron.cluster.codecs.mark.ClusterComponentType;
 import io.aeron.cluster.codecs.mark.MarkFileHeaderDecoder;
@@ -26,8 +26,6 @@ import org.agrona.*;
 import org.agrona.concurrent.AtomicBuffer;
 import org.agrona.concurrent.EpochClock;
 import org.agrona.concurrent.UnsafeBuffer;
-import org.agrona.concurrent.errors.ErrorConsumer;
-import org.agrona.concurrent.errors.ErrorLogReader;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
@@ -46,12 +44,17 @@ import static io.aeron.Aeron.NULL_VALUE;
  */
 public class ClusterMarkFile implements AutoCloseable
 {
+    public static final int MAJOR_VERSION = 0;
+    public static final int MINOR_VERSION = 0;
+    public static final int PATCH_VERSION = 1;
+    public static final int SEMANTIC_VERSION = SemanticVersion.compose(MAJOR_VERSION, MINOR_VERSION, PATCH_VERSION);
+
+    public static final int HEADER_LENGTH = 8 * 1024;
+    public static final int VERSION_FAILED = -1;
+
     public static final String FILE_EXTENSION = ".dat";
     public static final String FILENAME = "cluster-mark" + FILE_EXTENSION;
     public static final String SERVICE_FILENAME_PREFIX = "cluster-mark-service-";
-    public static final String SERVICE_FILENAME_FORMAT = SERVICE_FILENAME_PREFIX + "%d" + FILE_EXTENSION;
-    public static final int HEADER_LENGTH = 8 * 1024;
-    public static final int VERSION_FAILED = -1;
 
     private final MarkFileHeaderDecoder headerDecoder = new MarkFileHeaderDecoder();
     private final MarkFileHeaderEncoder headerEncoder = new MarkFileHeaderEncoder();
@@ -82,10 +85,10 @@ public class ClusterMarkFile implements AutoCloseable
                 {
                     System.err.println("mark file version -1 indicates error on previous startup.");
                 }
-                else if (SemanticVersion.major(version) != AeronCluster.Configuration.MAJOR_VERSION)
+                else if (SemanticVersion.major(version) != MAJOR_VERSION)
                 {
                     throw new IllegalArgumentException("mark file major version " + SemanticVersion.major(version) +
-                        " does not match software:" + AeronCluster.Configuration.MAJOR_VERSION);
+                        " does not match software:" + MAJOR_VERSION);
                 }
             },
             null);
@@ -99,11 +102,10 @@ public class ClusterMarkFile implements AutoCloseable
         if (markFileExists)
         {
             final UnsafeBuffer existingErrorBuffer = new UnsafeBuffer(
-                this.buffer, headerDecoder.headerLength(), headerDecoder.errorBufferLength());
+                buffer, headerDecoder.headerLength(), headerDecoder.errorBufferLength());
 
             saveExistingErrors(file, existingErrorBuffer, System.err);
-
-            errorBuffer.setMemory(0, errorBufferLength, (byte)0);
+            existingErrorBuffer.setMemory(0, headerDecoder.errorBufferLength(), (byte)0);
         }
         else
         {
@@ -144,10 +146,10 @@ public class ClusterMarkFile implements AutoCloseable
             epochClock,
             (version) ->
             {
-                if (SemanticVersion.major(version) != AeronCluster.Configuration.MAJOR_VERSION)
+                if (SemanticVersion.major(version) != MAJOR_VERSION)
                 {
                     throw new IllegalArgumentException("mark file major version " + SemanticVersion.major(version) +
-                        " does not match software:" + AeronCluster.Configuration.MAJOR_VERSION);
+                        " does not match software:" + MAJOR_VERSION);
                 }
             },
             logger);
@@ -177,11 +179,15 @@ public class ClusterMarkFile implements AutoCloseable
      * Record the fact that a node has voted in a current election for a candidate so it can survive a restart.
      *
      * @param candidateTermId to record that a vote has taken place.
+     * @param fileSyncLevel   as defined by cluster file sync level.
      */
-    public void candidateTermId(final long candidateTermId)
+    public void candidateTermId(final long candidateTermId, final int fileSyncLevel)
     {
         buffer.putLongVolatile(MarkFileHeaderEncoder.candidateTermIdEncodingOffset(), candidateTermId);
-        markFile.mappedByteBuffer().force();
+        if (fileSyncLevel > 0)
+        {
+            markFile.mappedByteBuffer().force();
+        }
     }
 
     public int memberId()
@@ -197,14 +203,12 @@ public class ClusterMarkFile implements AutoCloseable
 
     public void signalReady()
     {
-        markFile.signalReady(AeronCluster.Configuration.SEMANTIC_VERSION);
-        markFile.mappedByteBuffer().force();
+        markFile.signalReady(SEMANTIC_VERSION);
     }
 
     public void signalFailedStart()
     {
         markFile.signalReady(VERSION_FAILED);
-        markFile.mappedByteBuffer().force();
     }
 
     public void updateActivityTimestamp(final long nowMs)
@@ -242,7 +246,7 @@ public class ClusterMarkFile implements AutoCloseable
         try
         {
             final ByteArrayOutputStream baos = new ByteArrayOutputStream();
-            final int observations = saveErrorLog(new PrintStream(baos, false, "UTF-8"), errorBuffer);
+            final int observations = CommonContext.printErrorLog(errorBuffer, new PrintStream(baos, false, "UTF-8"));
             if (observations > 0)
             {
                 final SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd-HH-mm-ss-SSSZ");
@@ -251,7 +255,7 @@ public class ClusterMarkFile implements AutoCloseable
 
                 if (null != logger)
                 {
-                    logger.println("WARNING: Existing errors saved to: " + errorLogFilename);
+                    logger.println("WARNING: existing errors saved to: " + errorLogFilename);
                 }
 
                 try (FileOutputStream out = new FileOutputStream(errorLogFilename))
@@ -264,24 +268,6 @@ public class ClusterMarkFile implements AutoCloseable
         {
             LangUtil.rethrowUnchecked(ex);
         }
-    }
-
-    public static int saveErrorLog(final PrintStream out, final AtomicBuffer errorBuffer)
-    {
-        final SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSSZ");
-        final ErrorConsumer errorConsumer = (count, firstTimestamp, lastTimestamp, ex) ->
-            out.format(
-            "***%n%d observations from %s to %s for:%n %s%n",
-            count,
-            dateFormat.format(new Date(firstTimestamp)),
-            dateFormat.format(new Date(lastTimestamp)),
-            ex);
-
-        final int distinctErrorCount = ErrorLogReader.read(errorBuffer, errorConsumer);
-
-        out.format("%n%d distinct errors observed.%n", distinctErrorCount);
-
-        return distinctErrorCount;
     }
 
     public static void checkHeaderLength(
@@ -315,6 +301,6 @@ public class ClusterMarkFile implements AutoCloseable
 
     public static String markFilenameForService(final int serviceId)
     {
-        return String.format(SERVICE_FILENAME_FORMAT, serviceId);
+        return SERVICE_FILENAME_PREFIX + serviceId + FILE_EXTENSION;
     }
 }
